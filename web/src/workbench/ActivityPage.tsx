@@ -57,6 +57,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Section } from '../components/ui/section.js'
 import { EmptyState } from '../components/ui/empty-state.js'
 import { Button } from '../components/ui/button.js'
+import { api } from '../api/client.js'
 import { useActivity, useHealth } from '../api/hooks.js'
 import {
   useActivityEvent, useProgressEvent, useEventsStatus,
@@ -77,7 +78,7 @@ import { ACTIVITY_TABS, laneOf, workIdOf, type ActivityTab } from './workbenchRo
 // 前端只按当前 tab 取其中一条。事件流这侧只需要 laneOf（判 patrol / identify），
 // 不需要"事件 → tab"这层映射。
 // 函数本体保留在 workbenchRouting.ts（有测试、语义正确、导出可用），只是本页不 import 它。
-import { inspectFreshness, liveFreshness, relAgoLabel, workPermission, type LiveFreshness } from './inspectFreshness.js'
+import { inspectFreshness, liveFreshness, relAgoLabel, relUntilLabel, msUntilNextInspect, workPermission, type LiveFreshness } from './inspectFreshness.js'
 import { RunCard, QueueCard, type WorkbenchCardFace } from './WorkbenchCards.js'
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -197,11 +198,12 @@ function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Cu
  * 两者可以任意组合出现（实时通道好好的、而挂载掉了，是最常见的那一种）。
  */
 function StatusBar({
-  health, current, status,
+  health, current, status, reloadHealth,
 }: {
   health: HealthDTO | null
   current: Current | null
   status: EventsStatus
+  reloadHealth: () => void
 }) {
   const { t, lang } = useT()
   // 时钟只在挂载时取一次：这一行是"大约多久前"的粒度（分/时/天），
@@ -213,15 +215,46 @@ function StatusBar({
   // 🟡 读数新鲜度。**电平**不是边沿——见 inspectFreshness 里 liveFreshness 的论证。
   const live = liveFreshness(status)
 
-  // 巡检那一句。⚠️ 债务一：`lastInspectAt` 是**开始**时刻不是完成时刻，
-  // 故 idle 分支的文案是「上次巡检**开始于** X 前」——不许写成"完成于"。
+  const [pending, setPending] = useState(false)
+  const [runAlert, setRunAlert] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (fresh?.phase === 'running') setPending(false)
+  }, [fresh?.phase])
+
+  // idle：下次自动检查倒计时（不再渲染「上次自动检查开始于」）。
+  // never / stale / running 四态原句保留；stale 仍用「…前」（死亡信号，不是倒计时）。
   let inspectLine: string
   if (!fresh) inspectLine = t('wb_inspect_unknown')
   else if (fresh.phase === 'never') inspectLine = t('wb_inspect_never')
   else if (fresh.phase === 'running') inspectLine = t('wb_inspect_running')
   else if (fresh.phase === 'stale') {
     inspectLine = `${t('wb_inspect_stale')}（${relAgoLabel(fresh.msSinceStart ?? 0, lang)}）`
-  } else inspectLine = `${t('wb_inspect_idle')} ${relAgoLabel(fresh.msSinceStart ?? 0, lang)}`
+  } else {
+    const until = health ? msUntilNextInspect(health, now) : 0
+    if (until <= 0) {
+      inspectLine = lang === 'zh'
+        ? `${t('wb_inspect_next')}${t('wb_inspect_soon')}`
+        : `${t('wb_inspect_next')} ${t('wb_inspect_soon')}`
+    } else {
+      inspectLine = lang === 'zh'
+        ? `${t('wb_inspect_next')}${relUntilLabel(until, lang)}`
+        : `${t('wb_inspect_next')} ${relUntilLabel(until, lang)}`
+    }
+  }
+
+  const onRunNow = async () => {
+    setRunAlert(null)
+    setPending(true)
+    try {
+      await api.triggerInspect()
+      reloadHealth()
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : ''
+      setRunAlert(msg.includes('already running') ? t('wb_inspect_already') : t('wb_inspect_run_failed'))
+      setPending(false)
+    }
+  }
 
   return (
     <div className="wb-statusbar" data-stale={fresh?.phase === 'stale' ? 'true' : 'false'}
@@ -230,6 +263,19 @@ function StatusBar({
       <span data-testid="wb-inspect-line">
         <span className="wb-status-dot" aria-hidden="true" /> {inspectLine}
       </span>
+      {perm === 'permitted' && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          data-testid="wb-inspect-now"
+          disabled={pending || fresh?.phase === 'running'}
+          onClick={() => { void onRunNow() }}
+        >
+          {t('wb_inspect_run')}
+        </Button>
+      )}
+      {runAlert && <span role="alert">{runAlert}</span>}
 
       {/* 🟡 读数已过期。
           · **两通道**（Carbon）：文字本身把话说全（"可能已经不是最新的"）+ 点变成**空心**
@@ -473,7 +519,7 @@ export function ActivityPage() {
   return (
     <Section>
       <div className="flex flex-col gap-3">
-        <StatusBar health={health} current={current} status={status} />
+        <StatusBar health={health} current={current} status={status} reloadHealth={reloadHealth} />
 
         <div className="wb-tabs" role="tablist" aria-label={t('wb_tablist_label')}>
           {ACTIVITY_TABS.map((id) => (

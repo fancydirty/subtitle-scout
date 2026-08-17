@@ -542,6 +542,11 @@ export const en = {
   // 「daemon 可能没在跑」——陈旧门（48h）覆盖不到容器挂掉这一档，见 inspectFreshness 债务二。
   wb_inspect_stale: 'The automatic check may not be running',
   wb_inspect_idle: 'Last automatic check',
+  wb_inspect_next: 'Next automatic check',
+  wb_inspect_soon: 'due soon',
+  wb_inspect_run: 'Run now',
+  wb_inspect_already: 'A check is already running',
+  wb_inspect_run_failed: "Can't start a check right now",
   // R-F1：识别降级到状态条，不占 tab。
   wb_identify_running: 'Identifying media',
   // 引擎不许可的两态。分开是因为可执行动作不同（打开开关 vs 去填 key）。

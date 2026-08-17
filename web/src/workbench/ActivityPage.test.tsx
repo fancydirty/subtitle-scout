@@ -73,9 +73,12 @@ const TRANSLATE_ITEM = {
 
 /** 每个 URL 的请求次数——重连纠正那条的**判据本体**（不是 DOM 文案）。 */
 let urls: string[] = []
+let fetchCalls: Array<{ url: string; method: string | undefined }> = []
 let healthBody: unknown = HEALTH_IDLE
 let activityBody: unknown = { subtitleQueue: [QUEUE_ITEM], translateQueue: [TRANSLATE_ITEM] }
 let activityOk = true
+/** POST /library/inspect 的响应覆盖；null = 默认 200 `{ok:true}`。 */
+let inspectRes: { ok: boolean; status: number; json: () => Promise<unknown> } | 'network' | null = null
 
 function countOf(fragment: string): number {
   return urls.filter((u) => u.includes(fragment)).length
@@ -85,14 +88,22 @@ beforeEach(() => {
   FakeES.instances = []
   seq = 0
   urls = []
+  fetchCalls = []
+  inspectRes = null
   healthBody = HEALTH_IDLE
   activityBody = { subtitleQueue: [QUEUE_ITEM], translateQueue: [TRANSLATE_ITEM] }
   activityOk = true
   __resetEventsBusForTests()
   vi.stubGlobal('EventSource', FakeES)
-  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     urls.push(url)
+    fetchCalls.push({ url, method: typeof init?.method === 'string' ? init.method : undefined })
+    if (url.includes('/api/v2/library/inspect')) {
+      if (inspectRes === 'network') throw new Error('failed to fetch')
+      if (inspectRes) return inspectRes as unknown as Response
+      return { ok: true, status: 200, json: async () => ({ ok: true }) } as unknown as Response
+    }
     if (url.includes('/api/v2/runs?')) {
       // RunsHistory 段（2026-08-15）也随活动页渲染：历史是空数组（多数用例不关心它，
       // stub 给真实形状——catch-all 那档返回 {} 会被组件的形状防御判成错误态）。
@@ -537,12 +548,15 @@ describe('🔴 「第 i/n 个」只信 SSE，排队列表只信 /api/v2/activity
 // 状态条：两条债务的可见形态
 // ═══════════════════════════════════════════════════════════════════════════
 describe('状态条：lastInspectAt 语义与 daemon 可能没在跑', () => {
-  it('idle 时用普通用户语言说「上次自动检查」，不出现技术词 sweep', async () => {
+  it('idle 时说下次自动检查，并给出现在跑（不再渲染上次自动检查）', async () => {
     renderPage()
     await ready()
-    expect(screen.getByTestId('wb-inspect-line').textContent).toContain(en.wb_inspect_idle)
-    expect(en.wb_inspect_idle).toContain('Last automatic check')
-    expect(en.wb_inspect_idle.toLowerCase()).not.toContain('sweep')
+    const line = screen.getByTestId('wb-inspect-line')
+    expect(line.textContent).toContain('Next automatic check')
+    expect(line.textContent).not.toContain('Last automatic check')
+    const btn = screen.getByTestId('wb-inspect-now')
+    expect(btn.textContent).toContain('Run now')
+    expect(btn).not.toBeDisabled()
   })
 
   it('🔴 空闲 + 太久没开新一轮 → 状态条报「引擎可能没在跑」（债务二：陈旧门报绿 48h）', async () => {
@@ -560,6 +574,9 @@ describe('状态条：lastInspectAt 语义与 daemon 可能没在跑', () => {
     })
     // 双通道：不只靠颜色，容器上还有可断言的 data-stale（Carbon 规则）
     expect(screen.getByLabelText(en.wb_statusbar_label).getAttribute('data-stale')).toBe('true')
+    // stale 仍给现在跑（救援），间隔仍是「…前」不是倒计时
+    expect(screen.getByTestId('wb-inspect-now')).toBeInTheDocument()
+    expect(screen.getByTestId('wb-inspect-line').textContent).not.toContain('Next automatic check')
   })
 
   it('⭐ 阳性对照：同样很旧但**有工作台在跑** → 报「正在巡检」，不报死', async () => {
@@ -604,6 +621,74 @@ describe('状态条：lastInspectAt 语义与 daemon 可能没在跑', () => {
     await waitFor(() => {
       expect(screen.getByTestId('wb-perm-line').textContent).toBe(en.wb_engine_off)
     })
+    expect(screen.queryByTestId('wb-inspect-now')).toBeNull()
+  })
+
+  it('running → 现在跑在场但 disabled', async () => {
+    healthBody = {
+      ...HEALTH_IDLE,
+      current: { kind: 'subtitle', title: 'Big Library', index: 3, total: 400 },
+    }
+    renderPage()
+    await ready()
+    const btn = await screen.findByTestId('wb-inspect-now')
+    expect(btn).toBeDisabled()
+  })
+
+  it('凭据没配 → 不出现现在跑', async () => {
+    healthBody = { ...HEALTH_IDLE, workPermitted: false, engineEnabled: true, setupSatisfied: false }
+    renderPage()
+    await ready()
+    await waitFor(() => {
+      expect(screen.getByTestId('wb-perm-line').textContent).toBe(en.wb_setup_incomplete)
+    })
+    expect(screen.queryByTestId('wb-inspect-now')).toBeNull()
+  })
+
+  it('idle 且 nextInspectAt 已过 → due soon，仍有现在跑', async () => {
+    healthBody = { ...HEALTH_IDLE, nextInspectAt: Date.now() - 1000 }
+    renderPage()
+    await ready()
+    expect(screen.getByTestId('wb-inspect-line').textContent).toMatch(/due soon/i)
+    expect(screen.getByTestId('wb-inspect-now')).toBeInTheDocument()
+  })
+
+  it('点现在跑 → POST /api/v2/library/inspect，立刻 disabled', async () => {
+    renderPage()
+    await ready()
+    const btn = screen.getByTestId('wb-inspect-now')
+    fireEvent.click(btn)
+    expect(btn).toBeDisabled()
+    await waitFor(() => {
+      const hit = fetchCalls.find((c) => c.url.includes('/api/v2/library/inspect'))
+      expect(hit).toBeTruthy()
+      expect(hit!.method).toBe('POST')
+    })
+  })
+
+  it('409 → 状态条下 alert「已经在检查了」，不弹 dialog，不露出 raw API 串', async () => {
+    inspectRes = { ok: false, status: 409, json: async () => ({ error: 'already running' }) }
+    renderPage()
+    await ready()
+    fireEvent.click(screen.getByTestId('wb-inspect-now'))
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toBe('A check is already running')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByTestId('wb-inspect-now')).not.toBeDisabled()
+  })
+
+  it('503 → 同一处 alert「现在没法跑」', async () => {
+    inspectRes = {
+      ok: false, status: 503,
+      json: async () => ({ error: 'inspect trigger not configured (watch daemon not running)' }),
+    }
+    renderPage()
+    await ready()
+    fireEvent.click(screen.getByTestId('wb-inspect-now'))
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toBe("Can't start a check right now")
+    expect(alert.textContent?.toLowerCase()).not.toContain('inspect')
+    expect(alert.textContent?.toLowerCase()).not.toContain('daemon')
   })
 
   it('一切正常 → 不显示任何不许可提示', async () => {

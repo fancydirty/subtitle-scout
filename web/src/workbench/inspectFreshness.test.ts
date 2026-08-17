@@ -6,7 +6,7 @@
 // 两条都是**语义**缺陷：字段值本身没错，错的是"照字面渲染就是在说一句半真的话"。
 // 故这里测的全是"在什么前提下允许说什么话"。
 import { describe, it, expect } from 'vitest'
-import { inspectFreshness, relAgo, workPermission, STALE_AFTER_MS } from './inspectFreshness.js'
+import { inspectFreshness, relAgo, relUntilLabel, msUntilNextInspect, workPermission, STALE_AFTER_MS } from './inspectFreshness.js'
 
 const NOW = 1_700_000_000_000
 const HOUR = 3_600_000
@@ -75,6 +75,39 @@ describe('inspectFreshness：巡检的四态', () => {
     const f = inspectFreshness(h(NOW + HOUR), NOW)
     expect(f.phase).toBe('idle')
     expect(relAgo(f.msSinceStart!)).toBe('0s')
+  })
+})
+
+describe('relUntilLabel：与 relAgoLabel 同一套粒度，方向是「后」', () => {
+  it('zh 18h 含「小时后」，不含「小时前」', () => {
+    expect(relUntilLabel(18 * HOUR, 'zh')).toContain('小时后')
+    expect(relUntilLabel(18 * HOUR, 'zh')).not.toContain('小时前')
+  })
+
+  it('en 18h 仍是短单位 18h', () => {
+    expect(relUntilLabel(18 * HOUR, 'en')).toBe('18h')
+  })
+
+  it('delta<=0 返回空串（即将开始由 StatusBar 用 wb_inspect_soon，不在这里另造一句）', () => {
+    expect(relUntilLabel(0, 'zh')).toBe('')
+    expect(relUntilLabel(-1, 'en')).toBe('')
+  })
+})
+
+describe('msUntilNextInspect：优先后端 nextInspectAt，缺了才回落 lastInspectAt + 周期', () => {
+  it('有 nextInspectAt 就用它（不手算 24h）', () => {
+    expect(msUntilNextInspect({ nextInspectAt: NOW + 18 * HOUR, lastInspectAt: NOW - HOUR }, NOW))
+      .toBe(18 * HOUR)
+  })
+
+  it('nextInspectAt 缺席时回落 lastInspectAt + 24h', () => {
+    expect(msUntilNextInspect({ nextInspectAt: null, lastInspectAt: NOW - HOUR }, NOW))
+      .toBe(23 * HOUR)
+  })
+
+  it('已过点仍 idle → 夹到 0（即将开始）', () => {
+    expect(msUntilNextInspect({ nextInspectAt: NOW - HOUR, lastInspectAt: NOW - 25 * HOUR }, NOW))
+      .toBe(0)
   })
 })
 

@@ -282,6 +282,8 @@ export const api = {
   // 什么时候可以删：当"加完守备目录后自动扫一次"这个产品行为被取消，或 RootsManager 不再
   // 调 scanDebouncer 时。判据是上面那条链断在任意一跳——不是"名字里有 library"。
   triggerScan: () => post<{ ok: true }>('/api/v2/library/scan'),
+  // 完整巡检点火（runInspection），不是 scan-only。加根防抖仍走 triggerScan。
+  triggerInspect: () => post<{ ok: true }>('/api/v2/library/inspect'),
 
   // Task ⑦：健康快照。SSE（events/）给的是**变化**，这个给的是**当前态**——断线期间丢了
   // 事件之后靠它纠正，这正是后端设立该端点的理由（server.ts 的 F-6 论证）。

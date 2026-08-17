@@ -129,6 +129,32 @@ export function relAgoLabel(deltaMs: number, lang: Lang): string {
   return `${Math.floor(h / 24)} 天前`
 }
 
+/** 相对时间的「后」方向（倒计时）。粒度同 relAgoLabel；delta<=0 返回空串，
+ *  「即将开始」由 StatusBar 用 `wb_inspect_soon`，避免两处各写一句。 */
+export function relUntilLabel(deltaMs: number, lang: Lang): string {
+  if (deltaMs <= 0) return ''
+  const s = Math.max(0, Math.floor(deltaMs / 1000))
+  if (lang !== 'zh') return relAgo(s * 1000)
+  if (s < 60) return `约 ${s} 秒后`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `约 ${m} 分钟后`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `约 ${h} 小时后`
+  return `约 ${Math.floor(h / 24)} 天后`
+}
+
+/** 距下次自动检查还有多久。优先后端 `nextInspectAt`；缺席时才回落 lastInspectAt + 周期
+ *  （那份 24h 已经在本文件，不在 ActivityPage 再抄第三份）。 */
+export function msUntilNextInspect(
+  health: { nextInspectAt?: number | null; lastInspectAt: number | null },
+  now: number,
+): number {
+  const due = health.nextInspectAt != null
+    ? health.nextInspectAt
+    : (health.lastInspectAt !== null ? health.lastInspectAt + INSPECT_INTERVAL_MS : now)
+  return Math.max(0, due - now)
+}
+
 /** 引擎为什么不干活——**三态**，对应 /health 那三个布尔的三种组合。
  *
  *  🔴 为什么读 `workPermitted` 而不是 `engineEnabled`（任务书要我论证的那条）：

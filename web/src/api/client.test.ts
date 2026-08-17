@@ -159,4 +159,15 @@ describe('client.ts 启动面方法（spec A §4.4 线形）', () => {
     expect(String(url)).toBe('/api/v2/library/scan')
     expect(init.method).toBe('POST')
   })
+
+  it('🔴 triggerInspect 打的是 /api/v2/library/inspect 且用 POST', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true, status: 200, json: async () => ({ ok: true }),
+    }) as unknown as Response)
+    vi.stubGlobal('fetch', fetchMock)
+    await api.triggerInspect()
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(String(url)).toBe('/api/v2/library/inspect')
+    expect(init.method).toBe('POST')
+  })
 })
