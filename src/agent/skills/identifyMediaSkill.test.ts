@@ -73,6 +73,9 @@ describe('identify-media skill', () => {
     expect(skill.content).toMatch(/folder typo|directory year/i)
     expect(skill.content).toMatch(/exact title|same name/i)
     expect(skill.content).toMatch(/Casablanca|unique/i)
+    expect(skill.content).toMatch(/no year filter/i)
+    expect(skill.content).toMatch(/no other hit/i)
+    expect(skill.content).toMatch(/Dune/)
   })
 
   // Task 2（接回 [tmdbid-N] 证据通道）：标签是**起点不是判决**。这条不是措辞偏好——
