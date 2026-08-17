@@ -382,6 +382,7 @@ export const zh = {
   settings_translate_badge_off: '关闭',
   settings_translate_badge_dedicated: '✓ 专用模型',
   settings_translate_badge_incomplete: '⚠ 未配完整',
+  settings_translate_creds_saved: '凭证已保存，打开后沿用',
 
   settings_system_rerun_wizard: '重跑设置向导',
   settings_system_rerun_wizard_desc: '重新走一遍启动配置。环境变量配置的步骤保持锁定。',

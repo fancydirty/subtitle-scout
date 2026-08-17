@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
 import { I18nProvider } from '../i18n/useT.js'
 import { api } from '../api/client.js'
 import type { ProviderRowDTO, SettingsDTO } from '../api/types.js'
@@ -12,6 +12,12 @@ const TRANSLATE_ROW: ProviderRowDTO = { id: 'translate', secrets: [
   { name: 'TRANSLATE_API_KEY', set: false, source: 'none', masked: null },
   { name: 'TRANSLATE_MODEL', set: false, source: 'none', masked: null },
 ], lastTest: null, quota: null }
+
+const DEDICATED_SECRETS: ProviderRowDTO['secrets'] = [
+  { name: 'TRANSLATE_BASE_URL', set: true, source: 'db', masked: 'htt••••/v1' },
+  { name: 'TRANSLATE_API_KEY', set: true, source: 'db', masked: 'sk••••' },
+  { name: 'TRANSLATE_MODEL', set: true, source: 'db', masked: 'gp••••' },
+]
 
 function renderCard(over: { translate?: Partial<ProviderRowDTO>; settings?: Partial<SettingsDTO>; reload?: () => void } = {}) {
   const translate: ProviderRowDTO = { ...TRANSLATE_ROW, ...over.translate }
@@ -28,22 +34,29 @@ function fillDedicated() {
 }
 
 describe('TranslateCard', () => {
-  it('🔴 打开开关 → PUT ai_translate_enabled=true（不能只改本地 state）', async () => {
+  it('🔴 打开开关 → PUT ai_translate_enabled=true，不碰 putSecret', async () => {
     const update = vi.spyOn(api, 'updateSettings').mockResolvedValue({
       ai_translate_enabled: 'true',
     } as SettingsDTO)
+    const put = vi.spyOn(api, 'putSecret').mockResolvedValue({ ok: true })
     renderCard()
     fireEvent.click(screen.getByRole('switch', { name: 'AI subtitle translation' }))
     await waitFor(() => expect(update).toHaveBeenCalledWith({ ai_translate_enabled: 'true' }))
+    expect(put).not.toHaveBeenCalled()
   })
 
-  it('🔴 关闭开关 → PUT ai_translate_enabled=false', async () => {
+  it('🔴 关闭开关 → PUT ai_translate_enabled=false，不碰 putSecret', async () => {
     const update = vi.spyOn(api, 'updateSettings').mockResolvedValue({
       ai_translate_enabled: 'false',
     } as SettingsDTO)
-    renderCard({ settings: { ai_translate_enabled: 'true' } as SettingsDTO })
+    const put = vi.spyOn(api, 'putSecret').mockResolvedValue({ ok: true })
+    renderCard({
+      translate: { secrets: DEDICATED_SECRETS },
+      settings: { ai_translate_enabled: 'true' } as SettingsDTO,
+    })
     fireEvent.click(screen.getByRole('switch', { name: 'AI subtitle translation' }))
     await waitFor(() => expect(update).toHaveBeenCalledWith({ ai_translate_enabled: 'false' }))
+    expect(put).not.toHaveBeenCalled()
   })
 
   it('功能关闭时专用字段不在 DOM', () => {
@@ -52,7 +65,7 @@ describe('TranslateCard', () => {
     expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument()
   })
 
-  it('开启后没有「跟随默认 LLM」分段，直接渲染三个必填字段', () => {
+  it('开启后没有「跟随默认 LLM」分段；未配齐时渲染三个必填字段', () => {
     renderCard({ settings: { ai_translate_enabled: 'true' } as SettingsDTO })
     expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument()
     expect(screen.queryByRole('radio', { name: 'Follow default LLM' })).not.toBeInTheDocument()
@@ -106,7 +119,7 @@ describe('TranslateCard', () => {
     expect(screen.getByLabelText('Model')).toHaveValue('gpt-5.6-sol')
   })
 
-  it('空字段失焦 → 行内错误 role=alert', () => {
+  it('空字段失焦 → 行内错误 role=alert（仅未配齐表单）', () => {
     renderCard({ settings: { ai_translate_enabled: 'true' } as SettingsDTO })
     const base = screen.getByLabelText('Base URL')
     fireEvent.change(base, { target: { value: 'https://api.example.com/v1' } })
@@ -117,31 +130,81 @@ describe('TranslateCard', () => {
     expect(screen.getByRole('alert')).toBeInTheDocument()
   })
 
-  it('env 源三凭证 → 字段 readOnly + 无保存按钮', () => {
-    renderCard({ translate: { secrets: [
-      { name: 'TRANSLATE_BASE_URL', set: true, source: 'env', masked: 'htt••••/v1' },
-      { name: 'TRANSLATE_API_KEY', set: true, source: 'env', masked: 'sk••••' },
-      { name: 'TRANSLATE_MODEL', set: true, source: 'env', masked: 'gp••••' },
-    ] }, settings: { ai_translate_enabled: 'true' } as SettingsDTO })
-    const card = within(screen.getByTestId('providers-translate'))
-    expect(card.getByText('✓ Dedicated model')).toBeInTheDocument()
-    expect(card.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
-    expect(card.getByLabelText('Base URL')).toHaveAttribute('readOnly')
+  it('配齐 + 开启 → 已配置 rest 态：无必填输入，有 Test/Edit', () => {
+    renderCard({
+      translate: { secrets: DEDICATED_SECRETS },
+      settings: { ai_translate_enabled: 'true' } as SettingsDTO,
+    })
+    expect(screen.getByText('✓ Configured')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Base URL')).not.toBeInTheDocument()
+    expect(screen.queryByText('All three fields are required')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Test' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument()
   })
 
-  it('徽标：关闭 / 未配完整 / 专用模型（不再有「已开启=跟随默认」）', () => {
+  it('配齐 + 关闭 → 凭证已保存文案，无必填输入', () => {
+    renderCard({
+      translate: { secrets: DEDICATED_SECRETS },
+      settings: { ai_translate_enabled: 'false' } as SettingsDTO,
+    })
+    expect(screen.getByText('Credentials saved. They will be used when you turn this back on.')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Base URL')).not.toBeInTheDocument()
+  })
+
+  it('配齐后关再开 → 仍无必填输入', async () => {
+    const update = vi.spyOn(api, 'updateSettings').mockResolvedValue({
+      ai_translate_enabled: 'true',
+    } as SettingsDTO)
+    renderCard({
+      translate: { secrets: DEDICATED_SECRETS },
+      settings: { ai_translate_enabled: 'false' } as SettingsDTO,
+    })
+    fireEvent.click(screen.getByRole('switch', { name: 'AI subtitle translation' }))
+    await waitFor(() => expect(update).toHaveBeenCalled())
+    expect(screen.queryByLabelText('Base URL')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Test' })).toBeInTheDocument()
+  })
+
+  it('Edit 后空草稿点 Save → 不 putSecret 空键', async () => {
+    vi.spyOn(api, 'validateSetup').mockResolvedValue({ ok: true })
+    const put = vi.spyOn(api, 'putSecret').mockResolvedValue({ ok: true })
+    const reload = vi.fn()
+    renderCard({
+      translate: { secrets: DEDICATED_SECRETS },
+      settings: { ai_translate_enabled: 'true' } as SettingsDTO,
+      reload,
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.validateSetup).toHaveBeenCalledWith('translate', {}))
+    expect(put).not.toHaveBeenCalled()
+  })
+
+  it('Test 用库里凭证：validateSetup(translate) 无 drafts', async () => {
+    const validate = vi.spyOn(api, 'validateSetup').mockResolvedValue({ ok: true })
+    const reload = vi.fn()
+    renderCard({
+      translate: { secrets: DEDICATED_SECRETS },
+      settings: { ai_translate_enabled: 'true' } as SettingsDTO,
+      reload,
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Test' }))
+    await waitFor(() => expect(validate).toHaveBeenCalledWith('translate'))
+    expect(reload).toHaveBeenCalled()
+  })
+
+  it('徽标：关闭 / 未配置 / 已配置', () => {
     renderCard()
     expect(screen.getByText('Off')).toBeInTheDocument()
     cleanup()
     renderCard({ settings: { ai_translate_enabled: 'true' } as SettingsDTO })
-    expect(screen.getByText('⚠ Incomplete')).toBeInTheDocument()
+    expect(screen.getByText('⚠ Not configured')).toBeInTheDocument()
     expect(screen.queryByText('✓ Enabled')).not.toBeInTheDocument()
     cleanup()
-    renderCard({ translate: { secrets: [
-      { name: 'TRANSLATE_BASE_URL', set: true, source: 'db', masked: 'htt••••/v1' },
-      { name: 'TRANSLATE_API_KEY', set: true, source: 'db', masked: 'sk••••' },
-      { name: 'TRANSLATE_MODEL', set: true, source: 'db', masked: 'gp••••' },
-    ] }, settings: { ai_translate_enabled: 'true' } as SettingsDTO })
-    expect(screen.getByText('✓ Dedicated model')).toBeInTheDocument()
+    renderCard({
+      translate: { secrets: DEDICATED_SECRETS },
+      settings: { ai_translate_enabled: 'true' } as SettingsDTO,
+    })
+    expect(screen.getByText('✓ Configured')).toBeInTheDocument()
   })
 })

@@ -448,6 +448,7 @@ export const en = {
   settings_translate_badge_off: 'Off',
   settings_translate_badge_dedicated: '✓ Dedicated model',
   settings_translate_badge_incomplete: '⚠ Incomplete',
+  settings_translate_creds_saved: 'Credentials saved. They will be used when you turn this back on.',
 
   settings_system_rerun_wizard: 'Re-run setup wizard',
   settings_system_rerun_wizard_desc: 'Walk through bootstrap again. Steps configured via environment stay locked.',
