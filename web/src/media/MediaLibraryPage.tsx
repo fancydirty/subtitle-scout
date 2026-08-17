@@ -77,7 +77,9 @@ export function coverageParts(item: MediaLibraryItemDTO): {
   embedded: number | null
   onDisk: number
   /** null = 应有集未知（电影，或 tmdb_seasons 还没回填）——调用方**不许**渲染这一段。 */
-  expected: number | null
+    expected: number | null
+  /** null = 本地字幕齐（或无文件）——调用方**不许**渲染缺口黄字。原样取 DTO。 */
+  uncovered: number | null
   /** null = 不缺集（或应有集未知）——调用方**不许**渲染这一段。 */
   missing: number | null
   /** null = 没有进不了网格的文件——调用方**不许**渲染这一段（沉默即好消息）。
@@ -95,6 +97,7 @@ export function coverageParts(item: MediaLibraryItemDTO): {
     embedded: item.embeddedEpisodeCount > 0 ? item.embeddedEpisodeCount : null,
     onDisk: item.onDiskEpisodeCount,
     expected: item.expectedEpisodeCount > 0 ? item.expectedEpisodeCount : null,
+    uncovered: item.uncoveredEpisodeCount > 0 ? item.uncoveredEpisodeCount : null,
     missing: item.missingEpisodeCount > 0 ? item.missingEpisodeCount : null,
     // `> 0` 而不是真值性：与 missing 同形。后端老版本缺这个字段时 undefined > 0 为 false
     // → 整段不渲染，这是**正确的降级**（宁可少说一句，不许渲染 "NaN 个文件"）。

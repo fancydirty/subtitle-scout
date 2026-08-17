@@ -24,7 +24,7 @@ function item(o: Partial<MediaLibraryItemDTO> = {}): MediaLibraryItemDTO {
     workId: 'tmdb:1396', title: 'Breaking Bad', chineseTitle: null, year: 2008,
     posterPath: null, mediaType: 'tv',
     expectedEpisodeCount: 62, onDiskEpisodeCount: 30, missingEpisodeCount: 32,
-    subtitledEpisodeCount: 12, embeddedEpisodeCount: 0, unplacedFileCount: 0,
+    subtitledEpisodeCount: 12, embeddedEpisodeCount: 0, uncoveredEpisodeCount: 18, unplacedFileCount: 0,
     ...o,
   }
 }
@@ -77,10 +77,10 @@ describe('R-F2「不管来源，按 work_id 合并」在 UI 上是什么', () =>
   it('coverageParts 是纯映射——每个数字逐字取自 DTO，不含任何算术', () => {
     const p = coverageParts(item({
       subtitledEpisodeCount: 7, onDiskEpisodeCount: 9, expectedEpisodeCount: 24,
-      missingEpisodeCount: 15,
+      missingEpisodeCount: 15, uncoveredEpisodeCount: 2,
     }))
     expect(p).toEqual({
-      subtitled: 7, embedded: null, onDisk: 9, expected: 24, missing: 15, unplaced: null,
+      subtitled: 7, embedded: null, onDisk: 9, expected: 24, uncovered: 2, missing: 15, unplaced: null,
     })
   })
 })
@@ -137,9 +137,9 @@ describe('🟡-3 missingEpisodeCount 真的被读了（变异恒 0 → 本组必
     expect(coverageParts(item({ expectedEpisodeCount: 0, missingEpisodeCount: 0 })).missing).toBeNull()
   })
 
-  it('coverageParts 对 missing=0 给 null，>0 原样给', () => {
-    expect(coverageParts(item({ missingEpisodeCount: 0 })).missing).toBeNull()
-    expect(coverageParts(item({ missingEpisodeCount: 1 })).missing).toBe(1)
+  it('coverageParts 对 uncovered=0 给 null，>0 原样给', () => {
+    expect(coverageParts(item({ uncoveredEpisodeCount: 0 })).uncovered).toBeNull()
+    expect(coverageParts(item({ uncoveredEpisodeCount: 18 })).uncovered).toBe(18)
   })
 })
 
@@ -256,9 +256,10 @@ describe('🔴 「已配」与「自带」在卡片上分列', () => {
     const p = coverageParts(item({
       subtitledEpisodeCount: 2, embeddedEpisodeCount: 5,
       onDiskEpisodeCount: 24, expectedEpisodeCount: 24, missingEpisodeCount: 0,
+      uncoveredEpisodeCount: 3,
     }))
     expect(p).toEqual({
-      subtitled: 2, embedded: 5, onDisk: 24, expected: 24, missing: null, unplaced: null,
+      subtitled: 2, embedded: 5, onDisk: 24, expected: 24, uncovered: 3, missing: null, unplaced: null,
     })
   })
 

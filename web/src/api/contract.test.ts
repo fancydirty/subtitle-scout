@@ -175,8 +175,14 @@ describe('MEDIA_LIBRARY_ITEM_SHAPE（判据③：四个计数字段参与算术�
   const ROW = {
     workId: 'tmdb:1', title: 'BB', expectedEpisodeCount: 62,
     onDiskEpisodeCount: 50, missingEpisodeCount: 12, subtitledEpisodeCount: 40, embeddedEpisodeCount: 0,
+    uncoveredEpisodeCount: 10,
   }
   it('完整行放行', () => expect(checkShape(ROW, MEDIA_LIBRARY_ITEM_SHAPE)).toBeNull())
+
+  it('🔴 uncoveredEpisodeCount 缺席 → 拦。缺席会把缺口卡画成全齐', () => {
+    const { uncoveredEpisodeCount: _drop, ...broken } = ROW
+    expect(checkShape(broken, MEDIA_LIBRARY_ITEM_SHAPE)?.path).toBe('uncoveredEpisodeCount')
+  })
 
   it('🔴 missingEpisodeCount 缺席 → 拦。不拦的话 coverageParts 算出 `undefined > 0` = false，'
     + '一部缺 12 集的剧在海报墙上显示得像齐全的', () => {
@@ -190,7 +196,7 @@ describe('MEDIA_LIBRARY_ITEM_SHAPE（判据③：四个计数字段参与算术�
 
   it('🔴 四个计数字段一个都不许是 null（同 health 那条，堵变异 c1 的缺口）。'
     + 'null 参与算术出 0 而不是 NaN——比 undefined 更隐蔽：缺 12 集会显示成"不缺"', () => {
-    for (const key of ['expectedEpisodeCount', 'onDiskEpisodeCount', 'missingEpisodeCount', 'subtitledEpisodeCount'] as const) {
+    for (const key of ['expectedEpisodeCount', 'onDiskEpisodeCount', 'missingEpisodeCount', 'subtitledEpisodeCount', 'uncoveredEpisodeCount'] as const) {
       const v = checkShape({ ...ROW, [key]: null }, MEDIA_LIBRARY_ITEM_SHAPE)
       expect(v, `${key} 被写成了可选`).toEqual({ path: key, expected: 'number', got: 'null' })
     }

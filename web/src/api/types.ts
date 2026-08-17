@@ -499,6 +499,8 @@ export interface MediaLibraryItemDTO {
    *  且 green 优先于 blue），故两者之和恒 === 旧实现那个 `!== 'none'` 的合计
    *  ——旧值没有丢，只是被拆开了。0 时前端整段不渲染（沉默即好消息）。 */
   embeddedEpisodeCount: number
+  /** 本地格里既无外挂也无自带中字的格数。海报卡黄字只读这个。 */
+  uncoveredEpisodeCount: number
   /** 属于这部作品、但季集解析不出因而**进不了季集网格**的文件数。电影恒 0。
    *
    *  🔴 2026-08-13：与详情页的同名字段**同一个数**。此前这些文件被后端塞进一个假格、
