@@ -108,7 +108,8 @@ export function coverageParts(item: MediaLibraryItemDTO): {
 function MediaCard({ item }: { item: MediaLibraryItemDTO }) {
   const { t } = useT()
   const title = item.chineseTitle ?? item.title
-  const { subtitled, embedded, onDisk, missing, unplaced } = coverageParts(item)
+  const { subtitled, embedded, onDisk, uncovered, unplaced } = coverageParts(item)
+  const covered = subtitled + (embedded ?? 0)
 
   return (
     <a className="media-card" href={mediaItemHref(item.workId)} aria-label={title}>
@@ -119,27 +120,33 @@ function MediaCard({ item }: { item: MediaLibraryItemDTO }) {
       </div>
       <div className="media-card-meta">
         <span className="block text-[13px] font-medium leading-5 text-foreground">{title}</span>
+        <span
+          className={uncovered === null ? 'media-card-frac media-card-frac-done' : 'media-card-frac'}
+          data-testid="media-card-coverage"
+        >
+          {t('media_card_coverage')} {covered}/{onDisk}
+        </span>
+        {onDisk > 0 ? (
+          <span className="media-card-bar" aria-hidden="true">
+            <i className="media-card-bar-g" style={{ width: `${(subtitled / onDisk) * 100}%` }} />
+            {embedded !== null ? (
+              <i className="media-card-bar-b" style={{ width: `${(embedded / onDisk) * 100}%` }} />
+            ) : null}
+          </span>
+        ) : null}
         <span className="media-card-stats" data-testid="media-card-stats">
-          {/* 每一段 nowrap：窄海报列上 · 必须跟着标签走，不许单独折成一行。 */}
           <span className="media-card-stat">{t('media_card_subtitled')} {subtitled}</span>
           {embedded !== null ? (
             <span className="media-card-stat">· {t('media_card_embedded')} {embedded}</span>
           ) : null}
-          <span className="media-card-stat">· {t('media_card_ondisk')} {onDisk}</span>
         </span>
-        {/* 🟡-3 缺集数。**单独一行**而不是挤进上面那串：上面三个是"库里有什么"的读数，
-            这一条是"还差什么"的**结论**，两者混排会让它淹没在数字堆里（而它恰恰是
-            用户在海报墙上扫视时唯一想找的东西）。missing===0 时整段不在场。 */}
-        {missing !== null && (
-          <span className="media-card-missing" data-testid="media-card-missing">
-            {t('media_card_missing')} {missing} {t('media_card_missing_unit')}
+        {uncovered !== null && (
+          <span className="media-card-missing" data-testid="media-card-uncovered">
+            {item.mediaType === 'movie'
+              ? t('media_card_uncovered_movie')
+              : `${t('media_card_uncovered')} ${uncovered} ${t('media_card_uncovered_unit')}`}
           </span>
         )}
-        {/* 🔴 进不了季集网格的文件（2026-08-13）。**与 missing 分两行**：那一条说
-            "磁盘上少了什么"，这一条说"磁盘上有东西我没归到位"——两件相反的事，
-            挤一行会让用户以为是同一个数的两半。unplaced===0 时整段不在场。
-            措辞不提 season/episode/parse_confidence（那是排障读数）：用户能做的
-            与 UnidentifiedNote 同类——去改文件名。 */}
         {unplaced !== null && (
           <span className="media-card-missing" data-testid="media-card-unplaced">
             {t('media_card_unplaced').replace('{n}', String(unplaced))}

@@ -388,12 +388,14 @@ export const zh = {
 
   // ── Task ⑧ 媒体库页（#/media）────────────────────────────────────────────
   media_result_count_prefix: '作品',
-  media_card_subtitled: '已下载字幕',
-  /** 🔴 2026-08-14 用户裁决③：内嵌轨与外挂字幕分列。「自带」而不是「内嵌」——
-   *  用户不需要知道"内嵌轨"是什么技术概念，他要知道的是这几集**片源本来就带**、
-   *  系统没为它做过事。与「已配」（我们找来装上的）构成对照。 */
-  media_card_embedded: '自带字幕',
+  media_card_subtitled: '已下载',
+  /** 🔴 2026-08-14 用户裁决③：内嵌轨与外挂字幕分列。「自带」而不是「内嵌」。 */
+  media_card_embedded: '自带',
   media_card_ondisk: '本地视频',
+  media_card_coverage: '字幕',
+  media_card_uncovered: '还有',
+  media_card_uncovered_unit: '集没字幕',
+  media_card_uncovered_movie: '还没字幕',
   
   // 🟡-3：缺集数。「缺 12」——不写"集"字：电影恒 0（不渲染），剧集这一行紧挨着
   // 上面那三个同为集数的读数，量纲无歧义。

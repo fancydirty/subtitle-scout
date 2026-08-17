@@ -456,9 +456,13 @@ export const en = {
   // 键前缀 `media_*` 与旧海报墙的 `library_*` **刻意分开**：两个页面并存到 Task ⑪，
   // 共用键会让"改文案时改到另一个页面"变成可能，而且旧键随旧页面一起删。
   media_result_count_prefix: 'Titles',
-  media_card_subtitled: 'subtitles downloaded',
-  media_card_embedded: 'built-in subtitles',
+  media_card_subtitled: 'Downloaded',
+  media_card_embedded: 'Built-in',
   media_card_ondisk: 'local videos',
+  media_card_coverage: 'Subtitles',
+  media_card_uncovered: 'Need subtitles for',
+  media_card_uncovered_unit: 'episodes',
+  media_card_uncovered_movie: 'No subtitles yet',
   
   // 🟡-3：缺集数（missingEpisodeCount 的第一个读取方）。
   // "missing N" 而不是 "N missing"：卡片上这一行要能被扫视，名字在前、数字在后，

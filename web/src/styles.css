@@ -2145,6 +2145,32 @@
    颜色用 amber——与守备目录 failed 那档、活动页 stale 那档同一个"有事但不是错误"的
    语义层。**不用红**：缺集是媒体库的常态（新番每周才更一集），红会让整面墙报警。
    双通道：文字自带"missing/缺"这个词，去掉 CSS 之后语义一个字不少。 */
+.media-card-frac {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+  color: var(--color-foreground);
+}
+.media-card-frac-done {
+  color: var(--color-fn-green);
+}
+.media-card-bar {
+  display: flex;
+  height: 3px;
+  border-radius: 99px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+  margin: 2px 0 2px;
+}
+.media-card-bar-g,
+.media-card-bar-b {
+  display: block;
+  height: 100%;
+}
+.media-card-bar-g { background: var(--color-fn-green); }
+.media-card-bar-b { background: var(--color-fn-blue); }
+
 .media-card-missing {
   display: block;
   font-size: 11px;

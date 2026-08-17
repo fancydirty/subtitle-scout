@@ -71,7 +71,7 @@ describe('R-F2「不管来源，按 work_id 合并」在 UI 上是什么', () =>
     const link = await screen.findByRole('link')
     const line = within(link).getByTestId('media-card-stats')
     expect(line.textContent).toContain(`${en.media_card_subtitled} 12`)
-    expect(line.textContent).toContain(`${en.media_card_ondisk} 30`)
+    expect(within(link).getByTestId('media-card-coverage').textContent).toContain(`${en.media_card_coverage} 12/30`)
   })
 
   it('coverageParts 是纯映射——每个数字逐字取自 DTO，不含任何算术', () => {
@@ -88,53 +88,53 @@ describe('R-F2「不管来源，按 work_id 合并」在 UI 上是什么', () =>
 // ═══ 🟡-3 缺集数 ═════════════════════════════════════════════════════════════
 // `missingEpisodeCount` 后端算了、DTO 声明了，而在本次改动之前**只在测试 fixture 里
 // 出现过**——终局审计变异 `missingEpisodeCount: 0` → 前端 0 红。下面这组是它的守卫。
-describe('🟡-3 missingEpisodeCount 真的被读了（变异恒 0 → 本组必红）', () => {
-  it('🔴 missing>0 → 卡片上显示"缺 N"', async () => {
-    vi.stubGlobal('fetch', mockFetch([item({ missingEpisodeCount: 32 })]))
-    renderPage()
-    const link = await screen.findByRole('link')
-    const line = within(link).getByTestId('media-card-missing')
-    expect(line.textContent).toContain(`${en.media_card_missing} 32`)
-  })
-
-  // 🔴 这一条是"前端别自己算"的判据：给一组任何本地重算都会得出别的值的数字。
-  it('🔴 **原样取 DTO**，不在浏览器里算 expected - onDisk', async () => {
-    // expected-onDisk = 62-30 = 32，而后端给的是 7（比如应有集缓存刚回填了一部分）。
-    // 任何"顺手自己算"的写法都会显示 32——那就是把后端的夹 0 判据复制了第二份。
+describe('字幕覆盖（uncoveredEpisodeCount，本地分母）', () => {
+  it('全齐 → 分数 20/20，不出现 TMDB 缺集黄字', async () => {
     vi.stubGlobal('fetch', mockFetch([item({
-      expectedEpisodeCount: 62, onDiskEpisodeCount: 30, missingEpisodeCount: 7,
+      subtitledEpisodeCount: 9, embeddedEpisodeCount: 11, onDiskEpisodeCount: 20,
+      missingEpisodeCount: 125, uncoveredEpisodeCount: 0,
     })]))
     renderPage()
     const link = await screen.findByRole('link')
-    const line = within(link).getByTestId('media-card-missing')
-    expect(line.textContent).toContain(`${en.media_card_missing} 7`)
+    expect(link.textContent).toContain(`${en.media_card_coverage} 20/20`)
+    expect(within(link).queryByTestId('media-card-missing')).toBeNull()
+    expect(within(link).queryByTestId('media-card-uncovered')).toBeNull()
+    expect(link.textContent).not.toContain(`${en.media_card_missing} 125`)
+    expect(link.textContent).not.toContain(`${en.media_card_ondisk}`)
+  })
+
+  it('🔴 **原样取 DTO uncovered**，不在浏览器里算 onDisk - subtitled', async () => {
+    vi.stubGlobal('fetch', mockFetch([item({
+      onDiskEpisodeCount: 30, subtitledEpisodeCount: 12, embeddedEpisodeCount: 0,
+      uncoveredEpisodeCount: 7, missingEpisodeCount: 32,
+    })]))
+    renderPage()
+    const link = await screen.findByRole('link')
+    const line = within(link).getByTestId('media-card-uncovered')
+    expect(line.textContent).toContain('7')
+    expect(line.textContent).not.toContain('18')
     expect(line.textContent).not.toContain('32')
   })
 
-  it('🔴 missing=0（齐全）→ **整段不在场**（沉默即好消息，不显示"缺 0"）', async () => {
+  it('uncovered=0 → 黄字整段不在场', async () => {
     vi.stubGlobal('fetch', mockFetch([item({
-      expectedEpisodeCount: 62, onDiskEpisodeCount: 62, missingEpisodeCount: 0,
+      onDiskEpisodeCount: 62, subtitledEpisodeCount: 62, uncoveredEpisodeCount: 0, missingEpisodeCount: 0,
     })]))
     renderPage()
     const link = await screen.findByRole('link')
-    expect(within(link).queryByTestId('media-card-missing')).toBeNull()
-    expect(link.textContent).not.toContain(`${en.media_card_missing} 0`)
+    expect(within(link).queryByTestId('media-card-uncovered')).toBeNull()
   })
 
-  it('电影（missing 恒 0）不显示这一段', async () => {
+  it('电影缺口 → 还没字幕，不说集', async () => {
     vi.stubGlobal('fetch', mockFetch([item({
       mediaType: 'movie', expectedEpisodeCount: 0, onDiskEpisodeCount: 1,
-      missingEpisodeCount: 0, subtitledEpisodeCount: 1,
+      missingEpisodeCount: 0, subtitledEpisodeCount: 0, uncoveredEpisodeCount: 1,
     })]))
     renderPage()
     const link = await screen.findByRole('link')
-    expect(within(link).queryByTestId('media-card-missing')).toBeNull()
-  })
-
-  it('🔴 应有集未回填（expected=0）→ 后端夹 0 给 missing=0 → 不显示（与"绝口不提应有集"一致）', () => {
-    // 这一支不需要额外的前端条件：后端的 Math.max(0, …) 已经把它折成 0 了。
-    // 在前端再写一次 `expected>0 &&` 就是第三份判据（后端一份、coverageParts 一份）。
-    expect(coverageParts(item({ expectedEpisodeCount: 0, missingEpisodeCount: 0 })).missing).toBeNull()
+    const line = within(link).getByTestId('media-card-uncovered')
+    expect(line.textContent).toContain(en.media_card_uncovered_movie)
+    expect(line.textContent).not.toContain(en.media_card_uncovered_unit)
   })
 
   it('coverageParts 对 uncovered=0 给 null，>0 原样给', () => {
@@ -155,15 +155,15 @@ describe('🔴-2 unplacedFileCount 真的被读了（变异恒 0 → 本组必�
     expect(within(link).getByTestId('media-card-unplaced').textContent).toContain('67')
   })
 
-  it('🔴 与"缺 N"是**两行不同的话**（一个说少了什么，一个说没归到位）', async () => {
-    vi.stubGlobal('fetch', mockFetch([item({ missingEpisodeCount: 7, unplacedFileCount: 67 })]))
+  it('🔴 与缺口黄字是**两行不同的话**', async () => {
+    vi.stubGlobal('fetch', mockFetch([item({ uncoveredEpisodeCount: 7, unplacedFileCount: 67 })]))
     renderPage()
     const link = await screen.findByRole('link')
-    const missing = within(link).getByTestId('media-card-missing')
+    const uncovered = within(link).getByTestId('media-card-uncovered')
     const unplaced = within(link).getByTestId('media-card-unplaced')
-    expect(missing).not.toBe(unplaced)
-    expect(missing.textContent).toContain('7')
-    expect(missing.textContent).not.toContain('67')
+    expect(uncovered).not.toBe(unplaced)
+    expect(uncovered.textContent).toContain('7')
+    expect(uncovered.textContent).not.toContain('67')
   })
 
   it('🔴 unplaced=0 → **整段不在场**（沉默即好消息，同 missing 的既有口径）', async () => {
@@ -190,7 +190,7 @@ describe('R-F5 应有集：expected=0 的两种含义都不许显示 "N/0"', () 
     renderPage()
     const link = await screen.findByRole('link')
     expect(within(link).queryByText(/expected episodes/)).toBeNull()
-    expect(within(link).getByText(new RegExp(`${en.media_card_ondisk} 12`))).toBeInTheDocument()
+    expect(link.textContent).toContain(`${en.media_card_coverage} 12/12`)
   })
 
   it('电影（expected 恒 0）同样不显示"应有"那一段', async () => {
@@ -236,7 +236,7 @@ describe('🔴 「已配」与「自带」在卡片上分列', () => {
     })]))
     renderPage()
     const stats = await screen.findByTestId('media-card-stats')
-    expect(stats.querySelectorAll('.media-card-stat')).toHaveLength(3)
+    expect(stats.querySelectorAll('.media-card-stat')).toHaveLength(2)
   })
 
   it('🔴 embedded=0 → 「自带」那一段整段不在场（沉默即好消息，同 missing 的既有口径）', async () => {
