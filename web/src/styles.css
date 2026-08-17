@@ -1800,6 +1800,17 @@
   min-height: 46px;
 }
 
+/* 通知英雄：复用在跑卡 mask。当天满高；更早的天收一档（~96px）。 */
+.notif-row.wb-run-card {
+  display: block;
+  padding: 0;
+  height: var(--card-run-h);
+}
+.notif-row.wb-run-card.notif-hero-compact {
+  height: 96px;
+}
+.wb-hero-bleed { /* 与 .wb-run-card 同出血；类名给测试/调用方复用 */ }
+
 /* ---- 「有新字幕 · 点击刷新」提示条 ----
    🔴 这条是 SSE 在通知页上**唯一**被允许产生的可见效果（设计文档 §3.4）。
    它**不是** Banner 组件的一个变体：Banner 的三档 status（warning/error/success）

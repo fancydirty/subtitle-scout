@@ -1,6 +1,8 @@
 // web/src/shell/AppShell.tsx：外壳——Sidebar + Topbar + 四个页面分支。
 // 顶栏只显示当前页；技术读数、⌘K 面板与 workflow/pending 轮询已删除。
-import { useMediaLibraryDetail } from '../api/hooks.js'
+import { useEffect, useRef } from 'react'
+import { useMediaLibraryDetail, useHealth } from '../api/hooks.js'
+import { shouldReloadMedia } from '../api/reloadOnPresence.js'
 import { useShellRoute } from './route.js'
 import { Sidebar } from './Sidebar.js'
 import { Topbar } from './Topbar.js'
@@ -23,6 +25,13 @@ export function Shell() {
   // 它**只喂给页面本体**，不喂 Topbar：新导航的面包屑只有一级（TABS 里的 tab 名），
   // 媒体库详情页自己在页头画了返回链接与作品名。给 Topbar 加二级面包屑是独立的产品动作。
   const mediaDetail = useMediaLibraryDetail(route.mediaWorkId ?? null)
+  const { data: health } = useHealth()
+  const prevCurrent = useRef(health?.current ?? null)
+  useEffect(() => {
+    const next = health?.current ?? null
+    if (shouldReloadMedia(prevCurrent.current, next, 0, 0)) mediaDetail.reload()
+    prevCurrent.current = next
+  }, [health?.current, mediaDetail.reload])
 
   return (
     // Task ⑦：EventsProvider 包在最外——四层 SSE Context（activity/found/health/progress）
@@ -72,9 +81,8 @@ export function Shell() {
             {route.tab === 'activity' && (
               <PageBoundary name="activity"><ActivityPage /></PageBoundary>
             )}
-            {/* Task ⑩：通知页。一周流水、倒序、不做已读；SSE `found` 只点亮页内的
-                「有新字幕 · 点击刷新」提示，列表永远只由 GET /api/v2/notifications 出
-                （设计文档 §3.4 的分工，论证在页面头注释）。
+            {/* Task ⑩：通知页。一周流水、倒序、不做已读；SSE `found` 触发再 GET，
+                列表永远只由 GET /api/v2/notifications 出。
                 ⚠️ 这一页**没有二级路由**（不像 media 那样有 :workId），所以这里是
                 一条光杆分支——route.ts 也刻意不给它加任何段解析。 */}
             {route.tab === 'notifications' && (

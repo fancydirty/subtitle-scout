@@ -99,6 +99,48 @@ describe('notificationsRepo（R-F3 通知页的持久化数据源）', () => {
     })
   })
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // 读时 LEFT JOIN works：中文名 + backdrop。不改写入快照 title。
+  // ══════════════════════════════════════════════════════════════════════════
+  describe('chineseTitle / backdropPath：读时 JOIN，不改 snapshot title', () => {
+    const addWorkArt = (
+      id: string,
+      art: { chineseTitles?: string[] | null; backdropPath?: string | null; type?: string },
+    ) =>
+      db.prepare(
+        `INSERT INTO works (id, title, media_type, chinese_titles, backdrop_path, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?)`,
+      ).run(
+        id, 'W', art.type ?? 'tv',
+        art.chineseTitles == null ? null : JSON.stringify(art.chineseTitles),
+        art.backdropPath ?? null, 1000, 1000,
+      )
+
+    it('list/grouped 行带上 works 的中文名与 backdrop；title 仍是写入快照', () => {
+      addWorkArt('tmdb:1', { chineseTitles: ['黑暗智宅'], backdropPath: '/bd.jpg' })
+      recordFound(db, { workId: 'tmdb:1', title: 'Cassandra', season: 1, episode: 1, via: 'fetch' }, 1000)
+      const [row] = listRecentFound(db, 1000)
+      expect(row.title).toBe('Cassandra')
+      expect(row.chineseTitle).toBe('黑暗智宅')
+      expect(row.backdropPath).toBe('/bd.jpg')
+      const [g] = listRecentFoundGrouped(db, 1000)
+      expect(g.title).toBe('Cassandra')
+      expect(g.chineseTitle).toBe('黑暗智宅')
+      expect(g.backdropPath).toBe('/bd.jpg')
+    })
+
+    it('works 行不在 → 两个字段都是 null，通知照样返回（必须 LEFT JOIN）', () => {
+      recordFound(db, { workId: 'tmdb:gone', title: 'Orphan', season: 1, episode: 1, via: 'fetch' }, 1000)
+      const rows = listRecentFound(db, 1000)
+      expect(rows).toHaveLength(1)
+      expect(rows[0]!.title).toBe('Orphan')
+      expect(rows[0]!.chineseTitle).toBeNull()
+      expect(rows[0]!.backdropPath).toBeNull()
+      const [g] = listRecentFoundGrouped(db, 1000)
+      expect(g).toMatchObject({ title: 'Orphan', chineseTitle: null, backdropPath: null })
+    })
+  })
+
   // ── 幂等 ────────────────────────────────────────────────────────────────────
 
   // 为什么"同一集重复装盘不产生重复通知"是**对的**、而不是该产生两条：

@@ -24,12 +24,14 @@
 // （--color-card / --color-border / --color-secondary），**不是** DESIGN.md 写的
 // surface-1 / hairline —— 后者在本仓 grep 零命中，写 `var(--color-surface-1, transparent)`
 // 会静默 fallback 成透明（Task ⑦ 的实施者踩过并在 PlaceholderPage 头注释里记了这条）。
+import { useEffect, useRef } from 'react'
 import { Section } from '../components/ui/section.js'
 import { Skeleton } from '../components/ui/skeleton.js'
 import { EmptyState } from '../components/ui/empty-state.js'
 import { Button } from '../components/ui/button.js'
 import { AspectRatio } from '../components/ui/aspect-ratio.js'
 import { useMediaLibrary, useHealth } from '../api/hooks.js'
+import { shouldReloadMedia } from '../api/reloadOnPresence.js'
 import { useT } from '../i18n/useT.js'
 import { localizeError } from '../lib/errorText.js'
 import { mediaItemHref } from '../shell/route.js'
@@ -177,15 +179,13 @@ function LoadingGrid() {
 
 export function MediaLibraryPage() {
   const { data, loading, error, reload } = useMediaLibrary()
-  // 🔴 守备目录健康度（终局审计 🔴-1）。**这一页也要有**，理由不是"两处都放稳妥些"：
-  // 这一页画的**就是那些目录里的东西**。一个根读不到时，R8 三道闸会跳过该根的删除清理
-  // （daemonV2.ts:1380，"一次删光该根全库"是本项目最严重的可能故障），于是海报墙上
-  // 那些卡片**照常在场、数字照常是上一轮的**——页面看上去完全正常。用户在这一页问的
-  // 「我的库是不是有问题」，答案恰恰只在这条提示里。
-  //
-  // ⚠️ 只多一个 GET /api/v2/health（useHealth 不轮询，见其头注释），不引入 SSE：
-  // 媒体库页是纯 HTTP 快照，没有活数据，加 SSE 是硬造需求（见页面头注释）。
   const { data: health } = useHealth()
+  const prevCurrent = useRef(health?.current ?? null)
+  useEffect(() => {
+    const next = health?.current ?? null
+    if (shouldReloadMedia(prevCurrent.current, next, 0, 0)) reload()
+    prevCurrent.current = next
+  }, [health?.current, reload])
   const { t, lang } = useT()
 
   if (loading && !data) {

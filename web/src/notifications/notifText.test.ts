@@ -13,7 +13,8 @@ import {
 import type { FoundGroupDTO } from '../api/types.js'
 
 const g = (over: Partial<FoundGroupDTO> = {}): FoundGroupDTO => ({
-  workId: 'tmdb:1', title: 'W', season: 1, episodes: [1], latestAt: 0, via: 'fetch', mediaType: 'tv', ...over,
+  workId: 'tmdb:1', title: 'W', season: 1, episodes: [1], latestAt: 0, via: 'fetch', mediaType: 'tv',
+  chineseTitle: null, backdropPath: null, ...over,
 })
 
 // 固定一个本地时刻做基准：2026-08-12 14:30 本地。用 Date 构造器（本地时区）而不是

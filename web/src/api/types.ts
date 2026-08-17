@@ -611,6 +611,10 @@ export interface FoundGroupDTO {
    *  「已找到字幕」的电影行。'unknown' = works 行已删，我们**确实不知道**，
    *  渲染层必须走一条不声称任何一边的话（绝不 `?? 'movie'`）。 */
   mediaType: 'tv' | 'movie' | 'unknown'
+  /** 读时 LEFT JOIN works.chinese_titles 首个非空译名。无则 null。不改 snapshot title。 */
+  chineseTitle: string | null
+  /** 读时 LEFT JOIN works.backdrop_path。无则 null。 */
+  backdropPath: string | null
 }
 
 // ── Task ⑨ 活动页（#/activity）：GET /api/v2/activity ────────────────────────

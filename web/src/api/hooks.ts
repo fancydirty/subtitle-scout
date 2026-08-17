@@ -2,6 +2,7 @@
 // visibilitychange 时暂停轮询（省流、后台不空转）。
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './client.js'
+import { useReloadOnFound } from './reloadOnPresence.js'
 import type {
   RunHistoryDTO,
   WorkflowPassDTO, RunTraceDTO,
@@ -580,14 +581,15 @@ export function useHealth(): Async<HealthDTO> {
  *  重打一次全库聚合（buildMediaLibrary 是三条全表查询 + 逐格聚合）只是在给自己制造负载，
  *  用户也看不出任何差别。故：首载一次 + 暴露 reload()。同 useTriage/useSettings 的既有先例。
  *
- *  谁触发 reload：错误态那个「重试」按钮（MediaLibraryPage）。这是本 hook 今天**唯一**的
- *  reload 调用点，如实记在这里（本仓的病 A 是"加了能力却没定谁触发"）。 */
+ *  谁触发 reload：错误态那个「重试」按钮（MediaLibraryPage）；SSE `found`（基线之后）；
+ *  `health.current` 从有变无（MediaLibraryPage 调 shouldReloadMedia）。不定时轮询。 */
 export function useMediaLibrary(): Async<MediaLibraryItemDTO[]> {
   const [data, setData] = useState<MediaLibraryItemDTO[] | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [nonce, setNonce] = useState(0)
   const reload = useCallback(() => setNonce((n) => n + 1), [])
+  useReloadOnFound(reload)
 
   useEffect(() => {
     const ctrl = new AbortController()
@@ -611,13 +613,14 @@ export function useMediaLibrary(): Async<MediaLibraryItemDTO[]> {
 /** Task ⑧：媒体库详情（季集网格）。workId 为 null（不在 #/media/:workId 二级路由上）时
  *  **完全不发请求**——Shell 在每次渲染都会调用这个 hook，null 也照打的话另外三个 tab
  *  会白白 404 一次（同 useLibrarySeriesDetail 的既有降级口径，一字不差）。
- *  一次性、不轮询：同 useMediaLibrary 的理由，详情更不需要。 */
+ *  一次性、不轮询：同 useMediaLibrary 的理由，详情更不需要。found 到达（基线之后）再拉一次。 */
 export function useMediaLibraryDetail(workId: string | null): Async<MediaLibraryDetailDTO> {
   const [data, setData] = useState<MediaLibraryDetailDTO | null>(null)
   const [loading, setLoading] = useState(workId != null)
   const [error, setError] = useState<string | null>(null)
   const [nonce, setNonce] = useState(0)
   const reload = useCallback(() => setNonce((n) => n + 1), [])
+  useReloadOnFound(reload)
 
   useEffect(() => {
     if (workId == null) {
@@ -651,16 +654,17 @@ export function useMediaLibraryDetail(workId: string | null): Async<MediaLibrary
  *  `recordFound` 是幂等刷新（同一组 ON CONFLICT DO UPDATE 而非 INSERT），而 SSE 每次装盘
  *  都发一条——**两边的条目数天然不等**。拿 SSE 事件往列表里插，那个差值就会以重复条目的
  *  形态摆在用户眼前（同一部剧在流水里出现两次，一条来自端点、一条来自事件）。
- *  SSE 在通知页的**唯一**职责是点亮「有新字幕 · 点击刷新」那条提示（见 NotificationsPage）。
+ *  SSE 在通知页的职责是 **found → 再 GET**（见 useReloadOnFound）。事件对象不进列表。
  *
  *  ── 为什么**不轮询**（同 useMediaLibrary/useHealth 的既有理由）────────────────
- *  这一页有 SSE：新成果到达的那一刻 found 事件就到了，提示条立刻亮起。在一条已经好好连着
+ *  这一页有 SSE：新成果到达的那一刻 found 事件就到了，立刻再拉账本。在一条已经好好连着
  *  的 SSE 旁边再挂 15 秒定时器，正是 R-F6「用 SSE 不用轮询」要消灭的东西。
  *
- *  谁触发 reload（本仓的病 A 是"加了能力却没定谁触发"，故如实登记**三个**调用点）：
- *   ① 提示条上的「刷新」按钮（收到 found 事件后才出现）；
+ *  谁触发 reload（本仓的病 A 是"加了能力却没定谁触发"，故如实登记）：
+ *   ① found 事件（基线之后，本 hook 内）；
  *   ② 错误态的「重试」按钮；
- *   ③ SSE 从非 open 恢复到 open 时的那一次补拉——断线期间的 found 事件全部丢失
+ *   ③ LiveOffBanner 的手动重拉；
+ *   ④ SSE 从非 open 恢复到 open 时的那一次补拉——断线期间的 found 事件全部丢失
  *      （eventsBus 的续传只补后端环形缓冲里还在的，且它"不是账目"），不补拉的话
  *      用户会盯着一个永远不更新也永远不提示的列表。 */
 export function useNotifications(): Async<FoundGroupDTO[]> {
@@ -669,6 +673,7 @@ export function useNotifications(): Async<FoundGroupDTO[]> {
   const [error, setError] = useState<string | null>(null)
   const [nonce, setNonce] = useState(0)
   const reload = useCallback(() => setNonce((n) => n + 1), [])
+  useReloadOnFound(reload)
 
   useEffect(() => {
     const ctrl = new AbortController()

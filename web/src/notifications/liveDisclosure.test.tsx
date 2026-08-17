@@ -55,7 +55,7 @@ class FakeES {
 const NOW = Date.now()
 const ROWS: FoundGroupDTO[] = [
   { workId: 'tmdb:1396', title: 'Breaking Bad', season: 1, episodes: [3],
-    latestAt: NOW - 3600_000, via: 'fetch', mediaType: 'tv' },
+    latestAt: NOW - 3600_000, via: 'fetch', mediaType: 'tv', chineseTitle: null, backdropPath: null },
 ]
 
 /** 503 探测的响应——eventsBus 在 onerror 后会打一次 /api/v2/events 判是不是终态。 */
@@ -140,20 +140,23 @@ describe('🟡 通知页披露"实时更新没有开着"（终局审计 🟡-2�
   })
 })
 
-describe('🟡 这条与"有新字幕"提示条的关系', () => {
-  it('🔴 两条**可以同时在场**（断线前收到过事件、随后通道掉了——两句都是真的）', async () => {
+describe('🟡 这条与 found 自动重拉的关系', () => {
+  it('found 触发再 GET，掉线披露仍在；不再出现点击刷新横幅', async () => {
     probeStatus = 503
     renderPage()
     await screen.findByText('Breaking Bad')
-    // 真实路径：open → 收一条 found（点亮"有新字幕"）→ 通道掉线（点亮"听不见了"）。
+    const f = globalThis.fetch as unknown as { mock: { calls: unknown[][] } }
+    const before = f.mock.calls.filter((c) => String(c[0]).includes('/api/v2/notifications')).length
     act(() => { bus().open() })
     act(() => { bus().emitFound('Some Show') })
-    await screen.findByTestId('notif-new-banner')
+    await waitFor(() => {
+      const after = f.mock.calls.filter((c) => String(c[0]).includes('/api/v2/notifications')).length
+      expect(after).toBeGreaterThan(before)
+    })
     act(() => { bus().fail() })
     await screen.findByTestId('notif-live-banner')
-    // 两条都在——藏起任何一条都是少说一句真话。
-    expect(screen.getByTestId('notif-new-banner')).toBeInTheDocument()
-    expect(screen.getByTestId('notif-live-banner')).toBeInTheDocument()
+    expect(screen.queryByTestId('notif-new-banner')).toBeNull()
+    expect(screen.queryByText(en.notif_new_found)).toBeNull()
   })
 
   it('空态下也出（"这周没找到"与"我没听见"是两件事）', async () => {

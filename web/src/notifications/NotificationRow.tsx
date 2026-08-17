@@ -37,9 +37,13 @@
 // hairline 在本仓 grep 零命中，写 `var(--color-surface-1, transparent)` 会静默 fallback
 // 成透明（Task ⑦ 的实施者踩过并记在 PlaceholderPage 头注释里）。
 import type { FoundGroupDTO } from '../api/types.js'
+import { backdropUrl } from '../api/client.js'
 import { useT } from '../i18n/useT.js'
 import { mediaItemHref } from '../shell/route.js'
+import { displayTitle } from '../workbench/displayTitle.js'
+import { buttonVariants } from '../components/ui/button.js'
 import { formatClock, formatEpisodes } from './notifText.js'
+import { useState } from 'react'
 
 /** via → 文案键。**穷尽 Record**：后端将来加第四种来路时 tsc 立刻红
  *  （写成 if/else 链的话新来路会静默渲染成空白）。 */
@@ -71,38 +75,41 @@ export function notifShape(group: Pick<FoundGroupDTO, 'season' | 'mediaType'>): 
   return group.season === null ? 'tv-unplaced' : 'season'
 }
 
-export function NotificationRow({ group }: { group: FoundGroupDTO }) {
-  const { t } = useT()
+export function NotificationRow({ group, compact = false }: { group: FoundGroupDTO; compact?: boolean }) {
+  const { t, lang } = useT()
   const shape = notifShape(group)
   const episodes = formatEpisodes(group.episodes)
+  const title = displayTitle(lang, group.title, group.chineseTitle ?? null)
+  const url = backdropUrl(group.backdropPath ?? null)
+  const [failed, setFailed] = useState(false)
+  const noimg = !url || failed
 
   return (
-    // 整条可点，落到媒体库详情页——「找到了字幕」之后用户唯一想做的下一件事就是
-    // 去看那部剧现在是什么样。**不做已读状态**（R-F3），所以点击不改变这一条的任何外观。
     <a
-      className="notif-row"
+      className={`notif-row wb-run-card wb-hero-bleed${compact ? ' notif-hero-compact' : ''}`}
       href={mediaItemHref(group.workId)}
       data-via={group.via}
       data-shape={shape}
-      aria-label={group.title}
+      data-noimg={noimg ? 'true' : 'false'}
+      aria-label={title}
     >
-      <div className="min-w-0 flex-1">
+      {!noimg && (
+        <img className="wb-run-img" src={url} alt="" loading="lazy" onError={() => setFailed(true)} />
+      )}
+      {noimg ? <div className="wb-run-fade" /> : null}
+      <div className="wb-run-body">
         <div className="truncate text-[13px] font-medium leading-5 text-foreground">
-          {group.title}
+          {title}
         </div>
         <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[11px] leading-4 text-muted-foreground">
           {shape === 'movie' ? (
             <span>{t('notif_movie_found')}</span>
           ) : shape === 'unknown' ? (
-            // 作品身份查不到：只说确实发生过的那件事。**不提季、不提集、不说类型。**
             <span data-testid="notif-unknown">{t('notif_found_generic')}</span>
           ) : shape === 'tv-unplaced' ? (
-            // 剧集但季没解析出来。用户能做的与 UnidentifiedNote 同类（去改文件名），
-            // 故这里如实说"没能归入季集"，而不是 "S null"、也不是"已找到字幕"（电影语）。
             <span data-testid="notif-unplaced">{t('notif_season_unplaced')}</span>
           ) : (
             <>
-              {/* 季号补零成 S01——与媒体库页/文件命名的既有排印一致。 */}
               <span>S{String(group.season).padStart(2, '0')}</span>
               {episodes !== '' && (
                 <span>
@@ -115,10 +122,11 @@ export function NotificationRow({ group }: { group: FoundGroupDTO }) {
           <span className="text-faint">·</span>
           <span>{t(VIA_LABEL[group.via])}</span>
         </div>
+        <span className={buttonVariants({ variant: 'ghost', size: 'sm' })}>
+          {t('notif_open_library')}
+        </span>
       </div>
-      {/* 时刻读数：mono、右对齐、不翻译（同 shell/freshness.ts 的既有口径）。
-          日期在段落标题上，这里只给 HH:MM——每行重复一遍日期是噪音。 */}
-      <span className="shrink-0 font-mono text-[11px] leading-4 text-weak tabular-nums">
+      <span className="pointer-events-none absolute right-3 top-3 shrink-0 font-mono text-[11px] leading-4 text-weak tabular-nums">
         {formatClock(group.latestAt)}
       </span>
     </a>

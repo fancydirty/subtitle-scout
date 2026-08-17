@@ -10,9 +10,13 @@
 //  ② workId=null 时**一个请求都不发**（Shell 每次渲染都调这个 hook，null 也照打的话
 //     另外三个 tab 各白白 404 一次）；
 //  ③ **不轮询**（挂个 15s 定时器不会有任何测试变红，但它是真实的持续负载）。
-import { describe, it, expect, afterEach, vi } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import { renderHook, waitFor, cleanup, act } from '@testing-library/react'
+import type { ReactNode } from 'react'
 import { useMediaLibrary, useMediaLibraryDetail } from '../api/hooks.js'
+import { EventsProvider } from '../events/EventsProvider.js'
+import { __resetEventsBusForTests } from '../events/eventsBus.js'
+import type { ScoutEvent } from '../events/types.js'
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers() })
 
@@ -129,5 +133,77 @@ describe('useMediaLibraryDetail', () => {
     const after = urls.length
     await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
     expect(urls.length).toBe(after)
+  })
+})
+
+/** 假 EventSource——同 notifications/sseSeparation.test.tsx。 */
+class FakeES {
+  static instances: FakeES[] = []
+  onopen: (() => void) | null = null
+  onerror: (() => void) | null = null
+  readyState = 0
+  private listeners = new Map<string, ((e: { data: string }) => void)[]>()
+  constructor(public url: string) { FakeES.instances.push(this) }
+  addEventListener(type: string, fn: (e: { data: string }) => void) {
+    const arr = this.listeners.get(type) ?? []
+    arr.push(fn)
+    this.listeners.set(type, arr)
+  }
+  removeEventListener() {}
+  close() { this.readyState = 2 }
+  emit(e: ScoutEvent) {
+    for (const fn of this.listeners.get(e.type) ?? []) fn({ data: JSON.stringify(e) })
+  }
+  open() { this.readyState = 1; this.onopen?.() }
+}
+
+function EventsWrap({ children }: { children: ReactNode }) {
+  return <EventsProvider>{children}</EventsProvider>
+}
+
+describe('found 事件后重拉（不轮询、不另开 SSE）', () => {
+  beforeEach(() => {
+    FakeES.instances = []
+    __resetEventsBusForTests()
+    vi.stubGlobal('EventSource', FakeES as unknown as typeof EventSource)
+  })
+  afterEach(() => { __resetEventsBusForTests() })
+
+  let seq = 0
+  const foundEvent = (): ScoutEvent => ({
+    id: ++seq, at: Date.now(), type: 'found',
+    message: 'Phantom：装上了 2 条字幕', title: 'Phantom',
+    workbench: 'subtitle', data: { installed: 2 },
+  })
+
+  it('found 事件后 useMediaLibrary 再请求一次', async () => {
+    seq = 0
+    const { urls } = probe([])
+    const { result } = renderHook(() => useMediaLibrary(), { wrapper: EventsWrap })
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    await waitFor(() => expect(FakeES.instances.length).toBeGreaterThan(0))
+    const before = urls.filter((u) => u.includes('/api/v2/mediaLibrary')).length
+    expect(before).toBeGreaterThanOrEqual(1)
+    act(() => {
+      FakeES.instances[0]!.open()
+      FakeES.instances[0]!.emit(foundEvent())
+    })
+    await waitFor(() =>
+      expect(urls.filter((u) => u.includes('/api/v2/mediaLibrary')).length).toBeGreaterThan(before),
+    )
+  })
+
+  it('found 事件后 useMediaLibraryDetail 再请求一次', async () => {
+    seq = 0
+    const { urls } = probe({ work: {} })
+    const { result } = renderHook(() => useMediaLibraryDetail('tmdb:1'), { wrapper: EventsWrap })
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    await waitFor(() => expect(FakeES.instances.length).toBeGreaterThan(0))
+    const before = urls.length
+    act(() => {
+      FakeES.instances[0]!.open()
+      FakeES.instances[0]!.emit(foundEvent())
+    })
+    await waitFor(() => expect(urls.length).toBeGreaterThan(before))
   })
 })

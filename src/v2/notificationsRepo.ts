@@ -57,6 +57,20 @@ export interface FoundRow extends FoundInput {
    *  目录，而通知还在一周窗内）。此时我们**确实不知道**它是电影还是剧集——
    *  渲染层必须走一条不声称任何一边的路，绝不许 `?? 'movie'`。 */
   mediaType: 'tv' | 'movie' | 'unknown'
+  chineseTitle: string | null
+  backdropPath: string | null
+}
+
+/** `works.chinese_titles` 是 JSON 数组；取首个作为展示名。坏 JSON / 空数组 / NULL → null。
+ *  与 activityApi 的同名私有函数逐字同形但不共享（那边是活动页的私有实现）。 */
+function firstChineseTitle(raw: string | null): string | null {
+  if (raw == null) return null
+  try {
+    const arr: unknown = JSON.parse(raw)
+    return Array.isArray(arr) && typeof arr[0] === 'string' && arr[0] !== '' ? arr[0] : null
+  } catch {
+    return null
+  }
 }
 
 /** 按作品+季聚合的一条通知——**这是前端真正要渲染的形状**
@@ -79,6 +93,9 @@ export interface FoundGroup {
    *  那个判据在本表里是二义的（真电影 / 剧集但季没解析出来），生产上正把剧集渲染成
    *  「已找到字幕」的电影行。完整论证见 FoundRow.mediaType。 */
   mediaType: 'tv' | 'movie' | 'unknown'
+  /** 读时 JOIN，同 FoundRow。**不**改写入快照 title。 */
+  chineseTitle: string | null
+  backdropPath: string | null
 }
 
 /**
@@ -116,23 +133,37 @@ export function recordFound(db: ScoutDb, input: FoundInput, now: number): void {
 /** 倒序流水（R-F3），一周窗内。`now` 可注入——同本仓 deps.now() 的既有口径。
  *  读失败返回空数组而不抛错：通知页挂掉不许把整个 dashboard 带走。
  *
- *  🔴 LEFT JOIN works 只为 `media_type`（见 FoundRow.mediaType）。**必须 LEFT**：
+ *  🔴 LEFT JOIN works 只为 `media_type` / 中文名 / backdrop（见 FoundRow）。**必须 LEFT**：
  *  INNER 会让"作品行已被删、通知还在一周窗内"的成果**整条消失**——用户前天确实收到了
- *  那条字幕，把它抹掉比说不清它是电影还是剧集更糟。查不到 → 'unknown' 三态。 */
+ *  那条字幕，把它抹掉比说不清它是电影还是剧集更糟。查不到 → 'unknown' 三态，中文名与
+ *  图都是 null。 */
 export function listRecentFound(db: ScoutDb, now: number): FoundRow[] {
   try {
     const rows = db.prepare(
       `SELECT n.work_id AS workId, n.title, n.season, n.episode, n.via,
-              n.found_at AS foundAt, w.media_type AS mediaType
+              n.found_at AS foundAt, w.media_type AS mediaType,
+              w.chinese_titles AS chineseTitlesRaw, w.backdrop_path AS backdropPath
          FROM notifications n LEFT JOIN works w ON w.id = n.work_id
         WHERE n.found_at > ?
         ORDER BY n.found_at DESC, n.id DESC`,
-    ).all(now - NOTIFICATION_RETENTION_MS) as Array<Omit<FoundRow, 'mediaType'> & { mediaType: string | null }>
+    ).all(now - NOTIFICATION_RETENTION_MS) as Array<
+      Omit<FoundRow, 'mediaType' | 'chineseTitle'> & {
+        mediaType: string | null
+        chineseTitlesRaw: string | null
+      }
+    >
     // 三态收敛在**一处**：SQL 给的是原始列（可能是 NULL / 未来新增的第三种值），
     // 收敛判据只有这一行，渲染层与聚合层都不再各判一次。
     return rows.map((r) => ({
-      ...r,
+      workId: r.workId,
+      title: r.title,
+      season: r.season,
+      episode: r.episode,
+      via: r.via,
+      foundAt: r.foundAt,
       mediaType: r.mediaType === 'movie' ? 'movie' : r.mediaType === 'tv' ? 'tv' : 'unknown',
+      chineseTitle: firstChineseTitle(r.chineseTitlesRaw),
+      backdropPath: r.backdropPath ?? null,
     }))
   } catch {
     return []
@@ -163,6 +194,7 @@ export function listRecentFoundGrouped(db: ScoutDb, now: number): FoundGroup[] {
       g = {
         workId: r.workId, title: r.title, season: r.season, episodes: [],
         latestAt: r.foundAt, via: r.via, mediaType: r.mediaType,
+        chineseTitle: r.chineseTitle, backdropPath: r.backdropPath,
       }
       byKey.set(key, g)
     }

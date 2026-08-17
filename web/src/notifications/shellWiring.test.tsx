@@ -38,7 +38,7 @@ class FakeES {
 const NOW = Date.now()
 const ROWS: FoundGroupDTO[] = [
   { workId: 'tmdb:1396', title: 'Breaking Bad', season: 1, episodes: [3, 5, 7],
-    latestAt: NOW - 3600_000, via: 'fetch', mediaType: 'tv' },
+    latestAt: NOW - 3600_000, via: 'fetch', mediaType: 'tv', chineseTitle: null, backdropPath: null },
 ]
 
 let urls: string[] = []
