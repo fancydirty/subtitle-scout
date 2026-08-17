@@ -2,7 +2,7 @@
 // visibilitychange 时暂停轮询（省流、后台不空转）。
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './client.js'
-import { useReloadOnFound } from './reloadOnPresence.js'
+import { useReloadOnFound, useReloadWhenCurrentClears } from './reloadOnPresence.js'
 import type {
   RunHistoryDTO,
   WorkflowPassDTO, RunTraceDTO,
@@ -582,7 +582,7 @@ export function useHealth(): Async<HealthDTO> {
  *  用户也看不出任何差别。故：首载一次 + 暴露 reload()。同 useTriage/useSettings 的既有先例。
  *
  *  谁触发 reload：错误态那个「重试」按钮（MediaLibraryPage）；SSE `found`（基线之后）；
- *  `health.current` 从有变无（MediaLibraryPage 调 shouldReloadMedia）。不定时轮询。 */
+ *  SSE live current 从有变无（巡检完成 / 工作台跑完）。不定时轮询。不看冻结的 health GET。 */
 export function useMediaLibrary(): Async<MediaLibraryItemDTO[]> {
   const [data, setData] = useState<MediaLibraryItemDTO[] | null>(null)
   const [loading, setLoading] = useState(true)
@@ -590,6 +590,7 @@ export function useMediaLibrary(): Async<MediaLibraryItemDTO[]> {
   const [nonce, setNonce] = useState(0)
   const reload = useCallback(() => setNonce((n) => n + 1), [])
   useReloadOnFound(reload)
+  useReloadWhenCurrentClears(reload)
 
   useEffect(() => {
     const ctrl = new AbortController()
@@ -613,7 +614,8 @@ export function useMediaLibrary(): Async<MediaLibraryItemDTO[]> {
 /** Task ⑧：媒体库详情（季集网格）。workId 为 null（不在 #/media/:workId 二级路由上）时
  *  **完全不发请求**——Shell 在每次渲染都会调用这个 hook，null 也照打的话另外三个 tab
  *  会白白 404 一次（同 useLibrarySeriesDetail 的既有降级口径，一字不差）。
- *  一次性、不轮询：同 useMediaLibrary 的理由，详情更不需要。found 到达（基线之后）再拉一次。 */
+ *  一次性、不轮询：同 useMediaLibrary 的理由，详情更不需要。found 到达（基线之后）再拉一次；
+ *  SSE live current 从有变无再拉一次。必须在 EventsProvider 内调用，否则 found 永远是 null。 */
 export function useMediaLibraryDetail(workId: string | null): Async<MediaLibraryDetailDTO> {
   const [data, setData] = useState<MediaLibraryDetailDTO | null>(null)
   const [loading, setLoading] = useState(workId != null)
@@ -621,6 +623,7 @@ export function useMediaLibraryDetail(workId: string | null): Async<MediaLibrary
   const [nonce, setNonce] = useState(0)
   const reload = useCallback(() => setNonce((n) => n + 1), [])
   useReloadOnFound(reload)
+  useReloadWhenCurrentClears(reload)
 
   useEffect(() => {
     if (workId == null) {

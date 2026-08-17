@@ -207,3 +207,95 @@ describe('found 事件后重拉（不轮询、不另开 SSE）', () => {
     await waitFor(() => expect(urls.length).toBeGreaterThan(before))
   })
 })
+
+describe('SSE current 从有变无后再拉（不看冻结的 health GET）', () => {
+  beforeEach(() => {
+    FakeES.instances = []
+    __resetEventsBusForTests()
+    vi.stubGlobal('EventSource', FakeES as unknown as typeof EventSource)
+  })
+  afterEach(() => { __resetEventsBusForTests() })
+
+  let seq = 0
+  const activity = (over: Partial<ScoutEvent> = {}): ScoutEvent => ({
+    id: ++seq, at: Date.now(), type: 'activity', message: 'm', ...over,
+  })
+
+  it('workbench activity 之后再发无 workbench 的巡检 → useMediaLibrary 再请求一次', async () => {
+    seq = 0
+    const { urls } = probe([])
+    const { result } = renderHook(() => useMediaLibrary(), { wrapper: EventsWrap })
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    await waitFor(() => expect(FakeES.instances.length).toBeGreaterThan(0))
+    const libraryGets = () => urls.filter((u) => {
+      const path = u.split('?')[0] ?? ''
+      return /\/api\/v2\/mediaLibrary$/.test(path)
+    }).length
+    const before = libraryGets()
+    expect(before).toBeGreaterThanOrEqual(1)
+    act(() => {
+      FakeES.instances[0]!.open()
+      FakeES.instances[0]!.emit(activity({ workbench: 'subtitle', message: '正在找字幕：A', title: 'A' }))
+    })
+    act(() => {
+      FakeES.instances[0]!.emit(activity({ message: '巡检完成' }))
+    })
+    await waitFor(() => expect(libraryGets()).toBeGreaterThan(before))
+  })
+
+  it('workbench activity 之后再发无 workbench 的巡检 → useMediaLibraryDetail 再请求一次', async () => {
+    seq = 0
+    const { urls } = probe({ work: {} })
+    const { result } = renderHook(() => useMediaLibraryDetail('tmdb:1'), { wrapper: EventsWrap })
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    await waitFor(() => expect(FakeES.instances.length).toBeGreaterThan(0))
+    const detailGets = () => urls.filter((u) => u.includes('/api/v2/mediaLibrary/')).length
+    const before = detailGets()
+    expect(before).toBeGreaterThanOrEqual(1)
+    act(() => {
+      FakeES.instances[0]!.open()
+      FakeES.instances[0]!.emit(activity({ workbench: 'subtitle', message: '正在找字幕：A', title: 'A' }))
+    })
+    act(() => {
+      FakeES.instances[0]!.emit(activity({ message: '巡检完成' }))
+    })
+    await waitFor(() => expect(detailGets()).toBeGreaterThan(before))
+  })
+
+  it('progress 带 workbench 之后再发巡检 activity → useMediaLibrary 再请求一次', async () => {
+    seq = 0
+    const { urls } = probe([])
+    const { result } = renderHook(() => useMediaLibrary(), { wrapper: EventsWrap })
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    await waitFor(() => expect(FakeES.instances.length).toBeGreaterThan(0))
+    const libraryGets = () => urls.filter((u) => /\/api\/v2\/mediaLibrary$/.test(u.split('?')[0] ?? '')).length
+    const before = libraryGets()
+    act(() => {
+      FakeES.instances[0]!.open()
+      FakeES.instances[0]!.emit({
+        id: ++seq, at: Date.now(), type: 'progress',
+        message: 'p', workbench: 'subtitle', data: { done: 1, total: 6 },
+      })
+    })
+    act(() => {
+      FakeES.instances[0]!.emit(activity({ message: '巡检完成' }))
+    })
+    await waitFor(() => expect(libraryGets()).toBeGreaterThan(before))
+  })
+
+  it('全程巡检（从未有 current）不重拉', async () => {
+    seq = 0
+    const { urls } = probe([])
+    const { result } = renderHook(() => useMediaLibrary(), { wrapper: EventsWrap })
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    await waitFor(() => expect(FakeES.instances.length).toBeGreaterThan(0))
+    const before = urls.filter((u) => /\/api\/v2\/mediaLibrary$/.test(u.split('?')[0] ?? '')).length
+    act(() => {
+      FakeES.instances[0]!.open()
+      FakeES.instances[0]!.emit(activity({ message: '巡检完成' }))
+    })
+    await act(async () => { await Promise.resolve() })
+    expect(urls.filter((u) => /\/api\/v2\/mediaLibrary$/.test(u.split('?')[0] ?? '')).length).toBe(before)
+  })
+})
+
