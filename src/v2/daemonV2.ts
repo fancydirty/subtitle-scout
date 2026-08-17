@@ -547,6 +547,24 @@ export class ScoutDaemonV2 {
     }
   }
 
+  /** activity/progress 共用的作品身份。chineseTitle 取 chineseTitles 首个非空串。 */
+  private workFaceData(item: { workId: string; backdropPath?: string | null; chineseTitles?: string[] }): {
+    workId: string; backdropPath: string | null; chineseTitle: string | null
+  } {
+    const chineseTitle = item.chineseTitles?.find((s) => s !== '') ?? null
+    return { workId: item.workId, backdropPath: item.backdropPath ?? null, chineseTitle }
+  }
+
+  private workFaceFromDb(workId: string): { workId: string; backdropPath: string | null; chineseTitle: string | null } {
+    const row = this.deps.db.prepare('SELECT backdrop_path, chinese_titles FROM works WHERE id = ?')
+      .get(workId) as { backdrop_path: string | null; chinese_titles: string | null } | undefined
+    let titles: string[] = []
+    if (row?.chinese_titles) {
+      try { titles = JSON.parse(row.chinese_titles) as string[] } catch { titles = [] }
+    }
+    return this.workFaceData({ workId, backdropPath: row?.backdrop_path ?? null, chineseTitles: titles })
+  }
+
   async run(signal: AbortSignal): Promise<void> {
     // stopping 从入参 signal 现取，而不是沿用上一次 run 留下的 true。
     // 生产上 run() 只被调一次，这行看着多余——但少了它，"同一个实例 run 第二次"会静默地
@@ -911,30 +929,27 @@ export class ScoutDaemonV2 {
       this.deps.log(`字幕 ${item.title} (${item.files.length} 文件, 第 ${subtitleRounds}/${subtitleQueue.length} 个)`)
       // R-F10 activity ③ + progress：开始处理一个作品。
       //  · activity 说"现在在干什么"（作品级，一部剧一条）
-      //  · progress 说"排到第几个了"（队列级，24 集的剧在这里连发 → 唯一需要节流的事件源；
-      //    **节流是总线的职责，不是这里的**——发布方如实发，ScoutEventBus 折叠。两边都做
-      //    就会出现"节流窗口叠加"这种没人算得清的行为）。
+      //  · progress 的 done/total 是**本作品的文件 tick**（先 0/N，每成功 markInstalled +1），
+      //    不是字幕队列里的作品下标。一部剧 24 集、队列里就这一个作品时，发 1/1 会让
+      //    活动页「在跑」卡片看起来已经跑完，而文件还一个都没动。
+      const face = this.workFaceData(item)
+      const fileTotal = item.files.length
       this.emit({
         type: 'activity',
         message: `正在找字幕：${item.title}（${item.files.length} 个文件）`,
         title: item.title,
         workbench: 'subtitle',
-        // R-F13（Task ⑨）：活动页「在跑」卡片要一张横版 backdrop，而图片路径**不进事件通道**
-        // （静态资料随每条事件重复推是浪费，一部剧 24 条 progress 就重复 24 次）。给出 workId，
-        // 前端拿它去 /api/v2/activity 那份作品身份表里查图。
-        // 🔴 **必须是 workId 而不是让前端拿 title 去匹配**：同名作品（不同年份的翻拍）与
-        // 中文译名切换都会让字符串匹配静默错位——错位的表现是"卡片配了另一部剧的图"，
-        // 而那在测试里几乎照不出来。
-        data: { workId: item.workId },
+        // R-F13（Task ⑨）：活动页「在跑」卡片要一张横版 backdrop。workId 仍是主键；
+        // 图路径与中文标题现在一并带上（总线 ScoutCurrent 已经认这两个键），免得前端
+        // 再拿 title 去身份表里撞车。
+        data: { ...face },
       })
       this.emit({
         type: 'progress',
-        message: `第 ${subtitleRounds}/${subtitleQueue.length} 个作品`,
+        message: `0/${fileTotal} 个文件`,
         title: item.title,
         workbench: 'subtitle',
-        // done/total 是 ScoutEventBus.updateCurrent 读的两个键（它只认这两个名字）；
-        // workId 是给前端取图用的第三个键，对 updateCurrent 是惰性无关字段。
-        data: { done: subtitleRounds, total: subtitleQueue.length, workId: item.workId },
+        data: { done: 0, total: fileTotal, ...face },
       })
       // C34：把这个作品的 staging 沙盒目录名登记为"在飞行"，跑完（含抛错）必须摘掉。
       // 登记必须在**剔除之后**：整簇消失的作品若也登记一次，这个 jobId 就白白免疫一次 GC。
@@ -943,7 +958,18 @@ export class ScoutDaemonV2 {
       const jobId = subtitleJobId(item.workId)
       this.inFlightStagingJobIds.add(jobId)
       try {
-        const report = await runSubtitleWorkDir(this.deps.db, this.deps.subtitleWorker, item, this.deps.targetLanguage, this.deps.runs)
+        const report = await runSubtitleWorkDir(
+          this.deps.db, this.deps.subtitleWorker, item, this.deps.targetLanguage, this.deps.runs,
+          (done, total) => {
+            this.emit({
+              type: 'progress',
+              message: `${done}/${total} 个文件`,
+              title: item.title,
+              workbench: 'subtitle',
+              data: { done, total, ...face },
+            })
+          },
+        )
         // R-F10 found ①：**找到并装上了字幕**——这一条就是通知页的数据源，也是整条通道里
         // 用户唯一真正想要的那个信号（"找到了什么"）。
         //
@@ -963,6 +989,10 @@ export class ScoutDaemonV2 {
             workbench: 'subtitle',
             data: { installed: report.installed.length, files: item.files.length },
           })
+          // 装盘成功踢一脚扫描：新 sidecar 越早被扫到、covered 越早落库（R24 只有扫描有权写）。
+          // 与翻译轨 handleTranslateResult 装盘分支同型——漏了这一脚，覆盖会停在 pending，
+          // 活动页一直说"正在找"直到明天巡检的扫描阶段。
+          this.requestScan()
         }
       } catch (e) {
         // ── C13 计数单调的兜底（"finally 保证回写"这条路的实现）──
@@ -1263,6 +1293,7 @@ export class ScoutDaemonV2 {
     }
 
     this.deps.log(`翻译 ${c.title} (${c.videoPath})`)
+    const face = this.workFaceFromDb(c.workId)
     // R-F10 activity ⑤：翻译是流水线里唯一"单个活可能跑几小时"的阶段（阶段 4）。不推的话
     // 用户在活动页上会看到系统"卡在最后一步不动"——而它其实正在逐段翻一集片。
     this.emit({
@@ -1270,8 +1301,14 @@ export class ScoutDaemonV2 {
       message: `正在翻译：${c.title}`,
       title: c.title,
       workbench: 'translate',
-      // 同字幕台那条：R-F13 的横版图靠 workId 去 /api/v2/activity 查，不靠标题匹配。
-      data: { workId: c.workId },
+      data: { ...face },
+    })
+    this.emit({
+      type: 'progress',
+      message: '0/1 个文件',
+      title: c.title,
+      workbench: 'translate',
+      data: { done: 0, total: 1, ...face },
     })
     // 🔴 GC 炸弹修复（2026-08-08 live test 实测残留 312KB / CURRENT-STATE §八 + C34 的翻译那一半）。
     //
@@ -1327,6 +1364,13 @@ export class ScoutDaemonV2 {
         type: 'found', message: `${c.title}：翻译完成并装上了字幕`, title: c.title,
         workbench: 'translate',
         data: { via: 'translate' },
+      })
+      this.emit({
+        type: 'progress',
+        message: '1/1 个文件',
+        title: c.title,
+        workbench: 'translate',
+        data: { done: 1, total: 1, ...face },
       })
     }
 

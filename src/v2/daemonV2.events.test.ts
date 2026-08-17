@@ -263,9 +263,115 @@ describe('ScoutDaemonV2 · R-F10 事件发布（端到端走 run()）', () => {
     const subProg = got.filter((e) => e.type === 'progress' && e.workbench === 'subtitle')
     expect(subProg.length).toBeGreaterThan(0)
     expect(subProg.every((e) => e.data?.workId === workId)).toBe(true)
-    // progress 的 done/total 是 ScoutEventBus.updateCurrent 读的两个键——加 workId
-    // 不许把它们挤掉（那会让 /health 的 current.index/total 双双变 null）。
+    // progress 的 done/total 是本作品的文件 tick（先 0/N，每成功装一条 +1），
+    // 不是字幕队列里的作品下标。ScoutEventBus.updateCurrent 只认这两个键——加
+    // workId / backdropPath / chineseTitle 不许把它们挤掉（否则 /health 的
+    // current.index/total 双双变 null）。
     expect(subProg.every((e) => typeof e.data?.done === 'number' && typeof e.data?.total === 'number')).toBe(true)
+    expect(subProg[0]?.data?.done).toBe(0)
+    expect(subProg[0]?.data?.total).toBe(1)
+    db.close()
+  })
+
+  it('🔴 同作品两文件：首帧 progress 是 0/2，不许发作品队列下标 1/1', async () => {
+    const db = openDb(':memory:')
+    seedSubtitleWork(db, '/media/Show/E01.mkv', 1)
+    seedSubtitleWork(db, '/media/Show/E02.mkv', 2)
+    const { emit, got } = mkEmit()
+    await runOneInspection(new ScoutDaemonV2(mkDeps(db, {
+      emit, roots: ['/media'],
+      listVideoFiles: () => ['/media/Show/E01.mkv', '/media/Show/E02.mkv'],
+      statFile: () => ({ mtimeMs: 1000, size: BIG }), fileExists: () => true,
+    })))
+    const prog = got.filter((e) => e.type === 'progress' && e.workbench === 'subtitle')
+    expect(prog[0]?.data?.done).toBe(0)
+    expect(prog[0]?.data?.total).toBe(2)
+    expect(prog.some((e) => e.data?.done === 1 && e.data?.total === 1)).toBe(false)
+    db.close()
+  })
+
+  it('🔴 装上一条 → 文件 tick done=1/total=本作品文件数（空 worker 不会走到这里）', async () => {
+    const db = openDb(':memory:')
+    seedSubtitleWork(db, '/media/Show/E01.mkv', 1)
+    seedSubtitleWork(db, '/media/Show/E02.mkv', 2)
+    const { emit, got } = mkEmit()
+    await runOneInspection(new ScoutDaemonV2(mkDeps(db, {
+      emit, roots: ['/media'],
+      listVideoFiles: () => ['/media/Show/E01.mkv', '/media/Show/E02.mkv'],
+      statFile: () => ({ mtimeMs: 1000, size: BIG }), fileExists: () => true,
+      subtitleWorker: async () => ({
+        installed: [{
+          itemId: 'tmdb:42/s1e1', installedPath: '/media/Show/E01.zh-Hans.srt',
+          installedLanguage: 'zh-Hans', candidateProvider: 'assrt', candidateProviderId: 'x', reason: 'ok',
+        }],
+        no_safe_match: [], retry_later: [], hardsub_assumed: [],
+      }),
+    })))
+    const prog = got.filter((e) => e.type === 'progress' && e.workbench === 'subtitle')
+    expect(prog.some((e) => e.data?.done === 0 && e.data?.total === 2)).toBe(true)
+    expect(prog.some((e) => e.data?.done === 1 && e.data?.total === 2)).toBe(true)
+    db.close()
+  })
+
+  it('🔴 走完整 run()：装上字幕后 requestScan（覆盖才能离开 pending）', async () => {
+    const db = openDb(':memory:')
+    seedSubtitleWork(db, '/media/Show/E01.mkv', 1)
+    const { emit } = mkEmit()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      emit, roots: ['/media'], listVideoFiles: () => ['/media/Show/E01.mkv'],
+      statFile: () => ({ mtimeMs: 1000, size: BIG }), fileExists: () => true,
+      subtitleWorker: async () => ({
+        installed: [{
+          itemId: 'tmdb:42/s1e1', installedPath: '/media/Show/E01.zh-Hans.srt',
+          installedLanguage: 'zh-Hans', candidateProvider: 'assrt', candidateProviderId: 'x', reason: 'ok',
+        }],
+        no_safe_match: [], retry_later: [], hardsub_assumed: [],
+      }),
+    }))
+    const scan = vi.spyOn(daemon, 'requestScan')
+    await runOneInspection(daemon)
+    expect(scan).toHaveBeenCalled()
+    db.close()
+  })
+
+  it('🔴 字幕台 activity/progress 带 works 上的 backdropPath 与 chineseTitle', async () => {
+    const db = openDb(':memory:')
+    seedSubtitleWork(db, '/media/Show/E01.mkv', 1)
+    db.prepare(`UPDATE works SET backdrop_path = '/bd.jpg', chinese_titles = ? WHERE id = 'tmdb:42'`)
+      .run(JSON.stringify(['黑暗智宅']))
+    const { emit, got } = mkEmit()
+    await runOneInspection(new ScoutDaemonV2(mkDeps(db, {
+      emit, roots: ['/media'], listVideoFiles: () => ['/media/Show/E01.mkv'],
+      statFile: () => ({ mtimeMs: 1000, size: BIG }), fileExists: () => true,
+    })))
+    const sub = got.filter((e) =>
+      (e.type === 'activity' || e.type === 'progress') && e.workbench === 'subtitle')
+    expect(sub.length).toBeGreaterThan(0)
+    expect(sub.every((e) => e.data?.backdropPath === '/bd.jpg')).toBe(true)
+    expect(sub.every((e) => e.data?.chineseTitle === '黑暗智宅')).toBe(true)
+    db.close()
+  })
+
+  it('🔴 翻译：首帧 progress done:0 total:1，装盘后 done:1', async () => {
+    const db = openDb(':memory:')
+    db.prepare('INSERT INTO works (id, title, media_type, origin_lang, created_at, updated_at) VALUES (?,?,?,?,?,?)')
+      .run('tmdb:42', 'Show', 'tv', 'en', 1000, 1000)
+    db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_id, needs_subtitle, sub_status,
+                                   sub_attempt, tr_attempt, updated_at)
+                VALUES (?,?,?,?,?,?,1,'handoff_translate',7,0,?)`)
+      .run('/media/Show/E01.mkv', '/media/Show', 'E01.mkv', BIG, 1000, 'tmdb:42', 1000)
+    const { emit, got } = mkEmit()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      emit,
+      translateEnabled: () => true,
+      fileExists: () => true,
+      translateRunItem: async () => ({ status: 'installed' as const }),
+    }))
+    await (daemon as any).advanceTranslateOnce()
+    const prog = got.filter((e) => e.type === 'progress' && e.workbench === 'translate')
+    expect(prog[0]?.data?.done).toBe(0)
+    expect(prog[0]?.data?.total).toBe(1)
+    expect(prog.some((e) => e.data?.done === 1 && e.data?.total === 1)).toBe(true)
     db.close()
   })
 

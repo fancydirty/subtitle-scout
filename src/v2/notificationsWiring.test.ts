@@ -24,10 +24,10 @@ const DAY = 24 * 3600_000
 function mkItem(): SubtitleQueueItem {
   return {
     workId: 'tmdb:1396', title: '绝命毒师', originalTitle: 'Breaking Bad', year: 2008,
-    overview: null, chineseTitles: [], mediaType: 'tv',
+    overview: null, chineseTitles: [], mediaType: 'tv', backdropPath: null,
     files: [
-      { path: '/media/TV/BB/BB - S01E03.mkv', filename: 'BB - S01E03.mkv', season: 1, episode: 3, dir: '/media/TV/BB', durationSec: 1440, embeddedLangs: null, recheckAfter: null },
-      { path: '/media/TV/BB/BB - S01E05.mkv', filename: 'BB - S01E05.mkv', season: 1, episode: 5, dir: '/media/TV/BB', durationSec: 1440, embeddedLangs: null, recheckAfter: null },
+      { path: '/media/TV/BB/BB - S01E03.mkv', filename: 'BB - S01E03.mkv', season: 1, episode: 3, dir: '/media/TV/BB', durationSec: 1440, embeddedLangs: null, recheckAfter: null, subRecheckAt: null },
+      { path: '/media/TV/BB/BB - S01E05.mkv', filename: 'BB - S01E05.mkv', season: 1, episode: 5, dir: '/media/TV/BB', durationSec: 1440, embeddedLangs: null, recheckAfter: null, subRecheckAt: null },
     ],
   }
 }

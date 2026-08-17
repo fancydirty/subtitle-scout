@@ -27,6 +27,9 @@ export interface SubtitleQueueItem {
   overview: string | null
   chineseTitles: string[]
   mediaType: string
+  /** `works.backdrop_path`。活动页「在跑」卡片的横版图走事件通道这一格，
+   *  不再让前端拿 title 去身份表里撞车。NULL = 库里没有图。 */
+  backdropPath: string | null
   files: Array<{
     path: string; filename: string; season: number | null; episode: number | null
     dir: string; durationSec: number | null; embeddedLangs: string[] | null
@@ -37,6 +40,9 @@ export interface SubtitleQueueItem {
      *  它存在的唯一理由是让**界面**能说出"最早什么时候重试"，而那句话在默认模式下问不出来
      *  （默认模式看不见那些行）。派活侧不读它，读了也没意义。 */
     recheckAfter: number | null
+    /** `files.sub_recheck_at`。与 recheck_after 同一次 SELECT 带出，给复核闸（Task 4）
+     *  用——再写第二份 JOIN 就会漂。派活侧不读。 */
+    subRecheckAt: number | null
   }>
 }
 
@@ -121,15 +127,19 @@ export function listSubtitleQueue(
   const includeBackoff = opts.includeBackoff === true
   const rows = db.prepare(`
     SELECT w.id AS work_id, w.title, w.original_title, w.year, w.overview, w.chinese_titles, w.media_type,
-           f.path, f.filename, f.season, f.episode, f.dir, f.duration_sec, f.embedded_langs, f.recheck_after
+           w.backdrop_path,
+           f.path, f.filename, f.season, f.episode, f.dir, f.duration_sec, f.embedded_langs, f.recheck_after,
+           f.sub_recheck_at
     FROM files f JOIN works w ON f.work_id = w.id
     WHERE ${SUBTITLE_QUEUE_WHERE}
     ORDER BY w.id, f.season, f.episode
   `).all(includeBackoff ? 1 : 0, now) as Array<{
     work_id: string; title: string; original_title: string | null; year: number | null;
     overview: string | null; chinese_titles: string | null; media_type: string;
+    backdrop_path: string | null;
     path: string; filename: string; season: number | null; episode: number | null; dir: string
     duration_sec: number | null; embedded_langs: string | null; recheck_after: number | null
+    sub_recheck_at: number | null
   }>
 
   const byWork = new Map<string, SubtitleQueueItem>()
@@ -144,13 +154,18 @@ export function listSubtitleQueue(
       try { chinese = r.chinese_titles ? JSON.parse(r.chinese_titles) : [] } catch { chinese = [] }
       item = {
         workId: r.work_id, title: r.title, originalTitle: r.original_title, year: r.year,
-        overview: r.overview, chineseTitles: chinese, mediaType: r.media_type, files: [],
+        overview: r.overview, chineseTitles: chinese, mediaType: r.media_type,
+        backdropPath: r.backdrop_path, files: [],
       }
       byWork.set(r.work_id, item)
     }
     let langs: string[] | null = null
     if (r.embedded_langs) { try { langs = JSON.parse(r.embedded_langs) } catch { langs = null } }
-    item.files.push({ path: r.path, filename: r.filename, season: r.season, episode: r.episode, dir: r.dir, durationSec: r.duration_sec, embeddedLangs: langs, recheckAfter: r.recheck_after })
+    item.files.push({
+      path: r.path, filename: r.filename, season: r.season, episode: r.episode, dir: r.dir,
+      durationSec: r.duration_sec, embeddedLangs: langs, recheckAfter: r.recheck_after,
+      subRecheckAt: r.sub_recheck_at,
+    })
   }
   return [...byWork.values()]
 }
@@ -308,6 +323,9 @@ export async function runSubtitleWorkDir(
    *  /api/v2/runs 端点还活着却永远返回空数组。可选依赖（同 findSubtitleWorkerTask 的 `runs?`
    *  惯例）：缺席时不抛错、照常排空 trace 缓冲（防同 runKey 残留随时间无界增长），只是不落账。 */
   runs?: Pick<RunsRepo, 'insert'>,
+  /** 每成功 markInstalled 一次回调 `(done, total)`。`total` = 本作品文件数，不是队列长度。
+   *  放在 `runs` 之后，既有调用点一字不改。缺席 = 不发 tick。 */
+  onFileInstalled?: (done: number, total: number) => void,
 ): Promise<import('../agent/findSubtitleWorker.schemas.js').FindSubtitleBatchReport | null> {
   const task = buildSubtitleTask(item, targetLanguage)
   const runKey = `job-subtitle:${item.workId}`
@@ -537,10 +555,14 @@ export async function runSubtitleWorkDir(
     const p = resolvePath(item, inst.itemId, inst.installedPath)
     if (p) coveredPaths.add(p)
   }
+  let installedDone = 0
+  const installedTotal = item.files.length
   for (const f of item.files) {
     if (coveredPaths.has(f.path)) {
       installedLabels.push(runsLabelOf(f))
       markInstalled.run(now2 + DAY_MS, IMMEDIATE_RECHECK, now2, f.path)
+      installedDone++
+      onFileInstalled?.(installedDone, installedTotal)
       // ── R-F3：通知流水（通知页的持久化数据源）────────────────────────────────
       // 写入点与 SSE `found` 事件**同一口径**（daemonV2 在 runSubtitleWorkDir 返回后按
       // report.installed.length 发一条），但落点不同、缺一不可：SSE 只把新的推给正在看的人

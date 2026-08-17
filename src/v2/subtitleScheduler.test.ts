@@ -15,9 +15,10 @@ function mkItem(): SubtitleQueueItem {
     overview: null,
     chineseTitles: [],
     mediaType: 'tv',
+    backdropPath: null,
     files: [
-      { path: '/media/TV/Overflow/Overflow - 01.mkv', filename: 'Overflow - 01.mkv', season: 1, episode: 1, dir: '/media/TV/Overflow', durationSec: 1440, embeddedLangs: null, recheckAfter: null },
-      { path: '/media/TV/Overflow/Overflow - 02.mkv', filename: 'Overflow - 02.mkv', season: 1, episode: 2, dir: '/media/TV/Overflow', durationSec: 1440, embeddedLangs: null, recheckAfter: null },
+      { path: '/media/TV/Overflow/Overflow - 01.mkv', filename: 'Overflow - 01.mkv', season: 1, episode: 1, dir: '/media/TV/Overflow', durationSec: 1440, embeddedLangs: null, recheckAfter: null, subRecheckAt: null },
+      { path: '/media/TV/Overflow/Overflow - 02.mkv', filename: 'Overflow - 02.mkv', season: 1, episode: 2, dir: '/media/TV/Overflow', durationSec: 1440, embeddedLangs: null, recheckAfter: null, subRecheckAt: null },
     ],
   }
 }
@@ -665,15 +666,23 @@ describe('listSubtitleQueue（recheck_after 消费，死循环修复）', () => 
       expect(files.find((f) => f.filename === 'E01.mkv')!.recheckAfter).toBeNull()
       expect(files.find((f) => f.filename === 'E02.mkv')!.recheckAfter).not.toBeNull()
     })
+
+    it('🔴 一次 SELECT 带出 works.backdrop_path 与逐文件 sub_recheck_at', () => {
+      db.prepare(`UPDATE works SET backdrop_path = '/bd.jpg' WHERE id = 'tmdb:1'`).run()
+      db.prepare(`UPDATE files SET sub_recheck_at = 12345 WHERE path = '/media/TV/ShowA/E01.mkv'`).run()
+      const showA = listSubtitleQueue(db, ['/media/TV'], Date.now()).find((q) => q.workId === 'tmdb:1')
+      expect(showA?.backdropPath).toBe('/bd.jpg')
+      expect(showA?.files.find((f) => f.filename === 'E01.mkv')?.subRecheckAt).toBe(12345)
+    })
   })
 
   describe('queueItemDueNow / queueItemEarliestRetryAt', () => {
     const mk = (recheck: (number | null)[]): SubtitleQueueItem => ({
       workId: 'tmdb:1', title: 'x', originalTitle: null, year: null, overview: null,
-      chineseTitles: [], mediaType: 'tv',
+      chineseTitles: [], mediaType: 'tv', backdropPath: null,
       files: recheck.map((r, i) => ({
         path: `/p/${i}.mkv`, filename: `${i}.mkv`, season: 1, episode: i, dir: '/p',
-        durationSec: null, embeddedLangs: null, recheckAfter: r,
+        durationSec: null, embeddedLangs: null, recheckAfter: r, subRecheckAt: null,
       })),
     })
     const T = 1_000_000
@@ -722,11 +731,11 @@ describe('listSubtitleQueue（recheck_after 消费，死循环修复）', () => 
 function mkMovieItem(): SubtitleQueueItem {
   return {
     workId: 'tmdb:603', title: 'The Matrix', originalTitle: null, year: 1999,
-    overview: null, chineseTitles: [], mediaType: 'movie',
+    overview: null, chineseTitles: [], mediaType: 'movie', backdropPath: null,
     files: [{
       path: '/media/Movies/The Matrix (1999)/The Matrix.mkv', filename: 'The Matrix.mkv',
       season: null, episode: null, dir: '/media/Movies/The Matrix (1999)',
-      durationSec: 8160, embeddedLangs: null, recheckAfter: null,
+      durationSec: 8160, embeddedLangs: null, recheckAfter: null, subRecheckAt: null,
     }],
   }
 }
