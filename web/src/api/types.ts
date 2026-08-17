@@ -659,6 +659,11 @@ export interface ActivityQueueItemDTO {
    *  前端拿它说「最早 16 小时后重试」——只说"在等"不说"等到什么时候"，
    *  用户分不出"系统在等"与"系统卡住了"。 */
   retryAfter: number | null
+  /** `sub_recheck_at === 0` 是 `markInstalled` 的 IMMEDIATE_RECHECK 哨兵，**不是**失败重试窗。
+   *  装盘后仍 needs_subtitle=1 / sub_status NULL，同时 recheck_after 在未来，看起来像 bump。
+   *  true = 这一簇每个 remaining 文件都是哨兵 0。翻译台恒 false，键始终在。
+   *  前端（Task 6）据此显示「核对片库」vs「等待重试」。 */
+  awaitingRescan: boolean
 }
 
 export interface ActivityDTO {

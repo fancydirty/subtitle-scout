@@ -115,12 +115,12 @@ const activityDTO = {
     posterPath: '/p.jpg', backdropPath: '/bd.jpg', pendingFileCount: 13,
     // 退避中的那一项（🔴-1）：路由层只是透传，但形状必须齐——缺 dueNow 时前端的
     // `dueNow !== false` 会把它当成"已到点"，那正是这次要修的那句假话的镜像。
-    dueNow: false, retryAfter: 1_700_000_000_000,
+    dueNow: false, retryAfter: 1_700_000_000_000, awaitingRescan: false,
   }],
   translateQueue: [{
     workId: 'tmdb:2', title: 'Translating Movie', chineseTitle: null, year: 2001, mediaType: 'movie' as const,
     posterPath: null, backdropPath: null, pendingFileCount: 1,
-    dueNow: true, retryAfter: null,
+    dueNow: true, retryAfter: null, awaitingRescan: false,
   }],
 }
 const deps: RouterDeps = {

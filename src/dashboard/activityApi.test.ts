@@ -65,16 +65,20 @@ function addFile(o: {
   subStatus?: string | null
   recheckAfter?: number | null
   trRecheckAfter?: number | null
+  /** `files.sub_recheck_at`。缺省不写这一列（列默认 NULL）。**不许**默认成 0——0 是 markInstalled 哨兵。 */
+  subRecheckAt?: number | null
 }): void {
+  const withRecheck = o.subRecheckAt !== undefined
   db.prepare(
     `INSERT INTO files (path, dir, filename, size, mtime, work_dir, work_id, season, episode,
-                        sub_status, needs_subtitle, recheck_after, tr_recheck_after, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+                        sub_status, needs_subtitle, recheck_after, tr_recheck_after, updated_at${withRecheck ? ', sub_recheck_at' : ''})
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?${withRecheck ? ',?' : ''})`,
   ).run(
     o.path, '/d', 'f.mkv', 100, NOW, '/d', o.workId,
     o.season ?? null, o.episode ?? null, o.subStatus ?? null,
     o.needsSubtitle === undefined ? 1 : o.needsSubtitle,
     o.recheckAfter ?? null, o.trRecheckAfter ?? null, NOW,
+    ...(withRecheck ? [o.subRecheckAt] : []),
   )
 }
 
@@ -377,7 +381,7 @@ describe('buildActivity：与 /api/v2/health「不返回 queue」那条裁决的
     expect(Object.keys(dto).sort()).toEqual(['subtitleQueue', 'translateQueue'])
     for (const item of [...dto.subtitleQueue, ...dto.translateQueue]) {
       expect(Object.keys(item).sort()).toEqual(
-        ['backdropPath', 'chineseTitle', 'dueNow', 'mediaType', 'pendingFileCount', 'posterPath',
+        ['awaitingRescan', 'backdropPath', 'chineseTitle', 'dueNow', 'mediaType', 'pendingFileCount', 'posterPath',
          'retryAfter', 'title', 'workId', 'year'],
       )
       // pendingFileCount 是"这个作品自己有几集在等"，与队列长度无关——名字里没有 total
@@ -396,5 +400,67 @@ describe('buildActivity：与 /api/v2/health「不返回 queue」那条裁决的
     const dto = buildActivity(db, { now: NOW })
     expect(dto.subtitleQueue).toEqual([])
     expect(dto.translateQueue).toEqual([])
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════════════════
+// markInstalled 之后：recheck_after=now+1d 且 sub_recheck_at=0，看起来像退避，
+// 其实是「请立刻核对片库」哨兵。dueNow 分不出这两件事，要靠 awaitingRescan。
+// ══════════════════════════════════════════════════════════════════════════════
+describe('buildActivity：awaitingRescan（markInstalled 哨兵 ≠ 普通退避）', () => {
+  const DAY = 86_400_000
+
+  it('🔴 markInstalled 哨兵 → awaitingRescan true（不是普通退避）', () => {
+    addWork('tmdb:1', { title: 'Just Installed' })
+    addFile({
+      path: '/d/a.mkv', workId: 'tmdb:1', season: 1, episode: 1,
+      needsSubtitle: 1, subStatus: null,
+      subRecheckAt: 0, recheckAfter: NOW + DAY,
+    })
+    const dto = buildActivity(db, { now: NOW })
+    expect(dto.subtitleQueue[0]?.awaitingRescan).toBe(true)
+  })
+
+  it('bump 退避（sub_recheck_at 非 0）→ awaitingRescan false', () => {
+    addWork('tmdb:1', { title: 'Bumped' })
+    addFile({
+      path: '/d/a.mkv', workId: 'tmdb:1', season: 1, episode: 1,
+      recheckAfter: NOW + DAY, subRecheckAt: NOW + 7 * DAY,
+    })
+    addWork('tmdb:2', { title: 'Null Recheck' })
+    addFile({
+      path: '/d/b.mkv', workId: 'tmdb:2', season: 1, episode: 1,
+      recheckAfter: NOW + DAY, subRecheckAt: null,
+    })
+    const dto = buildActivity(db, { now: NOW })
+    const byId = new Map(dto.subtitleQueue.map((i) => [i.workId, i]))
+    expect(byId.get('tmdb:1')?.awaitingRescan).toBe(false)
+    expect(byId.get('tmdb:2')?.awaitingRescan).toBe(false)
+  })
+
+  it('🔴 混簇：一文件哨兵 0、一文件 bump → awaitingRescan false（every remaining === 0）', () => {
+    addWork('tmdb:1', { title: 'Mixed' })
+    addFile({
+      path: '/d/a.mkv', workId: 'tmdb:1', season: 1, episode: 1,
+      subRecheckAt: 0, recheckAfter: NOW + DAY,
+    })
+    addFile({
+      path: '/d/b.mkv', workId: 'tmdb:1', season: 1, episode: 2,
+      subRecheckAt: NOW + 7 * DAY, recheckAfter: NOW + DAY,
+    })
+    const dto = buildActivity(db, { now: NOW })
+    expect(dto.subtitleQueue[0]?.awaitingRescan).toBe(false)
+  })
+
+  it('translateQueue 每项 awaitingRescan === false 且字段存在', () => {
+    addWork('tmdb:9', { title: 'Trans Show' })
+    addFile({
+      path: '/d/t.mkv', workId: 'tmdb:9', season: 1, episode: 1,
+      subStatus: 'handoff_translate',
+    })
+    const dto = buildActivity(db, { now: NOW })
+    expect(dto.translateQueue.length).toBeGreaterThan(0)
+    expect(dto.translateQueue.every((x) => x.awaitingRescan === false)).toBe(true)
+    expect(dto.translateQueue.every((x) => 'awaitingRescan' in x)).toBe(true)
   })
 })

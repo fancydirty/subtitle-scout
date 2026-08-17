@@ -148,6 +148,8 @@ const QUEUE_ITEM_SHAPE: Shape = obj({
   title: str(),
   pendingFileCount: num(),
   dueNow: bool(),
+  // `awaitingRescan` 区分 markInstalled 哨兵与失败退避；缺席会让「核对片库」被说成「等待重试」（同 dueNow 当年那句假话）。
+  awaitingRescan: bool(),
   // `retryAfter` 刻意**不声明**：null 是它的常态值（到点的项），而契约层的 nullable(num())
   // 对 `undefined` 与 `null` 的区分在这里没有消费差异——前端读到 null/undefined 都走
   // "不说重试时刻"那一支。声明它只会把一个无害缺席升级成整页拦截。

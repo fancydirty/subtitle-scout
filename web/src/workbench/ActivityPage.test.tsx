@@ -63,12 +63,12 @@ const HEALTH_IDLE = {
 const QUEUE_ITEM = {
   workId: 'tmdb:1', title: 'Queued Show', chineseTitle: null, year: 2018,
   mediaType: 'tv' as const, posterPath: '/p.jpg', backdropPath: '/bd.jpg', pendingFileCount: 13,
-  dueNow: true, retryAfter: null as number | null,
+  dueNow: true, retryAfter: null as number | null, awaitingRescan: false,
 }
 const TRANSLATE_ITEM = {
   workId: 'tmdb:9', title: 'Trans Show', chineseTitle: null, year: 2020,
   mediaType: 'tv' as const, posterPath: '/p9.jpg', backdropPath: '/bd9.jpg', pendingFileCount: 4,
-  dueNow: true, retryAfter: null as number | null,
+  dueNow: true, retryAfter: null as number | null, awaitingRescan: false,
 }
 
 /** 每个 URL 的请求次数——重连纠正那条的**判据本体**（不是 DOM 文案）。 */

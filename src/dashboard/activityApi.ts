@@ -79,6 +79,13 @@ export interface ActivityQueueItemDTO {
    *  前端拿它说「最早 16 小时后重试」——一个退避中的队列若只报"在等"而不说"等到什么
    *  时候"，用户无法区分"系统在等"与"系统卡住了"。 */
   retryAfter: number | null
+  /** `sub_recheck_at === 0` 是 `markInstalled` 的 IMMEDIATE_RECHECK 哨兵，**不是**失败重试窗。
+   *  装盘成功后文件仍是 needs_subtitle=1 / sub_status NULL，同时 recheck_after=now+1d，
+   *  看起来与 bump 退避同形；这个字段把两件事分开。前端（Task 6）据此显示「核对片库」vs「等待重试」。
+   *
+   *  true = 这一簇还有文件，且每一个 remaining 文件 `subRecheckAt === 0`（严格 ===，NULL / 7 天地板都是 false）。
+   *  翻译台投影恒 false，但 JSON 键始终在。 */
+  awaitingRescan: boolean
 }
 
 /** GET /api/v2/activity 的响应。两个工作台各一段。
@@ -212,6 +219,7 @@ export function buildActivity(
   const project = (
     workId: string, fallbackTitle: string, pendingFileCount: number,
     due: { dueNow: boolean; retryAfter: number | null },
+    awaitingRescan: boolean,
   ): ActivityQueueItemDTO => {
     const f = faces.get(workId)
     return {
@@ -225,6 +233,7 @@ export function buildActivity(
       pendingFileCount,
       dueNow: due.dueNow,
       retryAfter: due.retryAfter,
+      awaitingRescan,
     }
   }
 
@@ -233,7 +242,7 @@ export function buildActivity(
       project(i.workId, i.title, i.files.length, {
         dueNow: queueItemDueNow(i, now),
         retryAfter: queueItemEarliestRetryAt(i, now),
-      }),
+      }, i.files.length > 0 && i.files.every((f) => f.subRecheckAt === 0)),
     ),
     // 翻译台与字幕台**同一口径**（2026-08-14 起）：退避中的项照样出现，只是
     // dueNow=false 且给得出 retryAfter。两个 tab 并排放在同一个页面上，
@@ -242,7 +251,7 @@ export function buildActivity(
       project(workId, workId, e.count, {
         dueNow: clusterDueNow(e.recheckAts, now),
         retryAfter: clusterEarliestRetryAt(e.recheckAts, now),
-      }),
+      }, false),
     ),
   }
 }
