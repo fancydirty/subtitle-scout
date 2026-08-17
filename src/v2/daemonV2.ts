@@ -40,9 +40,12 @@ import { tmdbIdFromOwnId, translateJobId } from './ownIds.js'
 // TTL 门、gain-path 降级（拿不全所有季就一行不落）两条语义都长在它里面，回填 pass 只负责
 // "把 works 里的 tv 一个个喂给它"——刷新节奏因此只有一个权威。
 import { refreshSeriesCatalog } from './tmdbCatalog.js'
-// R-F10：SSE 事件的载荷类型（只引类型，总线实例由 cmdWatch 注入——daemon 不认识总线本体，
-// 同 reasoningAgent 只引 TraceEvent 类型不引 traceBus 单例的既有分层）。
+// R-F10：ScoutEvent 载荷类型。总线实例仍由 cmdWatch 注入（daemon 不持有 ScoutEventBus）。
+// 活动页「在跑」要把飞行中的 tool 名叠到既有 progress SSE 的 data.step 上，故订阅
+// traceBus 单例——仅围住字幕/翻译 runner 的窗口，不是 daemon 生命周期级订阅，也不另开
+// 第二条用户 SSE。这是批准的分层例外；reasoningAgent 仍只引 TraceEvent 类型。
 import type { ScoutEventInput } from '../core/scoutEvents.js'
+import { traceBus } from '../core/traceBus.js'
 // 语言集合的唯一定义处（C31 末段 / 任务 G 收敛）：judge 的喂料与翻译流的语言门同源。
 import {
   listNewTranslateCandidates, applyTranslateOutcome,
@@ -957,16 +960,30 @@ export class ScoutDaemonV2 {
       // 而不是在这里手写一遍 `subtitle:${workId}`（两份必然漂移，漂了 GC 保护就静默失效）。
       const jobId = subtitleJobId(item.workId)
       this.inFlightStagingJobIds.add(jobId)
+      const runKey = `job-${jobId}`
+      let done = 0
+      const total = item.files.length
+      const unsub = traceBus.subscribe((e) => {
+        if (e.runKey !== runKey) return
+        this.emit({
+          type: 'progress',
+          message: e.tool,
+          title: item.title,
+          workbench: 'subtitle',
+          data: { done, total, ...face, step: e.tool },
+        })
+      })
       try {
         const report = await runSubtitleWorkDir(
           this.deps.db, this.deps.subtitleWorker, item, this.deps.targetLanguage, this.deps.runs,
-          (done, total) => {
+          (d, t) => {
+            done = d
             this.emit({
               type: 'progress',
-              message: `${done}/${total} 个文件`,
+              message: `${d}/${t} 个文件`,
               title: item.title,
               workbench: 'subtitle',
-              data: { done, total, ...face },
+              data: { done: d, total: t, ...face },
             })
           },
         )
@@ -1020,6 +1037,7 @@ export class ScoutDaemonV2 {
         // finally 而不是顺序执行：worker 抛错时若不摘，这个 jobId 会永久免疫 GC，
         // 沙盒垃圾从此无界堆积（媒体目录里的隐藏目录，用户看不见、只会看到盘满）。
         this.inFlightStagingJobIds.delete(jobId)
+        unsub()
       }
     }
     // 字幕工作台**收工**（同上，审计 🔴-2）。翻译流（阶段 4）每轮只推进一个作品，
@@ -1325,6 +1343,19 @@ export class ScoutDaemonV2 {
     // 一个根本没开工的 jobId 若也登记一次，它对应的（上次失败留下的）现场就白白免疫一次回收。
     const jobId = translateJobId(c.workId, c.videoPath)
     this.inFlightStagingJobIds.add(jobId)
+    const runKey = `job-${jobId}`
+    const done = 0
+    const total = 1
+    const unsub = traceBus.subscribe((e) => {
+      if (e.runKey !== runKey) return
+      this.emit({
+        type: 'progress',
+        message: e.tool,
+        title: c.title,
+        workbench: 'translate',
+        data: { done, total, ...face, step: e.tool },
+      })
+    })
     let status: TranslateRunItemResult['status']
     try {
       const r = await runItem(c.videoPath)
@@ -1340,6 +1371,7 @@ export class ScoutDaemonV2 {
       // finally 而不是顺序执行（照字幕流的既有形态）：runItem 抛错时若不摘，这个 jobId 会
       // 永久免疫 GC，工作台垃圾从此无界堆积——而它正是本次要修的那个缺陷本身。
       this.inFlightStagingJobIds.delete(jobId)
+      unsub()
     }
 
     // 全部回写带乐观守卫（D10），守卫匹配 0 行时必须留下痕迹——见下方论证。

@@ -12,6 +12,9 @@ import { describe, it, expect, vi } from 'vitest'
 import { openDb } from './db.js'
 import { ScoutDaemonV2 } from './daemonV2.js'
 import { ScoutEventBus, type ScoutEventInput } from '../core/scoutEvents.js'
+import { subtitleJobId } from './subtitleScheduler.js'
+import { translateJobId } from './ownIds.js'
+import { traceBus } from '../core/traceBus.js'
 
 const NOW = 1_000_000_000_000
 const BIG = 200 * 1024 * 1024
@@ -372,6 +375,88 @@ describe('ScoutDaemonV2 · R-F10 事件发布（端到端走 run()）', () => {
     expect(prog[0]?.data?.done).toBe(0)
     expect(prog[0]?.data?.total).toBe(1)
     expect(prog.some((e) => e.data?.done === 1 && e.data?.total === 1)).toBe(true)
+    db.close()
+  })
+
+  it('🔴 飞行中 trace.tool 出现在 progress.data.step；finally 后退订，下一部不串步', async () => {
+    const db = openDb(':memory:')
+    seedSubtitleWork(db, '/media/Show/E01.mkv', 1)
+    const workId = (db.prepare('SELECT work_id FROM files WHERE path = ?')
+      .get('/media/Show/E01.mkv') as { work_id: string }).work_id
+    const { emit, got } = mkEmit()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      emit, roots: ['/media'],
+      listVideoFiles: () => ['/media/Show/E01.mkv'],
+      statFile: () => ({ mtimeMs: 1000, size: BIG }), fileExists: () => true,
+      subtitleWorker: async () => {
+        const runKey = `job-${subtitleJobId(workId)}`
+        traceBus.publish({
+          runKey: 'job-other-run', seq: 1, tool: 'wrong_tool',
+          argsSummary: '{}', resultSummary: '', tookMs: 1, at: Date.now(),
+        })
+        traceBus.publish({
+          runKey, seq: 1, tool: 'search_source',
+          argsSummary: '{}', resultSummary: '', tookMs: 1, at: Date.now(),
+        })
+        return { installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [] }
+      },
+    }))
+    await runOneInspection(daemon)
+    const step = got.find((e) => e.type === 'progress' && e.data?.step === 'search_source')
+    expect(step).toBeDefined()
+    expect(step?.workbench).toBe('subtitle')
+    expect(step?.data?.workId).toBe(workId)
+    expect(step?.data?.done).toBe(0)
+    expect(step?.data?.total).toBe(1)
+    expect(got.some((e) => e.data?.step === 'wrong_tool')).toBe(false)
+
+    got.length = 0
+    traceBus.publish({
+      runKey: `job-${subtitleJobId(workId)}`, seq: 2, tool: 'install_subtitle',
+      argsSummary: '{}', resultSummary: '', tookMs: 1, at: Date.now(),
+    })
+    expect(got.some((e) => e.data?.step === 'install_subtitle')).toBe(false)
+    db.close()
+  })
+
+  it('🔴 翻译：飞行中 trace.tool 出现在 progress.data.step；finally 后退订', async () => {
+    const db = openDb(':memory:')
+    db.prepare('INSERT INTO works (id, title, media_type, origin_lang, created_at, updated_at) VALUES (?,?,?,?,?,?)')
+      .run('tmdb:42', 'Show', 'tv', 'en', 1000, 1000)
+    db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_id, needs_subtitle, sub_status,
+                                   sub_attempt, tr_attempt, updated_at)
+                VALUES (?,?,?,?,?,?,1,'handoff_translate',7,0,?)`)
+      .run('/media/Show/E01.mkv', '/media/Show', 'E01.mkv', BIG, 1000, 'tmdb:42', 1000)
+    const { emit, got } = mkEmit()
+    const workId = 'tmdb:42'
+    const videoPath = '/media/Show/E01.mkv'
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      emit,
+      translateEnabled: () => true,
+      fileExists: () => true,
+      translateRunItem: async () => {
+        const runKey = `job-${translateJobId(workId, videoPath)}`
+        traceBus.publish({
+          runKey, seq: 1, tool: 'translate_segment',
+          argsSummary: '{}', resultSummary: '', tookMs: 1, at: Date.now(),
+        })
+        return { status: 'installed' as const }
+      },
+    }))
+    await (daemon as any).advanceTranslateOnce()
+    const step = got.find((e) => e.type === 'progress' && e.data?.step === 'translate_segment')
+    expect(step).toBeDefined()
+    expect(step?.workbench).toBe('translate')
+    expect(step?.data?.workId).toBe(workId)
+    expect(step?.data?.done).toBe(0)
+    expect(step?.data?.total).toBe(1)
+
+    got.length = 0
+    traceBus.publish({
+      runKey: `job-${translateJobId(workId, videoPath)}`, seq: 2, tool: 'write_sidecar',
+      argsSummary: '{}', resultSummary: '', tookMs: 1, at: Date.now(),
+    })
+    expect(got.some((e) => e.data?.step === 'write_sidecar')).toBe(false)
     db.close()
   })
 
