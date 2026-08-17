@@ -141,6 +141,51 @@ describe('buildMediaLibrary（列表：海报墙）', () => {
     expect(item.subtitledEpisodeCount).toBe(1)
   })
 
+  describe('uncoveredEpisodeCount（本地集 − 已下载 − 自带，后端夹 0）', () => {
+    it('AHS 形：9 green + 11 blue / 20 onDisk → uncovered=0', () => {
+      addWork('tmdb:ahs', { title: 'AHS' })
+      for (let e = 1; e <= 9; e++) {
+        addFile({ path: `/a/s1e${e}.mkv`, workId: 'tmdb:ahs', season: 1, episode: e, subStatus: 'covered' })
+      }
+      for (let e = 10; e <= 20; e++) {
+        addFile({
+          path: `/a/s1e${e}.mkv`, workId: 'tmdb:ahs', season: 1, episode: e,
+          embeddedLangs: ['zh'],
+        })
+      }
+      const [item] = buildMediaLibrary(db)
+      expect(item.onDiskEpisodeCount).toBe(20)
+      expect(item.subtitledEpisodeCount).toBe(9)
+      expect(item.embeddedEpisodeCount).toBe(11)
+      expect(item.uncoveredEpisodeCount).toBe(0)
+    })
+
+    it('12 covered + 0 embedded / 30 onDisk → uncovered=18', () => {
+      addWork('tmdb:bb', { title: 'BB' })
+      for (let e = 1; e <= 30; e++) {
+        addFile({
+          path: `/b/s1e${e}.mkv`, workId: 'tmdb:bb', season: 1, episode: e,
+          subStatus: e <= 12 ? 'covered' : null,
+        })
+      }
+      const [item] = buildMediaLibrary(db)
+      expect(item.onDiskEpisodeCount).toBe(30)
+      expect(item.subtitledEpisodeCount).toBe(12)
+      expect(item.embeddedEpisodeCount).toBe(0)
+      expect(item.uncoveredEpisodeCount).toBe(18)
+    })
+
+    it('电影 0/1 → uncovered=1；有 sidecar → 0', () => {
+      addWork('tmdb:m0', { title: 'Bare', mediaType: 'movie' })
+      addFile({ path: '/m/bare.mkv', workId: 'tmdb:m0', season: null, episode: null })
+      expect(buildMediaLibrary(db)[0].uncoveredEpisodeCount).toBe(1)
+
+      addWork('tmdb:m1', { title: 'Done', mediaType: 'movie' })
+      addFile({ path: '/m/done.mkv', workId: 'tmdb:m1', season: null, episode: null, subStatus: 'covered' })
+      expect(buildMediaLibrary(db).find((w) => w.workId === 'tmdb:m1')!.uncoveredEpisodeCount).toBe(0)
+    })
+  })
+
   it('🔴 R-F2 列表概览也按 work_id 合并：同一集两份文件只算一集，任一份有字幕就算已获取', () => {
     // 防回归：概览数字若按 files 行数直接 COUNT(*)，两个目录各一份的库会把"实有 1 集"
     // 报成 2 集，进而算出负的缺集数。

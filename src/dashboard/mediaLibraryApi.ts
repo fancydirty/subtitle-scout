@@ -572,6 +572,9 @@ export interface MediaLibraryItemDTO {
    *  ⚠️ 它**不是**待办：内嵌轨意味着这一集不需要人操心（judge 会给 needs_subtitle=0），
    *  前端据此在 `> 0` 时才渲染（沉默即好消息），绝不恒挂一个"自带 0"。 */
   embeddedEpisodeCount: number
+  /** 本地格里既无外挂也无自带中字的格数 = max(0, onDisk − subtitled − embedded)。
+   *  海报卡黄字只读这个，不读 missingEpisodeCount。 */
+  uncoveredEpisodeCount: number
   /** 属于本作品、但 `season/episode` 解析不出因而**进不了季集网格**的文件数，
    *  **已扣除机械特典**。电影恒 0（电影的文件本来就不该有季集，它们全部落进那唯一一格）。
    *
@@ -700,6 +703,7 @@ export function buildMediaLibrary(db: ScoutDb): MediaLibraryItemDTO[] {
       missingEpisodeCount: Math.max(0, expected - onDisk),
       subtitledEpisodeCount: subtitled,
       embeddedEpisodeCount: embedded,
+      uncoveredEpisodeCount: Math.max(0, onDisk - subtitled - embedded),
       unplacedFileCount: unplacedByWork.get(w.id) ?? 0,
     }
   })
