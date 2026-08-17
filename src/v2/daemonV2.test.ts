@@ -6451,3 +6451,156 @@ describe('ScoutDaemonV2.requestScan · 带外扫描（"加根后立刻扫"的真
     db.close()
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// requestInspect：手动点火完整巡检（2026-08-17）
+//
+// 用户语义是「点一下就跑一整轮，含还在退避窗里的字幕/翻译」——与 requestScan 只扫盘
+// 不同。24h 闸与 inspectRetryAfter 都不得挡住这次；但自然巡检仍必须滤退避（C26）。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('ScoutDaemonV2.requestInspect · 手动点火', () => {
+  const VIDEO = '/media/C/E01.mkv'
+
+  /** 一行还在字幕退避窗里的已识别文件。size 用 BIG 而不是字面 100：scanOnce 过 isScannable
+   *  的 10MB 门，假盘 fakeFs 的 stat 也是 BIG——对不上就会被当换片源清掉 recheck_after，
+   *  或被当垃圾跳过再被 deleteMissing 删掉，两条都会让「worker 没被调」变成假绿。 */
+  function seedBackoffSubtitle(db: ReturnType<typeof openDb>, now: number) {
+    db.prepare(`INSERT INTO works (id, title, media_type, created_at, updated_at) VALUES (?,?,?,?,?)`)
+      .run('tmdb:ahs-wait', 'Cassandra', 'tv', now, now)
+    db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_dir, work_id, needs_subtitle, recheck_after, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      .run(VIDEO, '/media/C', 'E01.mkv', BIG, 1000, '/media/C', 'tmdb:ahs-wait', 1, now + 16 * 3600_000, now)
+  }
+
+  function backoffMedia(subtitleWorker: unknown) {
+    return {
+      roots: ['/media'],
+      ...fakeFs({ '/media': [VIDEO] }),
+      writableRoots: new Map([['/media', true]]),
+      fileExists: (p: string) => p === VIDEO,
+      subtitleWorker: subtitleWorker as any,
+    }
+  }
+
+  it('🔴 闸关死时 requestInspect() 仍跑完整巡检，退避中的字幕本轮被 worker 拉到', async () => {
+    const db = openDb(':memory:')
+    const now = 1_000_000_000_000
+    seedBackoffSubtitle(db, now)
+    const subtitleWorker = vi.fn(async () => ({ installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [] }))
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      ...backoffMedia(subtitleWorker),
+      inspectEveryMs: Number.MAX_SAFE_INTEGER,
+      maintenanceTickMs: 1,
+      sleep: undefined,
+      now: () => now,
+    }))
+    db.prepare(`INSERT INTO meta (key, value) VALUES ('last_inspect_at', ?)`).run(String(now))
+
+    const ctrl = new AbortController()
+    const p = daemon.run(ctrl.signal)
+    await new Promise(r => setTimeout(r, 20))
+    expect(subtitleWorker, '前提：闸关死，自然巡检不该先跑').not.toHaveBeenCalled()
+
+    daemon.requestInspect()
+    await new Promise(r => setTimeout(r, 80))
+    ctrl.abort()
+    await p
+
+    expect(subtitleWorker).toHaveBeenCalled()
+    const task = subtitleWorker.mock.calls[0][0]
+    expect(task.title).toBe('Cassandra')
+    expect(task.targets.map((t: { videoPath: string }) => t.videoPath)).toContain(VIDEO)
+    db.close()
+  })
+
+  it('🔴 自然巡检仍滤退避（C26）：同一行不点 requestInspect → worker 不被调', async () => {
+    const db = openDb(':memory:')
+    const now = 1_000_000_000_000
+    seedBackoffSubtitle(db, now)
+    const subtitleWorker = vi.fn(async () => ({ installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [] }))
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      ...backoffMedia(subtitleWorker),
+      now: () => now,
+    }))
+    // 冷启动 / last_inspect_at 够旧 → 自然巡检必跑。文件必须还在（fakeFs 已列入），
+    // 这样 worker 没被调的唯一理由是 recheck_after 过滤，而不是扫描把行删了。
+    const ctrl = new AbortController()
+    const p = daemon.run(ctrl.signal)
+    await new Promise(r => setTimeout(r, 80))
+    ctrl.abort()
+    await p
+
+    expect(pathsInDb(db), '前提：扫描没把退避行当失踪删掉').toEqual([VIDEO])
+    expect(subtitleWorker, 'C26：自然巡检不许把 recheck_after > now 的行送进 worker').not.toHaveBeenCalled()
+    db.close()
+  })
+
+  it('🔴 巡检进行中再 requestInspect() → already_running', async () => {
+    const db = openDb(':memory:')
+    const now = 1_000_000_000_000
+    db.prepare(`INSERT INTO works (id, title, media_type, created_at, updated_at) VALUES (?,?,?,?,?)`)
+      .run('tmdb:ahs-wait', 'Cassandra', 'tv', now, now)
+    db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_dir, work_id, needs_subtitle, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?)`)
+      .run(VIDEO, '/media/C', 'E01.mkv', BIG, 1000, '/media/C', 'tmdb:ahs-wait', 1, now)
+
+    let fromInside: 'queued' | 'already_running' | undefined
+    let release!: () => void
+    const hanging = new Promise<void>((r) => { release = r })
+    let daemon!: ScoutDaemonV2
+    const subtitleWorker = vi.fn(async () => {
+      fromInside = daemon.requestInspect()
+      await hanging
+      return { installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [] }
+    })
+    daemon = new ScoutDaemonV2(mkDeps(db, {
+      ...backoffMedia(subtitleWorker),
+      now: () => now,
+    }))
+
+    const ctrl = new AbortController()
+    const p = daemon.run(ctrl.signal)
+    await vi.waitFor(() => { expect(fromInside).toBeDefined() })
+    expect(fromInside).toBe('already_running')
+    release()
+    ctrl.abort()
+    await p
+    db.close()
+  })
+
+  it('🔴 requestInspect() 提前唤醒 idle sleep——不必等满一整拍', async () => {
+    const db = openDb(':memory:')
+    const identifySpy = vi.fn(async () => ({ tmdbId: null, title: null, reason: 'noop' }))
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      ...fakeFs({ '/media': ['/media/Show/E01.mkv'] }),
+      identify: { db, runIdentify: identifySpy, worker: {} as any },
+      inspectEveryMs: Number.MAX_SAFE_INTEGER,
+      maintenanceTickMs: 30_000,
+      sleep: undefined,
+    }))
+    db.prepare(`INSERT INTO meta (key, value) VALUES ('last_inspect_at', ?)`).run(String(1_000_000_000_000))
+
+    const ctrl = new AbortController()
+    const p = daemon.run(ctrl.signal)
+    await new Promise(r => setTimeout(r, 20))
+    expect(identifySpy, '前提：闸关死，主循环已经睡下').not.toHaveBeenCalled()
+
+    daemon.requestInspect()
+    await new Promise(r => setTimeout(r, 150))
+    expect(identifySpy, '🔴 请求后 ~150ms 内就该开工——没唤醒的话还在睡 30s').toHaveBeenCalled()
+
+    ctrl.abort()
+    await p
+    db.close()
+  })
+
+  it('🔴 空闲时 requestInspect() 返回 queued', async () => {
+    const db = openDb(':memory:')
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      inspectEveryMs: Number.MAX_SAFE_INTEGER,
+    }))
+    expect(daemon.requestInspect()).toBe('queued')
+    db.close()
+  })
+})

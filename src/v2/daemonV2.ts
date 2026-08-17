@@ -417,7 +417,19 @@ export class ScoutDaemonV2 {
    *  锁，它连同 ingest 一起退役了——不再重建一个）。 */
   private scanRequested = false
 
-  /** idle sleep 的提前唤醒钩子（`requestScan()` 调它）。null = 当前不在 sleep 里。
+  /** 带外完整巡检请求标志（`requestInspect()` 置位，run() 主循环取件后清位）。
+   *  与 scanRequested 同型：HTTP 线程只置位，主循环串行取件，避免两个 runInspection 并发。 */
+  private inspectRequested = false
+
+  /** 本进程此刻是否在 `runInspection` 里（含 inspectOnce / 自然巡检 / 手动点火）。
+   *  requestInspect 靠它返回 already_running，而不是再排队第二轮。 */
+  private inspecting = false
+
+  /** 本轮手动点火才为 true：阶段 3/4 取件带 includeBackoff。自然 24h 巡检与 inspectOnce
+   *  都保持默认（滤 recheck_after > now，C26）。finally 清掉，不许漏到下一轮。 */
+  private skipBackoffThisInspect = false
+
+  /** idle sleep 的提前唤醒钩子（`requestScan()` / `requestInspect()` 调它）。null = 当前不在 sleep 里。
    *
    *  没有它的话，带外扫描请求要等最多一整个 MAINTENANCE_TICK_MS（5 分钟）才被取件——
    *  而这三个调用点的用户语义恰恰是"**立刻**"（加完守备目录就想看见扫描结果）。
@@ -460,6 +472,18 @@ export class ScoutDaemonV2 {
     // 在 sleep 里就立刻唤醒；不在（正在巡检/维护）就什么都不做——标志已置位，
     // 当前这轮工作结束后主循环自然会取件，不需要也不该打断正在跑的巡检。
     this.wakeIdle?.()
+  }
+
+  /** 请求一次**带外完整巡检**（四阶段都跑，本轮字幕/翻译取件含退避窗）。
+   *
+   *  与 requestScan 同型：HTTP 线程只置位 + 叫醒 idle，主循环取件。正在 runInspection
+   *  里就返回 already_running、不排队第二轮（连点只是把同一个标志重复置位）。
+   *  24h 闸与 inspectRetryAfter 都挡不住这次；workPermitted=false 则丢弃标志不跑。 */
+  requestInspect(): 'queued' | 'already_running' {
+    if (this.inspecting) return 'already_running'
+    this.inspectRequested = true
+    this.wakeIdle?.()
+    return 'queued'
   }
 
   /** One full inspection (scan → identify → judge → subtitles), ignoring the 24h watch gate.
@@ -619,6 +643,33 @@ export class ScoutDaemonV2 {
       const everyMs = this.deps.inspectEveryMs ?? INSPECT_INTERVAL_MS
       const permitted = this.deps.workPermitted?.() ?? true
 
+      // 手动点火取件：必须在 24h 闸之前。闸关死 / 失败短退避都挡不住这次；
+      // 取件时连 scanRequested 一起清——本轮阶段 1 已经包含 scanOnce，不必再扫一遍。
+      if (this.inspectRequested) {
+        this.inspectRequested = false
+        this.scanRequested = false
+        if (permitted) {
+          this.skipBackoffThisInspect = true
+          this.deps.log(`巡检开始 (距上次 ${lastInspectAt === 0 ? '(冷启动)' : `${Math.round((now - lastInspectAt) / 3600000)}h`})`)
+          this.emit({ type: 'activity', message: '巡检开始' })
+          try {
+            await this.runInspection(signal)
+            this.writeLastInspectAt(now)
+            this.inspectRetryAfter = 0
+            this.deps.log('巡检完成，歇着等明天')
+            this.emit({ type: 'activity', message: '巡检完成，歇着等明天' })
+          } catch (e) {
+            const backoff = this.deps.inspectFailureBackoffMs ?? INSPECT_FAILURE_BACKOFF_MS
+            this.inspectRetryAfter = now + backoff
+            this.deps.log(`巡检失败（隔离，时间闸不推进，${Math.round(backoff / 60000)}min 后重试）: ${String(e)}`)
+            this.emit({ type: 'health', message: `巡检失败，${Math.round(backoff / 60000)} 分钟后重试: ${String(e)}` })
+          } finally {
+            this.skipBackoffThisInspect = false
+          }
+        }
+        continue
+      }
+
       if (permitted && now - lastInspectAt >= everyMs && now >= this.inspectRetryAfter) {
         this.deps.log(`巡检开始 (距上次 ${lastInspectAt === 0 ? '(冷启动)' : `${Math.round((now - lastInspectAt) / 3600000)}h`})`)
         // R-F10 activity ①：巡检开始。用户视角的"系统在忙还是在歇"——日巡检模型下这是
@@ -747,12 +798,14 @@ export class ScoutDaemonV2 {
 
   /** 一轮完整巡检：扫描 → 识别跑空 → judge → 字幕跑空。 */
   private async runInspection(signal: AbortSignal): Promise<void> {
+    this.inspecting = true
     // 本轮 roots 快照（见 rootsProvider 的论证）。finally 清掉，让巡检外的读取回到现取。
     this.rootsSnapshot = this.deps.rootsProvider?.() ?? this.deps.roots
     try {
       await this.runInspectionInner(signal)
     } finally {
       this.rootsSnapshot = null
+      this.inspecting = false
     }
   }
 
@@ -840,7 +893,10 @@ export class ScoutDaemonV2 {
     //    R4 那句"跑的过程中队列不漂移"说的正是它
     // 补查一轮既违背 R4，又把上面伤害 ① 原样放回来。所以"跑空"在冻结模型下的正确解读是
     // **"把这一轮的快照消费空"**，而不是"把库查空"。
-    const subtitleQueue = listSubtitleQueue(this.deps.db, this.writableRoots(), this.deps.now?.() ?? Date.now())
+    const subtitleQueue = listSubtitleQueue(
+      this.deps.db, this.writableRoots(), this.deps.now?.() ?? Date.now(),
+      this.skipBackoffThisInspect ? { includeBackoff: true } : {},
+    )
     let subtitleRounds = 0
     for (const frozen of subtitleQueue) {
       if (this.stopping) break
@@ -1185,7 +1241,9 @@ export class ScoutDaemonV2 {
     const now = this.deps.now?.() ?? Date.now()
     const fileExists = this.deps.fileExists ?? existsSync
 
-    const candidates = listNewTranslateCandidates(db, now)
+    const candidates = listNewTranslateCandidates(
+      db, now, this.skipBackoffThisInspect ? { includeBackoff: true } : {},
+    )
     if (candidates.length === 0) return
 
     // 单次只处理一个**作品**（C32）：取队首那个 work_id 的第一个文件。
