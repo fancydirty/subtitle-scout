@@ -21,6 +21,7 @@ import {
 } from './findSubtitleWorker.schemas.js'
 import { allocate, cleanup } from '../files/stagingSandbox.js'
 import { isUnderRoots } from '../core/mediaContext.js'
+import { yearFromDir, yearFolderTypoOk, applyYearFolderTypoGate, type YearHit } from '../v2/identify.js'
 import type { FetchAdapter } from '../adapters/fetchLib.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
 
@@ -373,7 +374,7 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
           `provider ids: ${JSON.stringify(task.providerIds)}`,
         ]
 
-    const prompt = deps.identifyOnly
+    let prompt = deps.identifyOnly
       ? [
           'Identify each of the unidentified parked files listed below: establish what each one',
           'actually is per the identify-media skill document,',
@@ -408,6 +409,35 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
             : `targets (${task.targets.length} item(s), current gaps in this scope):`,
           targetsBlock,
         ].join('\n')
+
+    const boundItemIds = new Set(
+      task.targets.map((t) => t.itemId).filter((id): id is string => id != null),
+    )
+    const dirYear = yearFromDir(basename(task.mediaRoot))
+    const tmdbYear = task.year
+    const claimedTitle = task.title
+    let yearTypoHits: YearHit[] | null = null
+    // Skip when every target is unidentified, TMDB is missing, or the year delta is not a
+    // 1–2 folder typo (avoids an extra search on existing tests whose mediaRoot has no year).
+    if (boundItemIds.size > 0 && deps.tmdb && dirYear != null && tmdbYear != null) {
+      const delta = Math.abs(dirYear - tmdbYear)
+      if (delta === 1 || delta === 2) {
+        try {
+          const mediaType = task.targets.some((t) => t.season != null) ? 'tv' : 'movie'
+          const raw = await deps.tmdb.search(mediaType, task.title)
+          yearTypoHits = raw.map((h) => ({
+            title: h.title, originalTitle: h.originalTitle, year: h.year,
+          }))
+          if (yearFolderTypoOk(dirYear, tmdbYear, claimedTitle, yearTypoHits)) {
+            prompt += '\n\nFACT: directory year ' + dirYear
+              + ' vs TMDB year ' + tmdbYear
+              + ' is a 1–2 year folder typo; unique exact title; do not report identification-failed; install.'
+          }
+        } catch {
+          yearTypoHits = null
+        }
+      }
+    }
 
     // finalize-tool mode (NOT Output.object): the model reports its FindSubtitleBatchReport by
     // calling the injected `finalize` tool as its terminal step, and readFinalized() returns those
@@ -459,7 +489,10 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
       // 第 7 步 C 组（2/2）：这里原有写库门的软记录分支——报了 identified 却没调过
       // write_identified_media 时吼一行"识别没落地"。随该工具一同删除（写库门的追踪变量
       // writeIdentityCalled 已无来源）。
-      return report
+      if (yearTypoHits == null) return report
+      return applyYearFolderTypoGate(report, {
+        dirYear, tmdbYear, claimedTitle, hits: yearTypoHits, boundItemIds,
+      })
     } finally {
       // Try-error sandbox cleanup runs even on a thrown error — the staging dir never
       // survives a run, matching stagingSandbox's own "job ends, sandbox is deleted" contract.

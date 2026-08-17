@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { titleFromDir, searchCandidates, verifyEvidence, yearFromDir, yearFolderTypoOk } from './identify.js'
+import { titleFromDir, searchCandidates, verifyEvidence, yearFromDir, yearFolderTypoOk, applyYearFolderTypoGate } from './identify.js'
+import type { FindSubtitleBatchReport } from '../agent/findSubtitleWorker.schemas.js'
 
 describe('titleFromDir（目录名 → 标题）', () => {
   it('标准电影：Pulp Fiction (1994) → Pulp Fiction', () => {
@@ -199,5 +200,73 @@ describe('yearFolderTypoOk（目录年 vs TMDB 年差 1–2、同名无第二年
     expect(yearFolderTypoOk(1942, 1943, 'Casablanca', [
       { title: 'Casablanca', originalTitle: 'Casablanca', year: null },
     ])).toBe(true)
+  })
+})
+
+function emptyReport(over: Partial<FindSubtitleBatchReport> = {}): FindSubtitleBatchReport {
+  return { installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [], identity: null, ...over }
+}
+
+describe('applyYearFolderTypoGate', () => {
+  const hits = [{ title: 'Casablanca', originalTitle: 'Casablanca', year: 1943 }]
+  const bound = new Set(['tmdb:289'])
+
+  it('已绑定 + identification-failed 年份 + typo ok → 从 no_safe_match 去掉并进 retry_later', () => {
+    const report = emptyReport({
+      no_safe_match: [{
+        itemId: 'tmdb:289',
+        reason: 'identification-failed: TMDB year 1943 does not match file year 1942; two-evidence bar not met',
+      }],
+    })
+    const out = applyYearFolderTypoGate(report, {
+      dirYear: 1942, tmdbYear: 1943, claimedTitle: 'Casablanca', hits, boundItemIds: bound,
+    })
+    expect(out.no_safe_match).toEqual([])
+    expect(out.retry_later[0]?.itemId).toBe('tmdb:289')
+    expect(out.retry_later[0]?.reason).toMatch(/year-folder-typo/)
+    expect(report.no_safe_match).toHaveLength(1)
+    expect(out).not.toBe(report)
+  })
+
+  it('typo 不成立时原样返回', () => {
+    const report = emptyReport({
+      no_safe_match: [{ itemId: 'tmdb:289', reason: 'identification-failed: year' }],
+    })
+    const out = applyYearFolderTypoGate(report, {
+      dirYear: 1984, tmdbYear: 2021, claimedTitle: 'Dune',
+      hits: [
+        { title: 'Dune', originalTitle: null, year: 1984 },
+        { title: 'Dune', originalTitle: null, year: 2021 },
+      ],
+      boundItemIds: new Set(['tmdb:289']),
+    })
+    expect(out.no_safe_match).toHaveLength(1)
+    expect(out.retry_later).toEqual([])
+  })
+
+  it('已装上则只剥 no_safe_match，不重复塞 retry_later', () => {
+    const report = emptyReport({
+      installed: [{
+        itemId: 'tmdb:289', installedPath: '/x.srt', installedLanguage: 'zh',
+        candidateProvider: 'assrt', candidateProviderId: '1', reason: 'ok',
+      }],
+      no_safe_match: [{ itemId: 'tmdb:289', reason: 'identification-failed: year 1942' }],
+    })
+    const out = applyYearFolderTypoGate(report, {
+      dirYear: 1942, tmdbYear: 1943, claimedTitle: 'Casablanca', hits, boundItemIds: bound,
+    })
+    expect(out.no_safe_match).toEqual([])
+    expect(out.retry_later).toEqual([])
+    expect(out.installed).toHaveLength(1)
+  })
+
+  it('真正源站没货（reason 不含 year/identification-failed）不动', () => {
+    const report = emptyReport({
+      no_safe_match: [{ itemId: 'tmdb:289', reason: 'no plausible candidate after search' }],
+    })
+    const out = applyYearFolderTypoGate(report, {
+      dirYear: 1942, tmdbYear: 1943, claimedTitle: 'Casablanca', hits, boundItemIds: bound,
+    })
+    expect(out.no_safe_match).toHaveLength(1)
   })
 })

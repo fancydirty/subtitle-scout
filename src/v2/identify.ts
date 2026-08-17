@@ -9,6 +9,8 @@
 // 本文件是**纯函数层**（标题清洗、候选生成、核验逻辑），不含 LLM 调用——
 // LLM 调用在识别 worker 里（阶段 2b），这里的函数可单测。
 
+import type { FindSubtitleBatchReport } from '../agent/findSubtitleWorker.schemas.js'
+
 /** 从目录名提取标题候选。目录名可能带年份、{tmdb-N} 标签、乱码等。
  *  "Pulp Fiction (1994)" → "Pulp Fiction"
  *  "后室 (2026) {tmdb-1083381}" → "后室"
@@ -143,6 +145,55 @@ export function yearFolderTypoOk(
   const sameName = hits.filter((h) => exactName(h, claimedTitle))
   if (sameName.length === 0) return false
   return !sameName.some((h) => h.year != null && h.year !== tmdbYear)
+}
+
+const YEAR_IDENT_FAIL = /year|identification-failed/i
+const YEAR_FOLDER_TYPO_REASON =
+  'year-folder-typo: directory year vs TMDB year is not a different work; do not treat as source-empty'
+
+export function applyYearFolderTypoGate(
+  report: FindSubtitleBatchReport,
+  args: {
+    dirYear: number | null
+    tmdbYear: number | null
+    claimedTitle: string
+    hits: YearHit[]
+    boundItemIds: ReadonlySet<string>
+  },
+): FindSubtitleBatchReport {
+  if (!yearFolderTypoOk(args.dirYear, args.tmdbYear, args.claimedTitle, args.hits)) {
+    return report
+  }
+
+  const dropped: typeof report.no_safe_match = []
+  const no_safe_match = report.no_safe_match.filter((entry) => {
+    if (
+      entry.itemId != null
+      && args.boundItemIds.has(entry.itemId)
+      && YEAR_IDENT_FAIL.test(entry.reason)
+    ) {
+      dropped.push(entry)
+      return false
+    }
+    return true
+  })
+
+  const already = new Set<string>()
+  for (const item of report.installed) {
+    if (item.itemId != null) already.add(item.itemId)
+  }
+  for (const item of report.retry_later) {
+    if (item.itemId != null) already.add(item.itemId)
+  }
+
+  const retry_later = [...report.retry_later]
+  for (const entry of dropped) {
+    if (entry.itemId == null || already.has(entry.itemId)) continue
+    already.add(entry.itemId)
+    retry_later.push({ itemId: entry.itemId, reason: YEAR_FOLDER_TYPO_REASON })
+  }
+
+  return { ...report, no_safe_match, retry_later }
 }
 
 export function yearFromDir(dirName: string): number | null {

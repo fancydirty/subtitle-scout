@@ -425,6 +425,135 @@ describe('makeFindSubtitleWorker (end-to-end, mock model)', () => {
     })
   })
 
+  describe('year-folder-typo FACT + post-finalize gate', () => {
+    const casablancaFail = {
+      installed: [],
+      no_safe_match: [{
+        itemId: 'tmdb:289',
+        reason: 'identification-failed: TMDB year 1943 does not match file year 1942; two-evidence bar not met',
+      }],
+      retry_later: [],
+      hardsub_assumed: [],
+    }
+
+    function userText(options: LanguageModelV4CallOptions): string {
+      const userMessage = options.prompt.find(m => m.role === 'user')
+      const textPart = (userMessage?.content as any[])?.find((p: any) => p.type === 'text')
+      return textPart?.text ?? ''
+    }
+
+    function movieTarget(mediaRoot: string, itemId: string, filename: string): FindSubtitleTargetFact {
+      return {
+        itemId, videoPath: join(mediaRoot, filename), videoFilename: filename,
+        season: null, episode: null, absoluteEpisode: null, imdbId: null, embeddedTmdbId: null,
+      }
+    }
+
+    it('Casablanca 1942 vs 1943：prompt FACT + 闸把 identification-failed 改 retry_later；search 不带年', async () => {
+      const mediaRoot = join(root, 'Casablanca (1942)')
+      mkdirSync(mediaRoot, { recursive: true })
+      const tmdb = {
+        search: vi.fn(async (_mediaType: string, _query: string, _year?: number) => [
+          { id: 289, title: 'Casablanca', originalTitle: 'Casablanca', year: 1943, posterPath: null },
+        ]),
+        getDetails: vi.fn(async () => null),
+        getSeasonTable: vi.fn(async () => null),
+      }
+
+      let capturedPromptText = ''
+      const model = new MockLanguageModelV4({
+        doGenerate: async (options: LanguageModelV4CallOptions) => {
+          capturedPromptText = userText(options)
+          return finalizeResult(casablancaFail)
+        },
+      })
+
+      const runTask = makeFindSubtitleWorker({
+        model, adapters: [], cacheRoot: join(root, 'cache'), stepCap: 10, tmdb,
+      })
+      const report = await runTask(baseTask(mediaRoot, [
+        movieTarget(mediaRoot, 'tmdb:289', 'Casablanca.mkv'),
+      ], { title: 'Casablanca', year: 1943, jobId: 'job-casablanca' }))
+
+      expect(capturedPromptText).toMatch(/FACT/i)
+      expect(capturedPromptText).toMatch(/folder typo/i)
+      expect(capturedPromptText).toContain('1942')
+      expect(capturedPromptText).toContain('1943')
+      expect(capturedPromptText).toMatch(/install/i)
+      expect(capturedPromptText).toMatch(/do not report identification-failed/i)
+      expect(report.no_safe_match).toEqual([])
+      expect(report.retry_later[0]?.itemId).toBe('tmdb:289')
+      expect(report.retry_later[0]?.reason).toMatch(/year-folder-typo/)
+      expect(tmdb.search).toHaveBeenCalledWith('movie', 'Casablanca')
+      expect(tmdb.search.mock.calls[0][2]).toBeUndefined()
+    })
+
+    it('Dune 2020/2021 同名两年：无 typo FACT，no_safe_match 保留', async () => {
+      const mediaRoot = join(root, 'Dune (2020)')
+      mkdirSync(mediaRoot, { recursive: true })
+      const tmdb = {
+        search: vi.fn(async () => [
+          { id: 1, title: 'Dune', originalTitle: 'Dune', year: 2020, posterPath: null },
+          { id: 2, title: 'Dune', originalTitle: 'Dune', year: 2021, posterPath: null },
+        ]),
+        getDetails: vi.fn(async () => null),
+        getSeasonTable: vi.fn(async () => null),
+      }
+
+      let capturedPromptText = ''
+      const model = new MockLanguageModelV4({
+        doGenerate: async (options: LanguageModelV4CallOptions) => {
+          capturedPromptText = userText(options)
+          return finalizeResult({
+            installed: [],
+            no_safe_match: [{ itemId: 'tmdb:289', reason: 'identification-failed: TMDB year 2021 does not match file year 2020' }],
+            retry_later: [],
+          })
+        },
+      })
+
+      const runTask = makeFindSubtitleWorker({
+        model, adapters: [], cacheRoot: join(root, 'cache'), stepCap: 10, tmdb,
+      })
+      const report = await runTask(baseTask(mediaRoot, [
+        movieTarget(mediaRoot, 'tmdb:289', 'Dune.mkv'),
+      ], { title: 'Dune', year: 2021, jobId: 'job-dune-slack' }))
+
+      expect(capturedPromptText).not.toMatch(/folder typo/i)
+      expect(report.no_safe_match).toHaveLength(1)
+      expect(tmdb.search).toHaveBeenCalled()
+    })
+
+    it('tmdb.search 抛错 → fail-closed：no_safe_match 保留、无 FACT', async () => {
+      const mediaRoot = join(root, 'Casablanca (1942)')
+      mkdirSync(mediaRoot, { recursive: true })
+      const tmdb = {
+        search: vi.fn(async () => { throw new Error('tmdb down') }),
+        getDetails: vi.fn(async () => null),
+        getSeasonTable: vi.fn(async () => null),
+      }
+
+      let capturedPromptText = ''
+      const model = new MockLanguageModelV4({
+        doGenerate: async (options: LanguageModelV4CallOptions) => {
+          capturedPromptText = userText(options)
+          return finalizeResult(casablancaFail)
+        },
+      })
+
+      const runTask = makeFindSubtitleWorker({
+        model, adapters: [], cacheRoot: join(root, 'cache'), stepCap: 10, tmdb,
+      })
+      const report = await runTask(baseTask(mediaRoot, [
+        movieTarget(mediaRoot, 'tmdb:289', 'Casablanca.mkv'),
+      ], { title: 'Casablanca', year: 1943, jobId: 'job-casablanca-tmdb-throw' }))
+
+      expect(capturedPromptText).not.toMatch(/folder typo/i)
+      expect(report.no_safe_match).toHaveLength(1)
+      expect(report.retry_later).toEqual([])
+    })
+  })
+
   // 管线拆分（2026-07-28 事故裁决：一晚 446 文件全量批里 agent 烧 ~450 步做识别——424 次
   // write_identified_media 对 7 次 search_source——步数见底后凭空编造 384 条 no_safe_match、
   // 242 集被假 unavailable。裁决：识别归识别，找字幕归找字幕，DB 为状态机）。identifyOnly
