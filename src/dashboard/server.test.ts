@@ -301,7 +301,7 @@ describe('startDashboard (v2)', () => {
       const res = await fetch(`${base}/api/v2/settings?token=tok`)
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({
-        target_languages: 'zh,en', hardsub_mode: null, exclude_extras: null,
+        target_languages: 'zh,en', hardsub_mode: null,
         trace_retention_days: null, scan_interval_ms: null, ai_translate_enabled: null,
         engine_enabled: null, 'provider:SUBHD_ENABLED': null, 'provider:ZIMUKU_ENABLED': null,
         engineEnabled: true,
@@ -381,7 +381,7 @@ describe('startDashboard (v2)', () => {
         })
         expect(res.status).toBe(200)
         expect(await res.json()).toEqual({
-          target_languages: 'zh,en', hardsub_mode: 'aggressive', exclude_extras: null,
+          target_languages: 'zh,en', hardsub_mode: 'aggressive',
           trace_retention_days: null, scan_interval_ms: null, ai_translate_enabled: null,
           engine_enabled: null, 'provider:SUBHD_ENABLED': null, 'provider:ZIMUKU_ENABLED': null,
           engineEnabled: true,

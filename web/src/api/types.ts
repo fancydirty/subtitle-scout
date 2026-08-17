@@ -93,7 +93,6 @@ export type SettingsKey =
   | 'target_languages'
   | 'ai_translate_enabled'
   | 'hardsub_mode'
-  | 'exclude_extras'
   | 'scan_interval_ms'
   | 'trace_retention_days'
   | 'engine_enabled'

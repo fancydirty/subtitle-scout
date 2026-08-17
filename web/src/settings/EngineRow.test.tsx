@@ -16,7 +16,6 @@ const SETTINGS: SettingsDTO = {
   target_languages: 'zh',
   ai_translate_enabled: null,
   hardsub_mode: null,
-  exclude_extras: null,
   scan_interval_ms: null,
   trace_retention_days: null,
   engine_enabled: null,
@@ -49,10 +48,7 @@ describe('EngineRow', () => {
   it('翻转开关 → PUT { engine_enabled: "true" }，响应回写本地', async () => {
     const update = vi.spyOn(api, 'updateSettings').mockResolvedValue({ ...SETTINGS, engineEnabled: true })
     renderSection()
-    // Astryx Switch 把 label 作为可及名暴露在 role="switch" 上——既有
-    // `BehaviorSection.test.tsx:58` 就是这么取的（`getByRole('switch', { name: 'Exclude extras' })`）。
-    // 这里**必须**带 name 限定：BehaviorSection 整区渲染时有多个 switch（Engine / Exclude extras），
-    // 裸 `getByRole('switch')` 会因多重匹配直接抛错。
+    // 必须带 name 限定：BehaviorSection 还有其它控件；裸 getByRole('switch') 在多开关时会炸。
     fireEvent.click(screen.getByRole('switch', { name: 'Engine' }))
     await waitFor(() => expect(update).toHaveBeenCalledWith({ engine_enabled: 'true' }))
     // 响应回写本地：mock 响应带 engineEnabled: true，useFieldCommit 用响应体更新 settings，

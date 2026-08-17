@@ -32,7 +32,7 @@ function mockFetch(statusBody: unknown) {
       : url.includes('/api/v2/settings/deploy') ? { secrets: {}, nonSecrets: {} }
       : url.includes('/api/v2/settings/roots') ? []
       : url.includes('/api/v2/settings')
-        ? { target_languages: null, hardsub_mode: null, exclude_extras: null,
+        ? { target_languages: null, hardsub_mode: null,
             trace_retention_days: null, scan_interval_ms: null }
       : /\/api\/v2\/mediaLibrary$/.test(path) ? []
       : /\/api\/v2\/notifications$/.test(path) ? []

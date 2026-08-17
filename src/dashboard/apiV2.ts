@@ -145,7 +145,7 @@ export interface ReconcileAllResultDTO {
  *  校验在下方 updateSettings 的 zod 门（PUT /api/v2/settings 经 server.ts 转call），这里只负责
  *  "读的时候只读这五个"。 */
 export const SETTINGS_KEYS = [
-  'target_languages', 'hardsub_mode', 'exclude_extras', 'trace_retention_days', 'scan_interval_ms',
+  'target_languages', 'hardsub_mode', 'trace_retention_days', 'scan_interval_ms',
   'ai_translate_enabled',
   // spec A §4.6：发动机总开关（fail-open，脏值视为开——布尔别名见 buildSettings）。
   'engine_enabled',
@@ -259,7 +259,6 @@ const SETTINGS_VALUE_SCHEMAS: Record<SettingsKey, z.ZodType<string>> = {
     .string()
     .regex(/^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*(,[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*)*$/, 'must be comma-separated BCP-47 primary codes, e.g. "zh,en"'),
   hardsub_mode: z.enum(['off', 'agent', 'aggressive']),
-  exclude_extras: z.enum(['true', 'false']),
   trace_retention_days: z.string().regex(/^[1-9][0-9]*$/, 'must be a positive integer string'),
   scan_interval_ms: z.string().regex(/^[1-9][0-9]*$/, 'must be a positive integer string'),
   ai_translate_enabled: z.enum(['true', 'false']),

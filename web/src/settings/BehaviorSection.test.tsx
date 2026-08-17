@@ -11,7 +11,7 @@ import type { Async } from '../api/hooks.js'
 import type { SettingsDTO } from '../api/types.js'
 
 const NULL_SETTINGS: SettingsDTO = {
-  target_languages: null, hardsub_mode: null, exclude_extras: null,
+  target_languages: null, hardsub_mode: null,
   trace_retention_days: null, scan_interval_ms: null, ai_translate_enabled: null,
   engine_enabled: null, 'provider:SUBHD_ENABLED': null, 'provider:ZIMUKU_ENABLED': null,
   engineEnabled: false,
@@ -58,8 +58,7 @@ describe('BehaviorSection：null 值默认占位', () => {
     const mode = screen.getByRole('combobox', { name: 'Hardsub assumption' })
     expect(mode.textContent).toContain('Off')
 
-    const excludeExtras = screen.getByRole('switch', { name: 'Exclude extras' })
-    expect(excludeExtras).not.toBeChecked()
+    expect(screen.queryByRole('switch', { name: 'Exclude extras' })).toBeNull()
 
     const traceDays = screen.getByRole('spinbutton', { name: 'Trace retention (days)' })
     expect(traceDays).toHaveAttribute('placeholder', '30')
@@ -68,7 +67,7 @@ describe('BehaviorSection：null 值默认占位', () => {
 
     expect(
       screen.getAllByText('Takes effect on the next library scan.'),
-    ).toHaveLength(2)
+    ).toHaveLength(1)
     expect(
       screen.getByText('Takes effect on the next dispatched find-subtitle task.'),
     ).toBeInTheDocument()
@@ -83,7 +82,7 @@ describe('BehaviorSection：null 值默认占位', () => {
   it('已设置值原样回显（非默认占位）', () => {
     renderSection(
       asyncOf({
-        target_languages: 'en', hardsub_mode: 'aggressive', exclude_extras: 'true',
+        target_languages: 'en', hardsub_mode: 'aggressive',
         trace_retention_days: '14', scan_interval_ms: '600000', ai_translate_enabled: 'true',
         engine_enabled: null, 'provider:SUBHD_ENABLED': null, 'provider:ZIMUKU_ENABLED': null,
         engineEnabled: false,
@@ -91,7 +90,6 @@ describe('BehaviorSection：null 值默认占位', () => {
     )
     expect(screen.getByRole('combobox', { name: 'Target subtitle language' }).textContent).toContain('英语')
     expect(screen.getByRole('combobox', { name: 'Hardsub assumption' }).textContent).toContain('Aggressive')
-    expect(screen.getByRole('switch', { name: 'Exclude extras' })).toBeChecked()
     expect(screen.getByRole('spinbutton', { name: 'Trace retention (days)' })).toHaveValue(14)
     expect(screen.getByRole('spinbutton', { name: 'Scan interval (minutes)' })).toHaveValue(10)
   })
@@ -128,18 +126,6 @@ describe('BehaviorSection：单键即时 PUT', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
     const [, init] = fetchMock.mock.calls[0] as [RequestInfo, RequestInit]
     expect(JSON.parse(String(init.body))).toEqual({ hardsub_mode: 'off' })
-  })
-
-  it('exclude_extras 切换即刻单键 PUT', async () => {
-    const fetchMock = mockPut(200, { ...NULL_SETTINGS, exclude_extras: 'true' })
-    vi.stubGlobal('fetch', fetchMock)
-    renderSection(asyncOf(NULL_SETTINGS))
-
-    fireEvent.click(screen.getByRole('switch', { name: 'Exclude extras' }))
-
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
-    const [, init] = fetchMock.mock.calls[0] as [RequestInfo, RequestInit]
-    expect(JSON.parse(String(init.body))).toEqual({ exclude_extras: 'true' })
   })
 
   it('scan_interval 已设置值未改动时失焦不重复 PUT（换算后与存储值比较）', async () => {
@@ -235,12 +221,12 @@ describe('BehaviorSection：三态', () => {
 })
 
 describe('BehaviorSection：迁移锁', () => {
-  it('六个控件的可及名与既有契约逐字一致（aria-label 手写对齐 Astryx label 提升）', () => {
+  it('五个控件的可及名与既有契约逐字一致（aria-label 手写对齐 Astryx label 提升）', () => {
     renderSection(asyncOf(NULL_SETTINGS))
     expect(screen.getByRole('switch', { name: 'Engine' })).toBeInTheDocument()
     expect(screen.getByRole('combobox', { name: 'Target subtitle language' })).toBeInTheDocument()
     expect(screen.getByRole('combobox', { name: 'Hardsub assumption' })).toBeInTheDocument()
-    expect(screen.getByRole('switch', { name: 'Exclude extras' })).toBeInTheDocument()
+    expect(screen.queryByRole('switch', { name: 'Exclude extras' })).toBeNull()
     expect(screen.getByRole('spinbutton', { name: 'Trace retention (days)' })).toBeInTheDocument()
     expect(screen.getByRole('spinbutton', { name: 'Scan interval (minutes)' })).toBeInTheDocument()
   })

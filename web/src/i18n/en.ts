@@ -222,10 +222,6 @@ export const en = {
   settings_hardsub_mode_option_agent: 'Agent',
   settings_hardsub_mode_option_aggressive: 'Aggressive',
   settings_hardsub_mode_note: 'Takes effect on the next dispatched find-subtitle task.',
-  settings_exclude_extras_label: 'Exclude extras',
-  // 救援R6：exclude_extras/hardsub_mode 已各自独立生效注记（R4c/R5e）——rescue-officer 战役
-  // 全线收官，这条"尚未落地"占位注记已无消费点，随手清理，不留误导性文案。
-  settings_exclude_extras_restart_note: 'Takes effect on the next library scan.',
 
   settings_trace_retention_label: 'Trace retention (days)',
   settings_trace_retention_note: 'Takes effect at the daily trace cleanup.',

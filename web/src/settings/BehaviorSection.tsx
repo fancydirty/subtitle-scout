@@ -5,8 +5,8 @@
 // 覆盖 local，不需要重新 GET。
 //
 // 已知债务如实标注（DESIGN.md §8）：target_languages/scan_interval_ms/trace_retention_days 已真
-// 消费；hardsub_mode/exclude_extras 均已保存且被消费（cli/index.ts live getter，下一轮扫描/派发
-// 生效——救援官战役已上线）。ai_translate_enabled 行已迁至 TranslateSection.tsx（Wave 3）。
+// 消费；hardsub_mode 由 find-subtitle worker 消费。特典排除走 judge 规则 0，设置页不再有开关。
+// ai_translate_enabled 行已迁至 TranslateSection.tsx（Wave 3）。
 //
 // 控件栈（Plan C Task 25 迁移）：Astryx Switch/TextInput/Selector/NumberInput/Button 全卸——
 // Switch/Input/Select/Button 走 components/ui 的 shadcn copy-in（Switch 的 value/onChange 改名
@@ -177,32 +177,6 @@ function HardsubModeRow({ settings, onUpdated }: RowProps) {
   )
 }
 
-function ExcludeExtrasRow({ settings, onUpdated }: RowProps) {
-  const { t } = useT()
-  const { saving, error, commit } = useFieldCommit(onUpdated)
-  const value = settings.exclude_extras === 'true'
-
-  return (
-    <div className="flex flex-col gap-2">
-      <div className="flex items-center gap-2">
-        <Switch
-          aria-label={t('settings_exclude_extras_label')}
-          checked={value}
-          onCheckedChange={(checked) => void commit('exclude_extras', checked ? 'true' : 'false')}
-          disabled={saving}
-        />
-        <span className="text-[13px] font-medium leading-5 text-foreground">
-          {t('settings_exclude_extras_label')}
-        </span>
-      </div>
-      <span className="text-[11px] leading-4 text-muted-foreground">
-        {t('settings_exclude_extras_restart_note')}
-      </span>
-      {error ? <p role="alert" className="text-[11px] leading-4 text-fn-red">{error}</p> : null}
-    </div>
-  )
-}
-
 function EngineRow({ settings, onUpdated }: RowProps) {
   const { t } = useT()
   const { saving, error, commit } = useFieldCommit(onUpdated)
@@ -329,7 +303,6 @@ export function BehaviorSection({ settings }: Props) {
         <EngineRow settings={local} onUpdated={setLocal} />
         <TargetLanguagesRow settings={local} onUpdated={setLocal} />
         <HardsubModeRow settings={local} onUpdated={setLocal} />
-        <ExcludeExtrasRow settings={local} onUpdated={setLocal} />
         <NumberSettingRow
           settings={local}
           onUpdated={setLocal}

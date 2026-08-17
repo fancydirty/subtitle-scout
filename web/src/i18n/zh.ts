@@ -172,10 +172,6 @@ export const zh = {
   settings_hardsub_mode_option_agent: 'Agent 判断',
   settings_hardsub_mode_option_aggressive: '激进',
   settings_hardsub_mode_note: '下一次派发的字幕搜索任务生效。',
-  settings_exclude_extras_label: '排除特典',
-  // 救援R6：exclude_extras/hardsub_mode 已各自独立生效注记（R4c/R5e）——rescue-officer 战役
-  // 全线收官，这条"尚未落地"占位注记已无消费点，随手清理，不留误导性文案。
-  settings_exclude_extras_restart_note: '下一轮扫描生效。',
 
   settings_trace_retention_label: '痕迹保留天数',
   settings_trace_retention_note: '每日痕迹清理时生效。',

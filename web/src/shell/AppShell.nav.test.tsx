@@ -34,7 +34,7 @@ function mockFetch() {
       : url.includes('/api/v2/settings/deploy') ? { secrets: {}, nonSecrets: {} }
       : url.includes('/api/v2/settings/roots') ? []
       : url.includes('/api/v2/settings')
-        ? { target_languages: null, hardsub_mode: null, exclude_extras: null,
+        ? { target_languages: null, hardsub_mode: null,
             trace_retention_days: null, scan_interval_ms: null }
       // Task ⑧：媒体库两个端点。**必须给数组**——`{}` 会让 MediaLibraryPage 的 items.map
       // 抛 TypeError（实测踩到），主区被炸空，本文件真正要测的"分支在不在"就被淹没了。

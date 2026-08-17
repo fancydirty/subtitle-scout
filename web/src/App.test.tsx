@@ -61,7 +61,7 @@ function standardHandlers() {
     // tab"的断言需要真数据才能命中）。
     {
       path: '/api/v2/settings',
-      body: { target_languages: null, hardsub_mode: null, exclude_extras: null, trace_retention_days: null, scan_interval_ms: null },
+      body: { target_languages: null, hardsub_mode: null, trace_retention_days: null, scan_interval_ms: null },
     },
     { path: '/api/v2/settings/deploy', body: { secrets: {}, nonSecrets: {} } },
     { path: '/api/v2/settings/roots', body: [] },
