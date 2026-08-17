@@ -138,7 +138,7 @@ function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Cu
         workId: nonemptyString(d?.workId),
         backdropPath: nonemptyString(d?.backdropPath),
         chineseTitle: nonemptyString(d?.chineseTitle),
-        startedAt: Date.now(),
+        startedAt: typeof e.at === 'number' ? e.at : Date.now(),
         lastStep: null,
       })
       return
@@ -195,13 +195,33 @@ function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Cu
 }
 
 /** 滚动 log：只追加**实际送到浏览器**的 progress.step 译文，上限 5；新 activity 重置。 */
-function useStepLog(): string[] {
+function useStepLog(workId: string | null | undefined): string[] {
   const activity = useActivityEvent()
   const progress = useProgressEvent()
+  const status = useEventsStatus()
   const { t } = useT()
   const [lines, setLines] = useState<string[]>([])
   const appliedAct = useRef(0)
   const appliedProg = useRef(0)
+
+  const resetLog = useCallback(() => {
+    appliedAct.current = 0
+    appliedProg.current = 0
+    setLines([])
+  }, [])
+  // 与 useCurrentState / StatusBar 同一条边沿：进程重启后事件 id 从 1 再起，
+  // 不归零的话 1..n 会被 `id <= applied*` 丢掉，上一张卡的句子贴在新卡上。
+  useResumeEdge(status, resetLog)
+
+  const prevWorkId = useRef(workId)
+  useEffect(() => {
+    if (prevWorkId.current !== workId && prevWorkId.current != null) {
+      appliedAct.current = 0
+      appliedProg.current = 0
+      setLines([])
+    }
+    prevWorkId.current = workId
+  }, [workId])
 
   useEffect(() => {
     if (!activity || activity.id <= appliedAct.current) return
@@ -549,7 +569,7 @@ export function ActivityPage() {
   const status = useEventsStatus()
 
   const current = useCurrentState(health, reloadHealth)
-  const logLines = useStepLog()
+  const logLines = useStepLog(current?.workId)
   const activityEvent = useActivityEvent()
 
   const [tab, setTab] = useState<ActivityTab>('subtitle')

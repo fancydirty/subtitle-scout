@@ -42,6 +42,10 @@ class FakeES {
   emit(e: ScoutEvent) {
     for (const fn of this.listeners.get(e.type) ?? []) fn({ data: JSON.stringify(e) })
   }
+  /** 进程重启后的 hello 帧：换 bootId 才能把 lastSeenId 清零，否则 id 从 1 再起会被去重门丢掉。 */
+  hello(bootId: string) {
+    for (const fn of this.listeners.get('hello') ?? []) fn({ data: JSON.stringify({ bootId }) })
+  }
   open() { this.readyState = 1; this.onopen?.() }
   fail(readyState: number) { this.readyState = readyState; this.onerror?.() }
 }
@@ -641,6 +645,158 @@ describe('🔴 「第 i/n 个」只信 SSE，排队列表只信 /api/v2/activity
     const text = screen.getAllByTestId('wb-queue-card')[0]!.textContent ?? ''
     expect(text).toContain(en.wb_queue_awaiting_scan)
     expect(text).not.toContain(en.wb_queue_retry_in)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ScoutCurrent overlay：progress 省略身份、health 播种、跨 tab 同 workId、log 复位
+// ═══════════════════════════════════════════════════════════════════════════
+describe('ScoutCurrent overlay：身份随 tick 保留，播种与 log 跟快照走', () => {
+  it('progress 省略 workId 仍保留身份（P5/P11）——简化成 data.workId ?? null 必须红', async () => {
+    renderPage()
+    await ready()
+    act(() => {
+      bus().emit(ev({
+        type: 'activity', message: '正在找字幕：Queued Show', title: 'Queued Show',
+        workbench: 'subtitle', data: { workId: 'tmdb:1', backdropPath: '/bd.jpg' },
+      }))
+      bus().emit(ev({
+        type: 'progress', message: '第 3/6 个', title: 'Queued Show',
+        workbench: 'subtitle', data: { done: 3, total: 6, step: 'search_source' },
+      }))
+    })
+    await waitFor(() => expect(screen.getByTestId('wb-run-card')).toBeInTheDocument())
+    const queueCards = screen.queryAllByTestId('wb-queue-card')
+    expect(queueCards.some((c) => (c.textContent ?? '').includes('Queued Show'))).toBe(false)
+    const card = screen.getByTestId('wb-run-card')
+    const rImg = card.querySelector('img')!
+    expect(rImg.getAttribute('src')).toContain('/bd.jpg')
+    expect(rImg.getAttribute('src')).toContain('w1280')
+    expect(card.textContent).toContain(en.wb_step_search)
+    expect(card.textContent).not.toContain('search_source')
+  })
+
+  it('health 快照播种完整 ScoutCurrent（无 SSE activity）', async () => {
+    healthBody = {
+      ...HEALTH_IDLE,
+      current: {
+        kind: 'subtitle', title: 'Queued Show', index: 2, total: 7,
+        workId: 'tmdb:1', backdropPath: '/bd.jpg', chineseTitle: null,
+        startedAt: Date.now() - 60_000, lastStep: 'search_source',
+      },
+    }
+    renderPage()
+    await ready()
+    const card = await screen.findByTestId('wb-run-card')
+    expect(card.textContent).toContain(en.wb_step_search)
+    expect(card.textContent).toContain(`2 / 7 ${en.wb_run_files_done_suffix}`)
+    const rImg = card.querySelector('img')!
+    expect(rImg.getAttribute('src')).toContain('/bd.jpg')
+    expect(rImg.getAttribute('src')).toContain('w1280')
+    const queueCards = screen.queryAllByTestId('wb-queue-card')
+    expect(queueCards.some((c) => (c.textContent ?? '').includes('Queued Show'))).toBe(false)
+  })
+
+  it('同 workId 在另一条队列：翻译 tab 仍显示（没有 kind 门的 filter 必须红）', async () => {
+    activityBody = {
+      subtitleQueue: [QUEUE_ITEM],
+      translateQueue: [{ ...TRANSLATE_ITEM, workId: 'tmdb:1', title: 'Same Id On Translate' }],
+    }
+    renderPage()
+    await ready()
+    act(() => {
+      bus().emit(ev({
+        type: 'activity', message: '正在找字幕：Queued Show', title: 'Queued Show',
+        workbench: 'subtitle', data: { workId: 'tmdb:1' },
+      }))
+    })
+    await waitFor(() => expect(screen.getByTestId('wb-run-card')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('tab', { name: en.wb_tab_translate }))
+    await waitFor(() => {
+      expect(screen.getAllByTestId('wb-queue-card')[0]!.textContent).toContain('Same Id On Translate')
+    })
+  })
+
+  it('换作品 activity 清空 step log（甲的句子不许留在乙卡上）', async () => {
+    renderPage()
+    await ready()
+    act(() => {
+      bus().emit(ev({
+        type: 'activity', message: '正在找字幕：Queued Show', title: 'Queued Show',
+        workbench: 'subtitle', data: { workId: 'tmdb:1' },
+      }))
+      bus().emit(ev({
+        type: 'progress', message: 'search', title: 'Queued Show',
+        workbench: 'subtitle', data: { done: 1, total: 6, step: 'search_source' },
+      }))
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('wb-run-card').textContent).toContain(en.wb_step_search)
+    })
+    act(() => {
+      bus().emit(ev({
+        type: 'activity', message: '正在找字幕：Other Show', title: 'Other Show',
+        workbench: 'subtitle', data: { workId: 'tmdb:2' },
+      }))
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('wb-run-card').textContent).toContain('Other Show')
+    })
+    expect(screen.getByTestId('wb-run-card').textContent).not.toContain(en.wb_step_search)
+  })
+
+  it('SSE 重连后 step log 游标归零：重启后的小 id activity 仍能清掉旧句', async () => {
+    renderPage()
+    await ready()
+    act(() => { bus().open() })
+    act(() => {
+      bus().emit(ev({
+        type: 'activity', id: 50, message: '正在找字幕：Queued Show', title: 'Queued Show',
+        workbench: 'subtitle', data: { workId: 'tmdb:1' },
+      }))
+      bus().emit(ev({
+        type: 'progress', id: 51, message: 'search', title: 'Queued Show',
+        workbench: 'subtitle', data: { done: 1, total: 6, step: 'search_source' },
+      }))
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('wb-run-card').textContent).toContain(en.wb_step_search)
+    })
+
+    const healthBefore = countOf('/api/v2/health')
+    act(() => { bus().fail(2) })
+    await waitFor(() => expect(FakeES.instances.length).toBeGreaterThan(1))
+    const reconnected = FakeES.instances[FakeES.instances.length - 1]!
+    act(() => { reconnected.open() })
+    act(() => { reconnected.hello('boot-restart') })
+    await waitFor(() => expect(countOf('/api/v2/health')).toBeGreaterThan(healthBefore))
+    await act(async () => { await Promise.resolve() })
+
+    act(() => {
+      reconnected.emit(ev({
+        type: 'activity', id: 1, message: '正在找字幕：Other Show', title: 'Other Show',
+        workbench: 'subtitle', data: { workId: 'tmdb:2' },
+      }))
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('wb-run-card').textContent).toContain('Other Show')
+    })
+    expect(screen.getByTestId('wb-run-card').textContent).not.toContain(en.wb_step_search)
+  })
+
+  it('activity 的 startedAt 取 e.at，不是 Date.now()', async () => {
+    renderPage()
+    await ready()
+    const at = Date.now() - 5 * 60_000
+    act(() => {
+      bus().emit(ev({
+        type: 'activity', message: '正在找字幕：Show A', title: 'Show A',
+        workbench: 'subtitle', at,
+      }))
+    })
+    await waitFor(() => expect(screen.getByTestId('wb-run-card')).toBeInTheDocument())
+    expect(screen.getByTestId('wb-run-card').textContent).toContain('5m')
+    expect(screen.getByTestId('wb-run-card').textContent).not.toMatch(/\b0s\b/)
   })
 })
 
