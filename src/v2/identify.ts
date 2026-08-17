@@ -142,8 +142,7 @@ export function yearFolderTypoOk(
   if (delta !== 1 && delta !== 2) return false
   const sameName = hits.filter((h) => exactName(h, claimedTitle))
   if (sameName.length === 0) return false
-  const years = new Set(sameName.map((h) => h.year).filter((y): y is number => y != null))
-  return years.size <= 1
+  return !sameName.some((h) => h.year != null && h.year !== tmdbYear)
 }
 
 export function yearFromDir(dirName: string): number | null {

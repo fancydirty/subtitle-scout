@@ -178,7 +178,13 @@ describe('yearFolderTypoOk（目录年 vs TMDB 年差 1–2、同名无第二年
 
   it('originalTitle 整串相等也算同名', () => {
     expect(yearFolderTypoOk(2019, 2020, 'Parasite', [
-      { title: 'Gisaengchung', originalTitle: 'Parasite', year: 2019 },
+      { title: 'Gisaengchung', originalTitle: 'Parasite', year: 2020 },
     ])).toBe(true)
+  })
+
+  it('同名只有目录年、没有 TMDB 年 → false（独一性要对着绑定的 TMDB 年）', () => {
+    expect(yearFolderTypoOk(1942, 1943, 'Casablanca', [
+      { title: 'Casablanca', originalTitle: 'Casablanca', year: 1942 },
+    ])).toBe(false)
   })
 })
