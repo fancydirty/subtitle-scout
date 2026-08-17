@@ -210,17 +210,28 @@ function StatusBar({
   // 每秒重算会让整个状态条每秒重渲染，而显示的字一分钟才变一次。
   const now = useMemo(() => Date.now(), [health])
 
-  const fresh = health ? inspectFreshness(health, now) : null
+  // running 跟 SSE `current`，不跟 health.current：POST 200 只是 queued，
+  // 快照可能整轮都是 null；收工后 patrol 已把 current 清掉，health 却可能还挂着旧的。
+  // 禁止 `current ?? health.current`——patrol 之后 SSE 是 null、中途快照仍可能非 null。
+  const fresh = health ? inspectFreshness({ ...health, current }, now) : null
   const perm = health ? workPermission(health) : null
   // 🟡 读数新鲜度。**电平**不是边沿——见 inspectFreshness 里 liveFreshness 的论证。
   const live = liveFreshness(status)
 
   const [pending, setPending] = useState(false)
   const [runAlert, setRunAlert] = useState<string | null>(null)
+  const inFlightRef = useRef(false)
+  const wasRunning = useRef(false)
 
   useEffect(() => {
-    if (fresh?.phase === 'running') setPending(false)
-  }, [fresh?.phase])
+    const running = current != null
+    if (running) {
+      setPending(false)
+      inFlightRef.current = false
+    }
+    if (wasRunning.current && !running) reloadHealth()
+    wasRunning.current = running
+  }, [current, reloadHealth])
 
   // idle：下次自动检查倒计时（不再渲染「上次自动检查开始于」）。
   // never / stale / running 四态原句保留；stale 仍用「…前」（死亡信号，不是倒计时）。
@@ -244,15 +255,19 @@ function StatusBar({
   }
 
   const onRunNow = async () => {
+    if (inFlightRef.current) return
+    inFlightRef.current = true
     setRunAlert(null)
     setPending(true)
     try {
       await api.triggerInspect()
       reloadHealth()
+      // 成功：pending / inFlight 留到 SSE current 变成 running。
     } catch (e) {
       const msg = e instanceof Error ? e.message : ''
       setRunAlert(msg.includes('already running') ? t('wb_inspect_already') : t('wb_inspect_run_failed'))
       setPending(false)
+      inFlightRef.current = false
     }
   }
 

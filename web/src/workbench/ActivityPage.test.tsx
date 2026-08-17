@@ -79,6 +79,9 @@ let activityBody: unknown = { subtitleQueue: [QUEUE_ITEM], translateQueue: [TRAN
 let activityOk = true
 /** POST /library/inspect 的响应覆盖；null = 默认 200 `{ok:true}`。 */
 let inspectRes: { ok: boolean; status: number; json: () => Promise<unknown> } | 'network' | null = null
+/** 挂起所有 inspect POST，直到测试 release——用来把两次 click 送进同一个 in-flight 窗口。 */
+let inspectHold: Promise<void> | null = null
+let inspectQueue: Array<{ ok: boolean; status: number; json: () => Promise<unknown> }> = []
 
 function countOf(fragment: string): number {
   return urls.filter((u) => u.includes(fragment)).length
@@ -90,6 +93,8 @@ beforeEach(() => {
   urls = []
   fetchCalls = []
   inspectRes = null
+  inspectHold = null
+  inspectQueue = []
   healthBody = HEALTH_IDLE
   activityBody = { subtitleQueue: [QUEUE_ITEM], translateQueue: [TRANSLATE_ITEM] }
   activityOk = true
@@ -100,7 +105,10 @@ beforeEach(() => {
     urls.push(url)
     fetchCalls.push({ url, method: typeof init?.method === 'string' ? init.method : undefined })
     if (url.includes('/api/v2/library/inspect')) {
+      if (inspectHold) await inspectHold
       if (inspectRes === 'network') throw new Error('failed to fetch')
+      const queued = inspectQueue.shift()
+      if (queued) return queued as unknown as Response
       if (inspectRes) return inspectRes as unknown as Response
       return { ok: true, status: 200, json: async () => ({ ok: true }) } as unknown as Response
     }
@@ -664,6 +672,64 @@ describe('状态条：lastInspectAt 语义与 daemon 可能没在跑', () => {
       expect(hit).toBeTruthy()
       expect(hit!.method).toBe('POST')
     })
+  })
+
+  it('🔴 Run now 跟 SSE current：排队中禁用，开工仍禁用，巡检收工才解禁', async () => {
+    // health.current 全程 null——POST 200 只是 queued。若 pending 只信 health 快照，
+    // 收工后按钮会卡死到会话结束。
+    renderPage()
+    await ready()
+    const btn = screen.getByTestId('wb-inspect-now')
+    fireEvent.click(btn)
+    await waitFor(() => {
+      expect(fetchCalls.some((c) => c.url.includes('/api/v2/library/inspect'))).toBe(true)
+    })
+    expect(btn).toBeDisabled()
+    expect(screen.getByTestId('wb-inspect-line').textContent).toContain('Next automatic check')
+    // 200 会 one-shot 重拉 health；等它落地再取样，避免把排队重拉误判成开工重拉。
+    await waitFor(() => expect(countOf('/api/v2/health')).toBeGreaterThan(1))
+    const healthAfterQueue = countOf('/api/v2/health')
+
+    act(() => {
+      bus().emit(ev({ type: 'activity', message: '正在找字幕：Show A', title: 'Show A', workbench: 'subtitle' }))
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('wb-inspect-line').textContent).toContain(en.wb_inspect_running)
+    })
+    expect(btn).toBeDisabled()
+    expect(countOf('/api/v2/health'), '开工/progress 不许重拉 health').toBe(healthAfterQueue)
+
+    act(() => { bus().emit(ev({ type: 'activity', message: '字幕工作台跑完，处理了 1 个作品' })) })
+    await waitFor(() => {
+      expect(screen.getByTestId('wb-inspect-now')).not.toBeDisabled()
+    })
+    expect(screen.getByTestId('wb-inspect-line').textContent).toContain('Next automatic check')
+    await waitFor(() => {
+      expect(countOf('/api/v2/health'), '收工必须重拉 nextInspectAt').toBeGreaterThan(healthAfterQueue)
+    })
+  })
+
+  it('200 之后再撞 409 不许把按钮解禁（同步 inFlight 闸）', async () => {
+    let release!: () => void
+    inspectHold = new Promise<void>((r) => { release = r })
+    inspectQueue = [
+      { ok: true, status: 200, json: async () => ({ ok: true }) },
+      { ok: false, status: 409, json: async () => ({ error: 'already running' }) },
+    ]
+    renderPage()
+    await ready()
+    const btn = screen.getByTestId('wb-inspect-now')
+    // 同一拍连点两次：state 还没重绘，第二次必须被 ref 闸住，不能等 409 把 pending 清掉。
+    act(() => {
+      btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+      btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    })
+    release()
+    await waitFor(() => {
+      expect(fetchCalls.filter((c) => c.url.includes('/api/v2/library/inspect')).length).toBeGreaterThanOrEqual(1)
+    })
+    expect(btn).toBeDisabled()
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 
   it('409 → 状态条下 alert「已经在检查了」，不弹 dialog，不露出 raw API 串', async () => {
