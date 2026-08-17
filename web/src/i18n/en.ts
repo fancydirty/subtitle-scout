@@ -531,6 +531,7 @@ export const en = {
   notif_empty_desc: 'Subtitles picked up in the past week show up here, newest first.',
   notif_error_title: 'Could not load notifications',
   notif_retry: 'Retry',
+  notif_open_library: 'Open in library',
   // ── Task ⑨ 活动页（#/activity）────────────────────────────────────────────
   // 顶部状态条。⚠️ 巡检那几句的措辞是**语义债务的执行**，不是文案偏好：
   // `lastInspectAt` 落的是巡检的**开始**时刻不是完成时刻（Task ⑤ 审计 🟡-3，后端未修），
@@ -569,6 +570,16 @@ export const en = {
   // them showed up. They show up now, each saying how long the wait is.
   wb_queue_retry_in: 'waiting to retry',
   wb_queue_all_backoff: 'These are waiting to retry',
+  wb_queue_awaiting_scan: 'Checking the library',
+  wb_run_subtitle: 'Installing subtitles',
+  wb_run_translate: 'Translating',
+  wb_run_files_done_suffix: 'files done',
+  wb_step_search: 'Searching sources',
+  wb_step_review: 'Checking candidates',
+  wb_step_download: 'Downloading',
+  wb_step_install: 'Installing',
+  wb_step_wrapup: 'Wrapping up',
+  wb_step_working: 'Still working',
   wb_loading: 'Loading…',
   wb_error_title: 'Could not load the queue',
   wb_retry: 'Retry',

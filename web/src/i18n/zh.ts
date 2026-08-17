@@ -464,6 +464,7 @@ export const zh = {
   notif_empty_desc: '过去一周装上的字幕会出现在这里，最新的在最前面。',
   notif_error_title: '没能加载通知',
   notif_retry: '重试',
+  notif_open_library: '去片库看',
   // ── Task ⑨ 活动页（#/activity）────────────────────────────────────────────
   // ⚠️ 「上次巡检开始于」的「开始」二字是语义债务的执行，不是措辞偏好：
   // lastInspectAt 落的是开始时刻不是完成时刻，写「完成于」就是在报一个我们不知道的事实。
@@ -499,6 +500,16 @@ export const zh = {
   // 措辞纪律同 stale 那一族：不出现"退避/backoff/next_retry_at"这类内部词。
   wb_queue_retry_in: '等待重试',
   wb_queue_all_backoff: '这些正在等待重试',
+  wb_queue_awaiting_scan: '正在核对片库',
+  wb_run_subtitle: '正在装字幕',
+  wb_run_translate: '正在翻译',
+  wb_run_files_done_suffix: '集已装上',
+  wb_step_search: '正在搜源',
+  wb_step_review: '正在看候选',
+  wb_step_download: '正在下载',
+  wb_step_install: '正在安装',
+  wb_step_wrapup: '正在收尾',
+  wb_step_working: '还在处理',
   wb_loading: '加载中…',
   wb_error_title: '没能加载队列',
   wb_retry: '重试',
