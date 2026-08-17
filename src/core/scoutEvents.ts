@@ -98,6 +98,16 @@ export interface ScoutCurrent {
   index: number | null
   /** 队列总长（progress 的 `data.total`）。 */
   total: number | null
+  /** 作品 id（activity `data.workId`）。空串 / 非字符串 → null，不做 Number() 强转。 */
+  workId: string | null
+  /** 横版背景图路径（activity `data.backdropPath`）。 */
+  backdropPath: string | null
+  /** 中文标题（activity `data.chineseTitle`）。 */
+  chineseTitle: string | null
+  /** 本作品开工时刻（activity 写入总线 `now()`）。progress 不改；progress-only 为 null。 */
+  startedAt: number | null
+  /** 最近一条 progress 的 `data.step`（工具 id）。被节流折叠的 progress 也要写——快照在节流门前。 */
+  lastStep: string | null
 }
 
 export interface ScoutEvent extends ScoutEventInput {
@@ -121,6 +131,11 @@ export const PROGRESS_THROTTLE_MS = 1000
  *  （账目在 runs 表与日志文件里）。50 条约等于一次巡检里十几个作品的活动量；再大只是让
  *  重连瞬间往前端灌一屏它并不需要的陈年事件，还把常驻内存抬上去。 */
 export const REPLAY_BUFFER_CAP = 50
+
+/** data 里的身份/步骤字段：空串与非字符串一律 null，**绝不 Number() 强转**。 */
+function nonemptyString(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' ? v : null
+}
 
 export interface ScoutEventBusOpts {
   /** 测试注入时钟。**必须可注入**：节流测试真睡 1 秒会把用例时长押在 wall clock 上
@@ -237,7 +252,19 @@ export class ScoutEventBus {
       if (input.type === 'activity') {
         // 新作品开工：index/total 归 null 而不是留着上一条的——留着就是拿甲剧的
         // "第 3/47 个"去描述乙剧，正是本仓的病 B（把中间量说成结论量）。
-        this.current = { kind: input.workbench, title: input.title ?? null, index: null, total: null }
+        // lastStep 同样归 null：上一部的工具 id 不许贴到下一部。
+        const d = input.data
+        this.current = {
+          kind: input.workbench,
+          title: input.title ?? null,
+          index: null,
+          total: null,
+          workId: nonemptyString(d?.workId),
+          backdropPath: nonemptyString(d?.backdropPath),
+          chineseTitle: nonemptyString(d?.chineseTitle),
+          startedAt: this.nowFn(),
+          lastStep: null,
+        }
         return
       }
       if (input.type === 'progress') {
@@ -246,11 +273,19 @@ export class ScoutEventBus {
         // **不做 Number() 强转**——把 undefined 转成 NaN 再报出去比报 null 更难排查。
         const d = input.data
         const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+        const sameKind = this.current?.kind === input.workbench
+        const step = nonemptyString(d?.step)
         this.current = {
           kind: input.workbench,
           title: input.title ?? null,
           index: num(d?.done),
           total: num(d?.total),
+          // 身份字段只在同一个工作台的 progress 上保留：跨台保留就是拿甲剧的海报描述乙剧。
+          workId: sameKind ? (this.current?.workId ?? null) : null,
+          backdropPath: sameKind ? (this.current?.backdropPath ?? null) : null,
+          chineseTitle: sameKind ? (this.current?.chineseTitle ?? null) : null,
+          startedAt: sameKind ? (this.current?.startedAt ?? null) : null,
+          lastStep: step ?? (sameKind ? (this.current?.lastStep ?? null) : null),
         }
       }
       // health（带 workbench，当前生产无此点）不动 current：它是异常播报，不是"在处理谁"。

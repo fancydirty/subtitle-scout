@@ -134,7 +134,10 @@ function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Cu
     // 不是"当它不存在"。它会被渲染在顶部状态条上（见 StatusBar）。
     const kind = lane
     if (e.type === 'activity') {
-      setCurrent({ kind, title: e.title ?? null, index: null, total: null, workId: workIdOf(e) })
+      setCurrent({
+        kind, title: e.title ?? null, index: null, total: null, workId: workIdOf(e),
+        backdropPath: null, chineseTitle: null, startedAt: null, lastStep: null,
+      })
       return
     }
     if (e.type === 'progress') {
@@ -144,6 +147,7 @@ function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Cu
         kind, title: e.title ?? null,
         index: num(e.data?.done), total: num(e.data?.total),
         workId: workIdOf(e),
+        backdropPath: null, chineseTitle: null, startedAt: null, lastStep: null,
       })
     }
   }, [])

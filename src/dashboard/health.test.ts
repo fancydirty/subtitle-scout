@@ -369,7 +369,11 @@ describe('GET /api/v2/health（Task ⑤）', () => {
     bus.publish({ type: 'progress', message: '3/47', title: '甲剧', workbench: 'subtitle', data: { done: 3, total: 47 } })
     const { base } = await start({ events: bus })
     const { body } = await getHealth(base)
-    expect(body.current).toEqual({ kind: 'subtitle', title: '甲剧', index: 3, total: 47 })
+    expect(body.current).toEqual({
+      kind: 'subtitle', title: '甲剧', index: 3, total: 47,
+      workId: null, backdropPath: null, chineseTitle: null,
+      startedAt: expect.any(Number), lastStep: null,
+    })
   })
 
   it('🔴 接了总线但没人在跑（巡检完成清空了快照）→ current: null', async () => {
@@ -388,7 +392,11 @@ describe('GET /api/v2/health（Task ⑤）', () => {
     const { base } = await start({ events: bus })
     expect((await getHealth(base)).body.current).toBeNull()
     bus.publish({ type: 'activity', message: '开始处理', title: '乙剧', workbench: 'translate' })
-    expect((await getHealth(base)).body.current).toEqual({ kind: 'translate', title: '乙剧', index: null, total: null })
+    expect((await getHealth(base)).body.current).toEqual({
+      kind: 'translate', title: '乙剧', index: null, total: null,
+      workId: null, backdropPath: null, chineseTitle: null,
+      startedAt: expect.any(Number), lastStep: null,
+    })
   })
 
   it('🔴 接线（运行时探针）：每次请求都**真的调用** ScoutEventBus.getCurrent()，而不是别处凑出同形对象', async () => {
@@ -414,7 +422,11 @@ describe('GET /api/v2/health（Task ⑤）', () => {
     expect(calls.length).toBe(0)                    // 组装阶段不许求值（那会冻死快照）
     const first = await getHealth(base)
     expect(calls.length).toBe(1)                    // 恰好一次：请求来了才取，且只取一次
-    expect(first.body.current).toEqual({ kind: 'identify', title: '丙剧', index: null, total: null })
+    expect(first.body.current).toEqual({
+      kind: 'identify', title: '丙剧', index: null, total: null,
+      workId: null, backdropPath: null, chineseTitle: null,
+      startedAt: expect.any(Number), lastStep: null,
+    })
     // 第二次请求要再调一次——"现取"这件事在调用计数上也留痕（上面那条只看得见值）。
     await getHealth(base)
     expect(calls.length).toBe(2)

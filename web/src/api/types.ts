@@ -358,6 +358,11 @@ export interface ScoutCurrentDTO {
   /** 队列里的第几个。activity 之后、配对的 progress 之前是 null——**诚实的 null，不是缺陷**。 */
   index: number | null
   total: number | null
+  workId: string | null
+  backdropPath: string | null
+  chineseTitle: string | null
+  startedAt: number | null
+  lastStep: string | null
 }
 
 /** 一个认不出来的作品目录。**刻意只有两个字段**——后端点名的信息量边界
