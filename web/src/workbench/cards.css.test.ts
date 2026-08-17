@@ -92,9 +92,17 @@ describe('R-F13：尺寸走 CSS 变量（移动端只改变量、不改组件）
 
   it('🔴 组件引用变量而**不是写死 px**（写死了移动端那一轮就得改组件）', () => {
     expect(decl('.wb-run-card', 'height')).toBe('var(--card-run-h)')
-    expect(decl('.wb-run-img', 'width')).toBe('var(--card-run-img)')
+    // 在跑图改为全幅 mask 溶边，不再吃 --card-run-img 当宽度
+    expect(decl('.wb-run-img', 'width')).toBe('100%')
     expect(decl('.wb-queue-card', 'height')).toBe('var(--card-queue-h)')
     expect(decl('.wb-queue-img', 'width')).toBe('var(--card-queue-w)')
+  })
+
+  it('在跑图用 mask-image 溶边，不是靠 width: var(--card-run-img)', () => {
+    const img = new RegExp('\\.wb-run-img\\s*\\{([^}]*)\\}').exec(WB_CSS)?.[1] ?? ''
+    expect(img).toContain('mask-image')
+    expect(img).toContain('-webkit-mask-image')
+    expect(decl('.wb-run-img', 'width')).not.toBe('var(--card-run-img)')
   })
 
   it('🔴 **不许出现 clamp()**（三轮审计 🔵：R-F13 只给了一个值，clamp 要三个）', () => {
@@ -111,13 +119,12 @@ describe('R-F13：尺寸走 CSS 变量（移动端只改变量、不改组件）
 describe('R-F13：渐变终点是 surface 实色，不是半透明黑', () => {
   // 决定 1 的原话：「渐变终点用 surface-1 实色，不是半透明黑——右半区底色与普通卡片
   // 完全一致，文字对比度稳定，不会因背后有图而发飘」。
-  it('🔴 两个渐变的终点色都是 var(--color-card)（本仓真实存在的那个 token）', () => {
+  it('🔴 排队渐变终点是 var(--color-card)；在跑 fade 不再以 --card-run-img 为终点压暗', () => {
     const run = decl('.wb-run-fade', 'background') ?? ''
     const queue = decl('.wb-queue-fade', 'background') ?? ''
-    expect(run).toContain('var(--color-card)')
     expect(queue).toContain('var(--color-card)')
-    // 终点若是 rgba(...) 就是半透明黑那条被否掉的路
-    expect(run).toMatch(/var\(--color-card\)\s+var\(--card-run-img\)/)
+    // 在跑有图走 mask，fade 不许再停在 var(--card-run-img) 罩一层黑
+    expect(run).not.toMatch(/var\(--card-run-img\)/)
   })
 
   it('🔴 **不引用 DESIGN.md 那套 surface-* token**（本仓 grep 零命中，会静默 fallback 成透明）', () => {

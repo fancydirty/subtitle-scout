@@ -24,6 +24,7 @@
 // 而 R-F13 选横版正是因为宽高比。一张变形的图比没有图更糟。
 import { useState } from 'react'
 import { backdropUrl, posterUrl } from '../api/client.js'
+import { useT } from '../i18n/useT.js'
 
 /** 卡片的图。加载失败 → 交给父级走无图降级（父级据 `failed` 置 data-noimg）。
  *  `alt=""` 是刻意的：图是纯装饰，标题就在旁边的文字里，读屏器再念一遍片名是噪音。 */
@@ -40,42 +41,71 @@ export interface WorkbenchCardFace {
 }
 
 /**
- * 「正在跑」的卡片。横版 backdrop。
+ * 「正在跑」的卡片。横版 backdrop（全幅 mask 溶边，字在左 46%）。
  *
- * `progress` 是可选的第三行（「第 3/8 集」）。**可选是刚性的**：ScoutCurrent 的
- * index/total 在 activity 之后、配对的 progress 之前是 **null**——后端注释明写
- * 那是"诚实的 null，不是缺陷"。给它编一个 "0/0" 就是把未知说成已知。
- *
- * 🟡 `staleNote`：实时通道掉了的时候，这张卡片上的「正在处理 X」可能早就不成立了
- * （SSE 是变化流，断线期间的"跑完了"根本没送到）。给了这个字符串就在卡片里多渲一行。
- *
- * 🔴 为什么标记要落在**卡片上**而不是只在顶部状态条：这张卡片才是那句谎话的本体。
- * 用户盯着的是「正在处理 Show A」这几个字，一条挂在页面顶端、与卡片隔着 tab 条的
- * 提示很容易被当成跟别的事有关。两处都说是**有意的冗余**：状态条那条覆盖"没有卡片时
- * 队列同样可能过期"，这条覆盖"卡片本身在撒谎"。
- *
- * ⚠️ 双通道（Carbon）：这一行**自己把话说全**（"可能已经跑完了"），
- * 不靠颜色、不靠图标独立承载信息——去掉 CSS 之后信息量一个字都不少。
+ * `progress` 是 `{ done, total }`；index/total 为 null 时不传——**诚实的 null**，
+ * 不编 "0/0"、不画 progressbar。分数行是 `` `${done} / ${total} ${suffix}` ``，
+ * 不用 t() 插值引擎。`stepLabel` / `logLines` 必须已经是译文，禁止塞 raw tool id
+ * 或 `event.message`。有图时不渲染 `.wb-run-fade`（不许再罩一层把图压暗）。
  */
 export function RunCard(
-  { face, progress, staleNote }:
-  { face: WorkbenchCardFace; progress?: string | null; staleNote?: string | null },
+  { face, progress, staleNote, stepLabel, logLines, elapsedLabel }:
+  {
+    face: WorkbenchCardFace
+    progress?: { done: number; total: number } | null
+    staleNote?: string | null
+    stepLabel?: string | null
+    logLines?: string[]
+    elapsedLabel?: string | null
+  },
 ) {
+  const { t } = useT()
   const [failed, setFailed] = useState(false)
   const url = backdropUrl(face.backdropPath)
   const noimg = !url || failed
+  const done = progress?.done
+  const total = progress?.total
+  const finite = typeof done === 'number' && Number.isFinite(done)
+    && typeof total === 'number' && Number.isFinite(total)
+  const lines = (logLines ?? []).slice(-5)
+  const subtitle = elapsedLabel ? `${face.subtitle} · ${elapsedLabel}` : face.subtitle
   return (
     <div className="wb-run-card" data-noimg={noimg ? 'true' : 'false'}
          data-stale={staleNote ? 'true' : 'false'} data-testid="wb-run-card">
       {!noimg && <CardImage src={url} className="wb-run-img" onFail={() => setFailed(true)} />}
-      <div className="wb-run-fade" />
+      {noimg ? <div className="wb-run-fade" /> : null}
       <div className="wb-run-body">
         <span className="wb-card-title">{face.title}</span>
-        <span className="wb-card-sub">{face.subtitle}</span>
-        {/* progress 为 null/undefined 时**整行不渲染**（不是渲染一个空 span）：
-            空行会在卡片里留一道说不清的空隙。 */}
-        {progress ? <span className="wb-card-progress">{progress}</span> : null}
-        {/* 同上：没有这一行时整行不渲染。`role="status"` 让读屏器也拿得到这条事实。 */}
+        <span className="wb-card-sub">{subtitle}</span>
+        {finite ? (
+          <>
+            <span className="wb-card-progress">
+              {`${done} / ${total} ${t('wb_run_files_done_suffix')}`}
+            </span>
+            <div
+              className="wb-run-bar"
+              role="progressbar"
+              aria-valuenow={done}
+              aria-valuemin={0}
+              aria-valuemax={total}
+            >
+              <div
+                className="wb-run-bar-fill"
+                style={{ width: total > 0 ? `${Math.min(100, Math.max(0, (done / total) * 100))}%` : '0%' }}
+              />
+            </div>
+          </>
+        ) : null}
+        {stepLabel ? <span className="wb-run-step">{stepLabel}</span> : null}
+        {lines.length > 0 ? (
+          <div className="wb-run-log" role="log">
+            {lines.map((line, i) => (
+              <div key={`${i}:${line}`} className={i === lines.length - 1 ? 'wb-run-log-latest' : undefined}>
+                {line}
+              </div>
+            ))}
+          </div>
+        ) : null}
         {staleNote
           ? <span className="wb-run-stale" role="status" data-testid="wb-run-stale">{staleNote}</span>
           : null}

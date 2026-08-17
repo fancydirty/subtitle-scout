@@ -63,14 +63,16 @@ import {
   useActivityEvent, useHealthEvent, useProgressEvent, useEventsStatus,
 } from '../events/EventsProvider.js'
 import { useResumeEdge } from '../events/resumeEdge.js'
-import { useT } from '../i18n/useT.js'
+import { useT, type Lang } from '../i18n/useT.js'
 import { localizeError } from '../lib/errorText.js'
 import { RootHealthNote } from '../shell/RootHealthNote.js'
 import { UnidentifiedNote } from './UnidentifiedNote.js'
 import { StalledJobsNote } from './StalledJobsNote.js'
 import type { EventsStatus, ScoutEvent } from '../events/types.js'
 import type { ActivityQueueItemDTO, HealthDTO, ScoutCurrentDTO } from '../api/types.js'
-import { ACTIVITY_TABS, laneOf, workIdOf, type ActivityTab } from './workbenchRouting.js'
+import { ACTIVITY_TABS, laneOf, type ActivityTab } from './workbenchRouting.js'
+import { displayTitle } from './displayTitle.js'
+import { stepPhraseKey } from './stepPhrase.js'
 // 2026-08-13 清理：`tabOf` 从这行 import 里删除（本文件零调用）。
 // 它的文档写着"两个 tab 的唯一入口"，读起来像是本页的路由核心——实测**生产零调用者**，
 // 只有 workbenchRouting.test.ts 在测它。为什么用不上：本页两个 tab 的队列不是靠事件分流
@@ -85,17 +87,13 @@ import { RunCard, QueueCard, type WorkbenchCardFace } from './WorkbenchCards.js'
 // 当前态：SSE 增量 + health 快照纠正
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 「现在在处理什么」的本地视图。
- *
- *  = 后端 ScoutCurrentDTO **加一个 `workId`**。为什么要加这一个字段：
- *  取图需要 id，而 /health 的 `current` 里**没有** workId（那个 DTO 是 Task ④ 定的，
- *  当时还没有取图这个需求）。SSE 的事件里有（Task ⑨ 补的 `data.workId`）。
- *
- *  🔴 故 workId 是**只有 SSE 那条路才填得上**的字段，快照那条路恒 null。
- *  这不是缺陷而是如实：快照纠正之后卡片会短暂失去图（降级成纯排印），
- *  下一条 SSE 事件到达时补回来。**绝不为此去猜**——比如拿 title 去队列里反查 id，
- *  那正是"标题字符串匹配"那条被否掉的路（同名翻拍会配错图）。 */
-type Current = ScoutCurrentDTO & { workId: string | null }
+/** 「现在在处理什么」的本地视图 = ScoutCurrentDTO（workId / backdrop / lastStep 已在 DTO 上）。 */
+type Current = ScoutCurrentDTO
+
+/** data 里的身份/步骤字段：空串与非字符串一律 null，**绝不 Number() 强转**。 */
+function nonemptyString(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' ? v : null
+}
 
 /**
  * SSE 事件 + health 快照 → 当前态。
@@ -134,20 +132,33 @@ function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Cu
     // 不是"当它不存在"。它会被渲染在顶部状态条上（见 StatusBar）。
     const kind = lane
     if (e.type === 'activity') {
+      const d = e.data
       setCurrent({
-        kind, title: e.title ?? null, index: null, total: null, workId: workIdOf(e),
-        backdropPath: null, chineseTitle: null, startedAt: null, lastStep: null,
+        kind, title: e.title ?? null, index: null, total: null,
+        workId: nonemptyString(d?.workId),
+        backdropPath: nonemptyString(d?.backdropPath),
+        chineseTitle: nonemptyString(d?.chineseTitle),
+        startedAt: Date.now(),
+        lastStep: null,
       })
       return
     }
     if (e.type === 'progress') {
+      const d = e.data
       const num = (v: unknown): number | null =>
         typeof v === 'number' && Number.isFinite(v) ? v : null
-      setCurrent({
-        kind, title: e.title ?? null,
-        index: num(e.data?.done), total: num(e.data?.total),
-        workId: workIdOf(e),
-        backdropPath: null, chineseTitle: null, startedAt: null, lastStep: null,
+      const step = nonemptyString(d?.step)
+      setCurrent((prev) => {
+        const sameKind = prev?.kind === kind
+        return {
+          kind, title: e.title ?? null,
+          index: num(d?.done), total: num(d?.total),
+          workId: nonemptyString(d?.workId) ?? (sameKind ? (prev?.workId ?? null) : null),
+          backdropPath: nonemptyString(d?.backdropPath) ?? (sameKind ? (prev?.backdropPath ?? null) : null),
+          chineseTitle: nonemptyString(d?.chineseTitle) ?? (sameKind ? (prev?.chineseTitle ?? null) : null),
+          startedAt: sameKind ? (prev?.startedAt ?? null) : null,
+          lastStep: step ?? (sameKind ? (prev?.lastStep ?? null) : null),
+        }
       })
     }
   }, [])
@@ -162,8 +173,7 @@ function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Cu
   useEffect(() => {
     if (health && !seeded.current && appliedId.current === 0) {
       seeded.current = true
-      // workId 恒 null：/health 的 current 里没有这个字段（见 Current 的注释）。
-      setCurrent(health.current === null ? null : { ...health.current, workId: null })
+      setCurrent(health.current)
     }
   }, [health])
 
@@ -182,6 +192,33 @@ function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Cu
   useResumeEdge(status, onResume)
 
   return current
+}
+
+/** 滚动 log：只追加**实际送到浏览器**的 progress.step 译文，上限 5；新 activity 重置。 */
+function useStepLog(): string[] {
+  const activity = useActivityEvent()
+  const progress = useProgressEvent()
+  const { t } = useT()
+  const [lines, setLines] = useState<string[]>([])
+  const appliedAct = useRef(0)
+  const appliedProg = useRef(0)
+
+  useEffect(() => {
+    if (!activity || activity.id <= appliedAct.current) return
+    appliedAct.current = activity.id
+    setLines([])
+  }, [activity])
+
+  useEffect(() => {
+    if (!progress || progress.id <= appliedProg.current) return
+    appliedProg.current = progress.id
+    const step = nonemptyString(progress.data?.step)
+    if (!step) return
+    const phrase = t(stepPhraseKey(step))
+    setLines((prev) => [...prev, phrase].slice(-5))
+  }, [progress, t])
+
+  return lines
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -401,20 +438,22 @@ function subtitleLine(
   item: {
     year: number | null; mediaType: 'tv' | 'movie'; pendingFileCount: number
     dueNow?: boolean
+    awaitingRescan?: boolean
   },
-  t: (k: 'wb_media_tv' | 'wb_media_movie' | 'wb_pending_files' | 'wb_queue_retry_in') => string,
+  t: (k: 'wb_media_tv' | 'wb_media_movie' | 'wb_pending_files' | 'wb_queue_retry_in' | 'wb_queue_awaiting_scan') => string,
 ): string {
   const parts: string[] = []
   if (item.year !== null) parts.push(String(item.year))
   parts.push(item.mediaType === 'movie' ? t('wb_media_movie') : t('wb_media_tv'))
   parts.push(`${item.pendingFileCount} ${t('wb_pending_files')}`)
-  if (item.dueNow === false) parts.push(t('wb_queue_retry_in'))
+  if (item.awaitingRescan) parts.push(t('wb_queue_awaiting_scan'))
+  else if (item.dueNow === false) parts.push(t('wb_queue_retry_in'))
   return parts.join(' · ')
 }
 
-function faceOf(item: ActivityQueueItemDTO, t: ReturnType<typeof useT>['t']): WorkbenchCardFace {
+function faceOf(item: ActivityQueueItemDTO, t: ReturnType<typeof useT>['t'], lang: Lang): WorkbenchCardFace {
   return {
-    title: item.chineseTitle ?? item.title,
+    title: displayTitle(lang, nonemptyString(item.title) ?? t('wb_untitled'), nonemptyString(item.chineseTitle)),
     subtitle: subtitleLine(item, t),
     posterPath: item.posterPath,
     backdropPath: item.backdropPath,
@@ -422,47 +461,51 @@ function faceOf(item: ActivityQueueItemDTO, t: ReturnType<typeof useT>['t']): Wo
 }
 
 function TabPanel({
-  tab, current, queue, queueByWorkId, live,
+  tab, current, queue, queueByWorkId, live, logLines,
 }: {
   tab: ActivityTab
   current: Current | null
   queue: ActivityQueueItemDTO[]
   queueByWorkId: Map<string, ActivityQueueItemDTO>
-  /** 在跑那个作品的 workId（来自 SSE 的 data.workId）——用它取图。 */
-  /** 🟡 读数新鲜度。非 'live' 时给在跑卡片挂一行"可能已经跑完了"。 */
   live: LiveFreshness
+  logLines: string[]
 }) {
-  const { t } = useT()
-  // 🔴 「一个都到不了点」那一行（2026-08-13）。
-  // 队列非空、却**没有任何一项现在能取**时，用户看到 33 张卡片却什么都没在跑——
-  // 不说破的话，那一屏与"daemon 卡死了"完全无法区分。这一行就是那句区分。
-  // 全到点时整段不在场（沉默即好消息，同 RootHealthNote / missing 那一行的既有口径）。
-  const allWaiting = queue.length > 0 && queue.every((i) => i.dueNow === false)
+  const { t, lang } = useT()
+  const queued = current && current.kind === tab
+    ? queue.filter((i) => i.workId !== current.workId)
+    : queue
+  const allWaiting = queued.length > 0 && queued.every((i) => i.dueNow === false)
+  const now = Date.now()
+  const fromQueue = current?.workId ? queueByWorkId.get(current.workId) : undefined
+  const runTitle = current
+    ? displayTitle(
+      lang,
+      nonemptyString(current.title) ?? nonemptyString(fromQueue?.title) ?? t('wb_untitled'),
+      nonemptyString(current.chineseTitle) ?? nonemptyString(fromQueue?.chineseTitle),
+    )
+    : ''
+  const runBackdrop = current
+    ? nonemptyString(current.backdropPath) ?? nonemptyString(fromQueue?.backdropPath)
+    : null
   return (
     <div>
       <div className="wb-section-head">{t('wb_section_running')}</div>
       {current && current.kind === tab ? (
         <RunCard
           face={{
-            title: current.title ?? t('wb_untitled'),
-            // 在跑卡片的副行：能从排队表里查到这个作品就用它的年份/类型，
-            // 查不到（它已经离开队列了——**这是常态**）就只说"正在处理"。
-            // 🔴 绝不拿 queue.length 编一个 "第 x/n"——见文件头那条纪律。
-            subtitle: t('wb_running_now'),
+            title: runTitle,
+            subtitle: current.kind === 'translate' ? t('wb_run_translate') : t('wb_run_subtitle'),
             posterPath: null,
-            backdropPath: null,
-            ...facePatch(current, queueByWorkId, t),
+            backdropPath: runBackdrop,
           }}
           progress={
             current.index !== null && current.total !== null
-              ? `${current.index}/${current.total}`
+              ? { done: current.index, total: current.total }
               : null
           }
-          // 🟡 通道掉了 → 这张卡片上的「正在处理 X」可能早就不成立了。
-          // ⚠️ retrying 与 unavailable **共用同一句**（顶部状态条那两句才是分开的）：
-          // 卡片上要回答的是"这句话还算不算数"，两态的答案完全一样（都不算）；
-          // "自己会好 vs 得刷新页面"是**下一步做什么**，那属于页面级的那条，
-          // 在卡片上重复一遍只会让两条提示互相稀释。
+          stepLabel={current.lastStep ? t(stepPhraseKey(current.lastStep)) : null}
+          logLines={logLines}
+          elapsedLabel={typeof current.startedAt === 'number' ? relAgoLabel(now - current.startedAt, lang) : null}
           staleNote={live === 'live' ? null : t('wb_run_maybe_stale')}
         />
       ) : (
@@ -470,11 +513,9 @@ function TabPanel({
       )}
 
       <div className="wb-section-head" style={{ marginTop: 16 }}>
-        {t('wb_section_queued')} · {queue.length}
+        {t('wb_section_queued')} · {queued.length}
       </div>
-      {queue.length === 0 ? (
-        // 🔴 这一句现在**只**意味着"真的没有作品在等"。修复前它同时承载着
-        // "全部在退避窗里"（生产实测那 33 个），空态与"我这会儿取不到"共用一句话。
+      {queued.length === 0 ? (
         <div className="wb-card-sub" data-testid="wb-queue-empty">{t('wb_queue_none')}</div>
       ) : (
         <>
@@ -489,38 +530,12 @@ function TabPanel({
             </div>
           )}
           <ul className="wb-list">
-            {queue.map((item) => <QueueCard key={item.workId} face={faceOf(item, t)} />)}
+            {queued.map((item) => <QueueCard key={item.workId} face={faceOf(item, t, lang)} />)}
           </ul>
         </>
       )}
     </div>
   )
-}
-
-/** 在跑卡片的图与副行——**靠 workId 从队列表里查**，查不到就无图降级。
- *
- *  🔴 为什么 workId 而不是标题匹配：同名翻拍与中文译名切换都会让字符串匹配落到
- *  另一部剧上（表现为"卡片配了别人的图"，测试里几乎照不出来）。daemonV2 的两处 emit
- *  为此专门补了 `data.workId`（daemonV2.events.test.ts 钉着）。
- *
- *  ⚠️ 查不到是**常态**：作品一旦开始处理就离开了队列（listSubtitleQueue 的谓词是
- *  "还没做的"），所以在跑的那个通常**不在** /api/v2/activity 的返回里。
- *  故这里拿到 null 完全正常，卡片走无图降级——这不是失败路径。 */
-function facePatch(
-  current: Current,
-  queueByWorkId: Map<string, ActivityQueueItemDTO>,
-  t: ReturnType<typeof useT>['t'],
-): Partial<WorkbenchCardFace> {
-  const id = current.workId
-  if (!id) return {}
-  const item = queueByWorkId.get(id)
-  if (!item) return {}
-  return {
-    title: item.chineseTitle ?? item.title,
-    subtitle: subtitleLine(item, t),
-    posterPath: item.posterPath,
-    backdropPath: item.backdropPath,
-  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -534,6 +549,7 @@ export function ActivityPage() {
   const status = useEventsStatus()
 
   const current = useCurrentState(health, reloadHealth)
+  const logLines = useStepLog()
   const activityEvent = useActivityEvent()
 
   const [tab, setTab] = useState<ActivityTab>('subtitle')
@@ -608,6 +624,7 @@ export function ActivityPage() {
             queue={queues[tab]}
             queueByWorkId={queueByWorkId}
             live={liveFreshness(status)}
+            logLines={logLines}
           />
         )}
       </div>

@@ -381,8 +381,8 @@ describe('🔴 断线重连 → 拉 /api/v2/health 快照纠正当前态（后�
     await waitFor(() => {
       expect(screen.getByTestId('wb-run-card').textContent).toContain('Started While Offline')
     })
-    // 进度也来自快照（第 2/7 个）
-    expect(screen.getByTestId('wb-run-card').textContent).toContain('2/7')
+    // 进度也来自快照（第 2/7 个）——分数行是 `${done} / ${total} files done`
+    expect(screen.getByTestId('wb-run-card').textContent).toContain(`2 / 7 ${en.wb_run_files_done_suffix}`)
   })
 
   it('重连也重拉排队段（断线期间队列的变化一次补齐）', async () => {
@@ -426,6 +426,8 @@ describe('R-F13：全背景式卡片与无图降级', () => {
     const rImg = screen.getByTestId('wb-run-card').querySelector('img')!
     expect(rImg.getAttribute('src')).toContain('/bd.jpg')
     expect(rImg.getAttribute('src')).toContain('w1280')
+    // 有图：不许再罩一层把图压暗（mask 在 img 上，不在 fade overlay）
+    expect(screen.getByTestId('wb-run-card').querySelector('.wb-run-fade')).toBeNull()
   })
 
   // 🔴 取图靠 workId 而不是标题匹配。
@@ -481,17 +483,16 @@ describe('R-F13：全背景式卡片与无图降级', () => {
     expect(text).not.toContain('· ·')
   })
 
-  it('中文译名优先于原名（chineseTitle 非空时用它）', async () => {
+  it('en 排队卡用原名（chineseTitle 不顶替；displayTitle §10.2）', async () => {
     activityBody = {
       subtitleQueue: [{ ...QUEUE_ITEM, chineseTitle: '排队中的剧' }],
       translateQueue: [],
     }
     renderPage()
-    // ⚠️ 不能用 ready()——它等的是原名 'Queued Show'，而本用例的判据恰恰是那个名字
-    // **不**上屏（被译名取代）。等译名本身。
-    const card = await screen.findByTestId('wb-queue-card')
-    expect(card.textContent).toContain('排队中的剧')
-    expect(card.textContent).not.toContain('Queued Show')
+    await ready()
+    const card = screen.getAllByTestId('wb-queue-card')[0]!
+    expect(card.textContent).toContain('Queued Show')
+    expect(card.textContent).not.toContain('排队中的剧')
   })
 })
 
@@ -501,7 +502,7 @@ describe('R-F13：全背景式卡片与无图降级', () => {
 describe('🔴 「第 i/n 个」只信 SSE，排队列表只信 /api/v2/activity（两者不互相推导）', () => {
   it('进度读数来自 SSE 的 done/total，**不是** queue.length 算出来的', async () => {
     // 队列里有 1 项（subtitleQueue），而 SSE 说的是 3/47。若有人拿 queue.length 当 n，
-    // 这里会显示 3/1。
+    // 这里会显示 3 / 1。
     renderPage()
     await ready()
     act(() => {
@@ -510,7 +511,11 @@ describe('🔴 「第 i/n 个」只信 SSE，排队列表只信 /api/v2/activity
         workbench: 'subtitle', data: { done: 3, total: 47, workId: 'tmdb:1' },
       }))
     })
-    await waitFor(() => expect(screen.getByTestId('wb-run-card').textContent).toContain('3/47'))
+    await waitFor(() => {
+      expect(screen.getByTestId('wb-run-card').textContent)
+        .toContain(`3 / 47 ${en.wb_run_files_done_suffix}`)
+    })
+    expect(screen.getByTestId('wb-run-card').textContent).not.toContain('3 / 1')
     expect(screen.getByTestId('wb-run-card').textContent).not.toContain('3/1')
   })
 
@@ -523,6 +528,7 @@ describe('🔴 「第 i/n 个」只信 SSE，排队列表只信 /api/v2/activity
     await waitFor(() => expect(screen.getByTestId('wb-run-card')).toBeInTheDocument())
     // 后端注释明写那是"诚实的 null，不是缺陷"——编一个 0/0 就是把未知说成已知。
     expect(screen.getByTestId('wb-run-card').textContent).not.toContain('0/0')
+    expect(screen.queryByRole('progressbar')).toBeNull()
   })
 
   it('排队段的条数就是端点给的条数（不被 SSE 的 total 截断）', async () => {
@@ -549,6 +555,92 @@ describe('🔴 「第 i/n 个」只信 SSE，排队列表只信 /api/v2/activity
       expect(screen.getAllByTestId('wb-queue-card')[0]!.textContent).toContain('Trans Show')
     })
     expect(screen.getAllByTestId('wb-queue-card')).toHaveLength(1)
+  })
+
+  it('在跑的 workId 不出现在排队段', async () => {
+    activityBody = {
+      subtitleQueue: [
+        QUEUE_ITEM,
+        { ...QUEUE_ITEM, workId: 'tmdb:2', title: 'Other Show', chineseTitle: null },
+      ],
+      translateQueue: [TRANSLATE_ITEM],
+    }
+    renderPage()
+    await ready()
+    act(() => {
+      bus().emit(ev({
+        type: 'activity', message: '正在找字幕：Queued Show', title: 'Queued Show',
+        workbench: 'subtitle', data: { workId: 'tmdb:1' },
+      }))
+      bus().emit(ev({
+        type: 'progress', message: '第 1/6 个', title: 'Queued Show',
+        workbench: 'subtitle', data: { done: 1, total: 6, workId: 'tmdb:1' },
+      }))
+    })
+    await waitFor(() => expect(screen.getByTestId('wb-run-card')).toBeInTheDocument())
+    const queueCards = screen.queryAllByTestId('wb-queue-card')
+    expect(queueCards.some((c) => (c.textContent ?? '').includes('Queued Show'))).toBe(false)
+    expect(queueCards).toHaveLength(1)
+    expect(queueCards[0]!.textContent).toContain('Other Show')
+    expect(screen.getByText(/Waiting · 1/)).toBeInTheDocument()
+    expect(screen.queryByText(/Waiting · 2/)).toBeNull()
+
+    fireEvent.click(screen.getByRole('tab', { name: en.wb_tab_translate }))
+    await waitFor(() => {
+      expect(screen.getAllByTestId('wb-queue-card')[0]!.textContent).toContain('Trans Show')
+    })
+  })
+
+  it('RunCard 在 index/total 有限时画出 progressbar', async () => {
+    renderPage()
+    await ready()
+    act(() => {
+      bus().emit(ev({
+        type: 'progress', message: '第 3/6 个', title: 'Show A',
+        workbench: 'subtitle', data: { done: 3, total: 6 },
+      }))
+    })
+    const bar = await screen.findByRole('progressbar')
+    expect(bar).toHaveAttribute('aria-valuenow', '3')
+    expect(bar).toHaveAttribute('aria-valuemin', '0')
+    expect(bar).toHaveAttribute('aria-valuemax', '6')
+  })
+
+  it('en 在跑卡不出现「正在装字幕」', async () => {
+    renderPage()
+    await ready()
+    act(() => {
+      bus().emit(ev({
+        type: 'activity', message: '正在找字幕：Show A', title: 'Show A',
+        workbench: 'subtitle',
+      }))
+      bus().emit(ev({
+        type: 'progress', message: 'search_source 内部句', title: 'Show A',
+        workbench: 'subtitle', data: { done: 1, total: 6, step: 'search_source' },
+      }))
+    })
+    await waitFor(() => expect(screen.getByTestId('wb-run-card')).toBeInTheDocument())
+    const card = screen.getByTestId('wb-run-card')
+    expect(screen.queryByText('正在装字幕')).not.toBeInTheDocument()
+    expect(card.textContent).toContain(en.wb_run_subtitle)
+    expect(card.textContent).toContain(en.wb_step_search)
+    expect(card.textContent).not.toContain('search_source')
+    expect(card.textContent).not.toContain('search_source 内部句')
+  })
+
+  it('awaitingRescan 显示核对片库而不是等待重试', async () => {
+    activityBody = {
+      subtitleQueue: [{
+        ...QUEUE_ITEM, dueNow: false, awaitingRescan: true,
+        retryAfter: Date.now() + 86_400_000,
+      }],
+      translateQueue: [],
+    }
+    renderPage()
+    await ready()
+    const text = screen.getAllByTestId('wb-queue-card')[0]!.textContent ?? ''
+    expect(text).toContain(en.wb_queue_awaiting_scan)
+    expect(text).not.toContain(en.wb_queue_retry_in)
   })
 })
 
@@ -880,7 +972,10 @@ describe('数据获取：刷新触发点与异常态', () => {
       })
     }
     // 进度确实上屏了（排除"什么都没发生"的假绿）
-    await waitFor(() => expect(screen.getByTestId('wb-run-card').textContent).toContain('9/10'))
+    await waitFor(() => {
+      expect(screen.getByTestId('wb-run-card').textContent)
+        .toContain(`9 / 10 ${en.wb_run_files_done_suffix}`)
+    })
     expect(countOf('/api/v2/activity'), 'progress 触发了重拉 → 10 条进度 = 10 个请求').toBe(before)
   })
 
