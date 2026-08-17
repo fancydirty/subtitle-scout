@@ -20,7 +20,8 @@ describe('identify-media skill', () => {
     expect(skill.descriptor.name).toBe('identify-media')
     expect(skill.descriptor.description).toMatch(/two-evidence bar/i)
     expect(skill.descriptor.description).toMatch(/write_identified_media/)
-    expect(skill.descriptor.description).toMatch(/year mismatch is an automatic fail/i)
+    expect(skill.descriptor.description).toMatch(/year mismatch/i)
+    expect(skill.descriptor.description).toMatch(/1\s*[–-]\s*2|folder typo/i)
   })
 
   it('从原始证据识别：raw evidence 前提 + 目录名是主证据', ({ expect }) => {
@@ -55,13 +56,23 @@ describe('identify-media skill', () => {
     // 电影结构线：runtime 一致是强正证据（原"roughly matches"对称门措辞已改为不对称——
     // 见下方 runtime-不合弱负证据锚点，不再锚死对称门口径）
     expect(skill.content).toMatch(/runtime agreement is a strong second/i)
-    // 生产事故锚点（Peacemaker 芬兰同名剧）
+    // 生产事故锚点（Peacemaker 芬兰同名剧）；十年差教材（Conjuring）仍一票否决
     expect(skill.content).toMatch(/year mismatch is an automatic fail/i)
     expect(skill.content).toMatch(/never buys back a failed one/i)
     expect(skill.content).toMatch(/The Rig/)
     expect(skill.content).toMatch(/Peacemaker/)
+    expect(skill.content).toMatch(/The Conjuring/)
     // 搜到的第一条只是 SUSPECT，不是答案
     expect(skill.content).toMatch(/SUSPECT/)
+  })
+
+  // Task 2（year-folder-typo spec §4）：目录年差 1–2 且同名无第二年 → 文件夹写错年，过 bar。
+  // 十年差 / 同名多部不同年仍一票否决（上面 two-evidence bar 的 automatic fail + Conjuring/Peacemaker 锚点不删）。
+  it('目录年与 TMDB 年差 1–2 且同名无第二年 → 文件夹写错年，过 bar', ({ expect }) => {
+    expect(skill.content).toMatch(/1\s*[–-]\s*2|one or two years/i)
+    expect(skill.content).toMatch(/folder typo|directory year/i)
+    expect(skill.content).toMatch(/exact title|same name/i)
+    expect(skill.content).toMatch(/Casablanca|unique/i)
   })
 
   // Task 2（接回 [tmdbid-N] 证据通道）：标签是**起点不是判决**。这条不是措辞偏好——

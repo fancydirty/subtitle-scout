@@ -76,6 +76,13 @@ minute proves nothing when the year is off by a decade (112 minutes fits both Th
 (2013) and unrelated releases). A strong line never buys back a failed one. A rejected suspect
 sends you back to the search hits — the next candidate faces the same bar.
 
+A 1–2 year gap between the directory year and this suspect's TMDB year is a folder typo when
+\`search_tmdb\` (no year filter) shows no other hit whose title/originalTitle normalizes to the
+same full string in a different year. Then the year line still counts: claim the identity; do
+not \`identification-failed\`. Exact full-string name only (\`Casablanca\` is not
+\`Casablanca: An Unlikely Classic\`). Two works sharing the exact title in different years
+(Dune 1984 and Dune 2021) get no slack. Decade gaps (The Conjuring) stay an automatic fail.
+
 ## When runtime disagrees
 
 Runtime agreement is meaningful positive evidence; runtime disagreement is weak negative
@@ -214,7 +221,8 @@ target of a correctly-identified show. When name and year fit, the identity stan
         'subtitles: find the title in the directory names when the file name is pure technical ' +
         'tokens, repair copyright-evasion/mojibake/fansub-tag/truncation distortions, search_tmdb ' +
         'then get_tmdb_details under a two-evidence bar (name plus season-table/year/runtime, a ' +
-        'year mismatch is an automatic fail, never from memory), how to treat an explicit ' +
+        'year mismatch is an automatic fail except a 1–2 year unique-title folder typo, never ' +
+        'from memory), how to treat an explicit ' +
         '[tmdbid-N] path tag as the strongest starting point but never a verdict (it may be stale ' +
         'or wrong — verify it against the same bar), write_identified_media per target ' +
         'and continue with the itemId it returns, no_safe_match when nothing passes the bar (then ' +
