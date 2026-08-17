@@ -161,6 +161,13 @@ describe('yearFolderTypoOk（目录年 vs TMDB 年差 1–2、同名无第二年
     ])).toBe(false)
   })
 
+  it('同名两个年份且差 1 年 → false（独一性在 slack 窗口内仍否决）', () => {
+    expect(yearFolderTypoOk(2020, 2021, 'Dune', [
+      { title: 'Dune', originalTitle: 'Dune', year: 2020 },
+      { title: 'Dune', originalTitle: 'Dune', year: 2021 },
+    ])).toBe(false)
+  })
+
   it('零同名 hits → false（fail-closed）', () => {
     expect(yearFolderTypoOk(1942, 1943, 'Casablanca', [])).toBe(false)
   })
@@ -172,7 +179,7 @@ describe('yearFolderTypoOk（目录年 vs TMDB 年差 1–2、同名无第二年
 
   it('claimedTitle 与 hits 无整串相等 → false', () => {
     expect(yearFolderTypoOk(2019, 2020, '寄生虫', [
-      { title: 'Parasite', originalTitle: '기생충', year: 2019 },
+      { title: 'Parasite', originalTitle: '기생충', year: 2020 },
     ])).toBe(false)
   })
 
@@ -186,5 +193,11 @@ describe('yearFolderTypoOk（目录年 vs TMDB 年差 1–2、同名无第二年
     expect(yearFolderTypoOk(1942, 1943, 'Casablanca', [
       { title: 'Casablanca', originalTitle: 'Casablanca', year: 1942 },
     ])).toBe(false)
+  })
+
+  it('同名 hit 年份为 null 不算第二年 → true', () => {
+    expect(yearFolderTypoOk(1942, 1943, 'Casablanca', [
+      { title: 'Casablanca', originalTitle: 'Casablanca', year: null },
+    ])).toBe(true)
   })
 })
