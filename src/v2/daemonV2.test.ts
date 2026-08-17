@@ -6486,7 +6486,9 @@ describe('ScoutDaemonV2.requestInspect · 手动点火', () => {
     const db = openDb(':memory:')
     const now = 1_000_000_000_000
     seedBackoffSubtitle(db, now)
-    const subtitleWorker = vi.fn(async () => ({ installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [] }))
+    const subtitleWorker = vi.fn(async (_task: { title: string; targets: { videoPath: string }[] }) => ({
+      installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [],
+    }))
     const daemon = new ScoutDaemonV2(mkDeps(db, {
       ...backoffMedia(subtitleWorker),
       inspectEveryMs: Number.MAX_SAFE_INTEGER,
@@ -6509,7 +6511,7 @@ describe('ScoutDaemonV2.requestInspect · 手动点火', () => {
     expect(subtitleWorker).toHaveBeenCalled()
     const task = subtitleWorker.mock.calls[0][0]
     expect(task.title).toBe('Cassandra')
-    expect(task.targets.map((t: { videoPath: string }) => t.videoPath)).toContain(VIDEO)
+    expect(task.targets.map((t) => t.videoPath)).toContain(VIDEO)
     db.close()
   })
 
