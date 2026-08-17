@@ -46,6 +46,16 @@ function decl(selector: string, prop: string): string | null {
   return m ? m[1]!.trim() : null
 }
 
+/** 同 `decl`，但扫全文（剥注释）。`.media-legend` 在 `.wb-tabs` 之前，WB_CSS 切不到。 */
+function declFromFullCss(selector: string, prop: string): string | null {
+  const bare = CSS.replace(/\/\*[\s\S]*?\*\//g, '')
+  const re = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const block = new RegExp(`${re}\\s*\\{([^}]*)\\}`).exec(bare)?.[1]
+  if (!block) return null
+  const m = new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*([^;]+)`).exec(block)
+  return m ? m[1]!.trim() : null
+}
+
 describe('切片自检（防"守卫作用域随文件增长而漂移"）', () => {
   it('活动页段真的被切出来了，且规模合理（切空会让下面全部恒绿）', () => {
     expect(CSS.length).toBeGreaterThan(1000)
@@ -125,6 +135,16 @@ describe('R-F13：渐变终点是 surface 实色，不是半透明黑', () => {
     expect(queue).toContain('var(--color-card)')
     // 在跑有图走 mask，fade 不许再停在 var(--card-run-img) 罩一层黑
     expect(run).not.toMatch(/var\(--card-run-img\)/)
+  })
+
+  it('🔴 .wb-queue-fade 的 background 不含 %', () => {
+    const queue = decl('.wb-queue-fade', 'background') ?? ''
+    expect(queue).not.toMatch(/\d+%/)
+    expect(queue).toContain('118px')
+  })
+
+  it('🔴 .media-legend 宽度 100%', () => {
+    expect(declFromFullCss('.media-legend', 'width')).toBe('100%')
   })
 
   it('🔴 **不引用 DESIGN.md 那套 surface-* token**（本仓 grep 零命中，会静默 fallback 成透明）', () => {
