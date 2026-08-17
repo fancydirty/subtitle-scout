@@ -17,6 +17,7 @@ AI 翻译卡：生产库里 `secret:TRANSLATE_*` 三键都在、`ai_translate_en
 - 海报卡覆盖读数改成方案 B：`字幕 covered/onDisk` + 绿/蓝细条 + 已下载/自带拆行；缺口黄字改口「还有 N 集没字幕」（电影「还没字幕」）。
 - DTO 新增后端计算的 `uncoveredEpisodeCount`。卡片不再渲染 `missingEpisodeCount`。
 - `TranslateCard` 配齐后走 LLM 同款 rest 态；开关不删凭证；未配齐才摊开必填表单。
+- 设置页「排除特典」开关：死控件，删掉。
 
 **Out**
 
@@ -25,6 +26,9 @@ AI 翻译卡：生产库里 `secret:TRANSLATE_*` 三键都在、`ai_translate_en
 - Daemon 双门控（`tryAutoTranslateCfg` ∧ `ai_translate_enabled==='true'`）、不回落默认 LLM、手动 `translate-item` 不受开关限制。
 - 翻译凭证的删除 UI。空输入 = 不改该键，与 `ProviderCard` 相同。
 - 设置页再读 env 当翻译凭证来源（2026-08-15：设置页只认库）。`allEnv` 只读分支随重写删掉，不复活。
+- 改 `subtitleJudge` 规则 0。特典仍**永远**不算找字幕范围（2026-08-13 裁决），与这个死开关无关。
+- 删库里可能残留的 `exclude_extras` 行（无读取方，留着无害）。
+- `hardsub_mode`：仍被找字幕 worker 读取，不是死开关，本轮不动。
 
 ## 3. 海报卡
 
@@ -71,6 +75,21 @@ AI 翻译卡：生产库里 `secret:TRANSLATE_*` 三键都在、`ai_translate_en
 
 测试：`validateSetup('translate')` 不传草稿，走库里的专用三凭证。结果进既有 `secret_test:translate`。编辑：空输入 = 不改该键（与 `ProviderCard` 相同）。自动翻译仍只认 `TRANSLATE_*`，不跟随默认 LLM。
 
+## 4.5 排除特典（死开关）
+
+`exclude_extras` 只还活在设置页：`BehaviorSection` 单键 PUT，`SETTINGS_KEYS` 白名单收它。
+
+生产路径已经不读：
+
+- 唯一消费者是已删除的 `v2/ingest.ts` `excludeExtras` 分支（`isMechanicalExtra && !isExtrasExempt`）。
+- `cli/` 零命中。`BehaviorSection` 头注释写的「cli/index.ts live getter」是过期债。
+- 特典现由 `subtitleJudge` 规则 0 **无条件**判 `skip_reason='extra'`（用户原话「特典都完全不算在找字幕的范围」）。开关开或关，行为相同。
+- 翻案箱 / `extras_exemptions` / triage `unexclude` 已于 2026-08-13 删。
+
+因此关掉开关**不会**让 NCOP 重新进找字幕队列；打开也没有任何增量。注记「下一轮扫描生效」是假的。
+
+本轮：拆掉该 Switch 与两句 i18n；从 `SETTINGS_KEYS` / zod / `SettingsKey` 去掉，PUT 不再接受。GET 不再回这个键。judge 规则 0 不动。README 里「需要打开 exclude_extras 才生效」那句一并改掉。
+
 ## 5. 错误处理
 
 - `uncoveredEpisodeCount` 缺席：合约拦截整页媒体库，不许当成 0。
@@ -93,8 +112,15 @@ AI 翻译卡：生产库里 `secret:TRANSLATE_*` 三键都在、`ai_translate_en
 - 编辑时空草稿不 PUT 该键。
 - 未配齐时保存仍先 validate 再 PUT。
 
+排除特典：
+
+- 设置页不再出现「排除特典」开关。
+- PUT `{ exclude_extras: 'true' }` → 400（不在白名单）。
+- `judgeSubtitle` 文件名命中 NCOP 仍 `needs=0, reason=extra`，与 settings 无关。
+
 ## 7. 成功标准
 
 - 海报墙全齐的剧不再报 TMDB 缺集。
 - 生产那张 AI 翻译卡打开设置页是「已配置」，不是红字必填。
 - 关翻译开关再打开，daemon 仍能读到原来的 `TRANSLATE_*`，用户不用再输入。
+- 设置页没有「排除特典」；NCOP 仍然不找字幕。
