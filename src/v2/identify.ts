@@ -116,6 +116,36 @@ function normalize(s: string): string {
     .replace(/[^\p{L}\p{N}]+/gu, '').trim()
 }
 
+export interface YearHit {
+  title: string
+  originalTitle: string | null
+  year: number | null
+}
+
+function exactName(hit: YearHit, claimedTitle: string): boolean {
+  const claimed = normalize(claimedTitle)
+  if (!claimed) return false
+  if (normalize(hit.title) === claimed) return true
+  if (hit.originalTitle != null && normalize(hit.originalTitle) === claimed) return true
+  return false
+}
+
+/** Directory year vs TMDB year off by 1–2, and no other exact-name title in a different year. */
+export function yearFolderTypoOk(
+  dirYear: number | null,
+  tmdbYear: number | null,
+  claimedTitle: string,
+  hits: YearHit[],
+): boolean {
+  if (dirYear == null || tmdbYear == null) return false
+  const delta = Math.abs(dirYear - tmdbYear)
+  if (delta !== 1 && delta !== 2) return false
+  const sameName = hits.filter((h) => exactName(h, claimedTitle))
+  if (sameName.length === 0) return false
+  const years = new Set(sameName.map((h) => h.year).filter((y): y is number => y != null))
+  return years.size <= 1
+}
+
 export function yearFromDir(dirName: string): number | null {
   const m = dirName.match(/(?:\(|\[)?(\d{4})(?:\)|\])?/)
   return m ? Number(m[1]) : null

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { titleFromDir, searchCandidates, verifyEvidence, yearFromDir } from './identify.js'
+import { titleFromDir, searchCandidates, verifyEvidence, yearFromDir, yearFolderTypoOk } from './identify.js'
 
 describe('titleFromDir（目录名 → 标题）', () => {
   it('标准电影：Pulp Fiction (1994) → Pulp Fiction', () => {
@@ -127,5 +127,58 @@ describe('verifyEvidence 的命名变体（模糊匹配）', () => {
       { dirName: 'Breaking Bad', fileCount: 62, seasons: [1, 2, 3, 4, 5], hasSeasonDirs: true },
       'Breaking Bad',
     )).toEqual({ ok: false, reason: expect.stringContaining('title mismatch') })
+  })
+})
+
+describe('yearFolderTypoOk（目录年 vs TMDB 年差 1–2、同名无第二年）', () => {
+  const casablancaHits = [
+    { title: 'Casablanca', originalTitle: 'Casablanca', year: 1943 },
+    { title: 'Casablanca: An Unlikely Classic', originalTitle: null, year: 2012 },
+  ]
+
+  it('Casablanca 1942 vs TMDB 1943、唯一整串同名 → true（副标题条目不算同名）', () => {
+    expect(yearFolderTypoOk(1942, 1943, 'Casablanca', casablancaHits)).toBe(true)
+  })
+
+  it('差 2 年同样 true', () => {
+    expect(yearFolderTypoOk(1941, 1943, 'Casablanca', casablancaHits)).toBe(true)
+  })
+
+  it('年份完全一致 → false（不是 typo）', () => {
+    expect(yearFolderTypoOk(1943, 1943, 'Casablanca', casablancaHits)).toBe(false)
+  })
+
+  it('差 ≥3 年 → false', () => {
+    expect(yearFolderTypoOk(2013, 2023, 'The Conjuring', [
+      { title: 'The Conjuring', originalTitle: null, year: 2023 },
+    ])).toBe(false)
+  })
+
+  it('Dune 同名两个年份 → false（不得放行 1984/2021）', () => {
+    expect(yearFolderTypoOk(1984, 2021, 'Dune', [
+      { title: 'Dune', originalTitle: 'Dune', year: 1984 },
+      { title: 'Dune', originalTitle: 'Dune', year: 2021 },
+    ])).toBe(false)
+  })
+
+  it('零同名 hits → false（fail-closed）', () => {
+    expect(yearFolderTypoOk(1942, 1943, 'Casablanca', [])).toBe(false)
+  })
+
+  it('dirYear 或 tmdbYear 缺席 → false', () => {
+    expect(yearFolderTypoOk(null, 1943, 'Casablanca', casablancaHits)).toBe(false)
+    expect(yearFolderTypoOk(1942, null, 'Casablanca', casablancaHits)).toBe(false)
+  })
+
+  it('claimedTitle 与 hits 无整串相等 → false', () => {
+    expect(yearFolderTypoOk(2019, 2020, '寄生虫', [
+      { title: 'Parasite', originalTitle: '기생충', year: 2019 },
+    ])).toBe(false)
+  })
+
+  it('originalTitle 整串相等也算同名', () => {
+    expect(yearFolderTypoOk(2019, 2020, 'Parasite', [
+      { title: 'Gisaengchung', originalTitle: 'Parasite', year: 2019 },
+    ])).toBe(true)
   })
 })
