@@ -1878,12 +1878,16 @@
    align-items:flex-end：column flex 默认 stretch——纯文字 span 被拉满行宽后
    靠 text-align:right 贴右看不出来，但「去片库看」是 inline-flex justify-center，
    被 stretch 后文字在盒内居中、肉眼飘到卡片中间（2026-08-18 用户实测截图）。
-   两条通道都要：文字靠 text-align，inline-flex 靠 align-items。 */
+   两条通道都要：文字靠 text-align，inline-flex 靠 align-items。
+   padding:14px 16px：absolute 定位的 right:0 会把内容顶到卡片最右缘，
+   border-radius 会裁掉时间戳（2026-08-18 用户实测截图）。活动页 .wb-run-body
+   有这条 padding，通知行不能漏。 */
 .notif-row.wb-run-card .wb-run-body {
   position: absolute;
   left: calc(var(--notif-card-h) * 16 / 9);
   text-align: right;
   align-items: flex-end;
+  padding: 14px 16px;
 }
 .wb-hero-bleed { /* 与 .wb-run-card 同出血；类名给测试/调用方复用 */ }
 

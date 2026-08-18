@@ -86,6 +86,14 @@ describe('通知卡：恒定高 96px + 海报 16:9（高 → 宽）', () => {
     expect(decl('.notif-row.wb-run-card .wb-run-body', 'align-items')).toBe('flex-end')
   })
 
+  it('🔴 右栏有 padding——时间戳/标题/按钮不许顶到卡片右缘', () => {
+    // 事故（2026-08-18 用户截图）：「21:35」被切了一半。absolute 定位的 right:0
+    // 把内容顶到卡片最右缘，border-radius 裁掉了时间戳的右边。活动页 .wb-run-body
+    // 有 padding:14px 16px，通知行漏了这条——absolute 定位不会继承父级的 padding。
+    const p = decl('.notif-row.wb-run-card .wb-run-body', 'padding')
+    expect(p).toBe('14px 16px')
+  })
+
   it('🔴 不许出现 --notif-card-w（宽度是推出来的，不能再起一个变量把它写死）', () => {
     expect(CSS).not.toMatch(/--notif-card-w\s*:/)
   })
