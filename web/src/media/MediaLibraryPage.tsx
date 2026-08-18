@@ -35,6 +35,7 @@ import { useT } from '../i18n/useT.js'
 import { localizeError } from '../lib/errorText.js'
 import { mediaItemHref } from '../shell/route.js'
 import { RootHealthNote } from '../shell/RootHealthNote.js'
+import { displayTitle } from '../workbench/displayTitle.js'
 import { MediaPoster } from './MediaPoster.js'
 import type { MediaLibraryItemDTO } from '../api/types.js'
 
@@ -107,8 +108,10 @@ export function coverageParts(item: MediaLibraryItemDTO): {
 }
 
 function MediaCard({ item }: { item: MediaLibraryItemDTO }) {
-  const { t } = useT()
-  const title = item.chineseTitle ?? item.title
+  const { t, lang } = useT()
+  // 作品名跟随 UI 语言：zh 用 chineseTitle ?? title，en 用 title（2026-08-18 裁决）。
+  // displayTitle 已封装这条判据，与活动页 / 通知页同源。
+  const title = displayTitle(lang, item.title, item.chineseTitle ?? null)
   const { subtitled, embedded, onDisk, uncovered, unplaced } = coverageParts(item)
   const covered = subtitled + (embedded ?? 0)
 

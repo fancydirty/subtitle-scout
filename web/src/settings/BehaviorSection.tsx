@@ -34,6 +34,41 @@ interface RowProps {
   onUpdated: (settings: SettingsDTO) => void
 }
 
+/** 界面语言切换行——浏览器本地偏好（localStorage["scout-lang"]），**不走后端 PUT**。
+ *  与 target_languages 的区别：那个是字幕**内容**的目标语言（服务器配置），
+ *  这个是 UI 自己的语言（浏览器本地）。两台设备互不影响。
+ *  位置在 EngineRow 之前——语言影响所有其他设置的阅读。
+ *  SegmentedControl 而不是 Select：两个选项的切换不需要开下拉。 */
+function UiLanguageRow() {
+  const { t, lang, setLang } = useT()
+  return (
+    <div className="flex flex-col gap-2">
+      <span className="text-[13px] font-medium leading-5 text-foreground">
+        {t('settings_ui_language_label')}
+      </span>
+      <div role="group" aria-label={t('settings_ui_language_label')} className="settings-lang-switch">
+        <button
+          type="button"
+          aria-pressed={lang === 'zh'}
+          onClick={() => setLang('zh')}
+        >
+          中文
+        </button>
+        <button
+          type="button"
+          aria-pressed={lang === 'en'}
+          onClick={() => setLang('en')}
+        >
+          English
+        </button>
+      </div>
+      <span className="text-[11px] leading-4 text-muted-foreground">
+        {t('settings_ui_language_note')}
+      </span>
+    </div>
+  )
+}
+
 /** 单键提交共用的 saving/error 态——每行各自持有一份，互不干扰（改 target_languages 出错不会
  *  把 hardsub_mode 行也标红）。inFlightRef 是同步去重闸：TargetLanguagesRow 把 Input 和
  *  Save 按钮包在同一个 onBlur 边界里（失焦或回车提交，见该行注释），点击 Save 时鼠标按下会先
@@ -300,6 +335,7 @@ export function BehaviorSection({ settings }: Props) {
         {t('settings_behavior_heading')}
       </span>
       <div className="flex flex-col gap-5">
+        <UiLanguageRow />
         <EngineRow settings={local} onUpdated={setLocal} />
         <TargetLanguagesRow settings={local} onUpdated={setLocal} />
         <HardsubModeRow settings={local} onUpdated={setLocal} />

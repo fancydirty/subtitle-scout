@@ -405,6 +405,9 @@ export const en = {
   settings_provider_last_test_passed_ago: 'passed',
   settings_provider_last_test_failed_ago: 'failed',
   settings_provider_last_test_ago_suffix: 'ago',
+  // 界面语言切换（BehaviorSection 第一行）——浏览器本地偏好，不走后端 PUT。
+  settings_ui_language_label: 'Interface language',
+  settings_ui_language_note: 'Applies to this browser only',
   // 密钥的人话标签（审计 P0-5）——设置页不再直接显示 env 变量名。
   secret_tmdb_api_key: 'TMDB API key',
   secret_assrt_token: 'ASSRT token',

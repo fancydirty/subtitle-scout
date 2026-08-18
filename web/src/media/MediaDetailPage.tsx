@@ -32,6 +32,7 @@ import { localizeError } from '../lib/errorText.js'
 import { EpisodeCell } from './EpisodeCell.js'
 import { EpisodeMark } from './EpisodeMark.js'
 import { EPISODE_STATE_LABEL, LEGEND_STATES } from './episodeStateMeta.js'
+import { displayTitle } from '../workbench/displayTitle.js'
 import { MediaPoster } from './MediaPoster.js'
 
 /** 404 判定：后端 404 的 body 是 `{error:'not found'}`（router.ts），client.ts 对 4xx 优先取
@@ -184,8 +185,15 @@ export function MediaDetailPage({ detail }: { detail: Async<MediaLibraryDetailDT
   if (!detail.data) return null
 
   const { work, seasons, movie, unplacedFileCount } = detail.data
-  const title = work.chineseTitle ?? work.title
-  const originalTitle = work.chineseTitle && work.chineseTitle !== work.title ? work.title : null
+  // 作品名跟随 UI 语言（2026-08-18 裁决）：zh 用 chineseTitle ?? title，en 用 title。
+  // 副标题 originalTitle 只在 zh 且 chineseTitle ≠ title 时渲染——
+  // 用户：「外国人不需要知道它中文名是啥」。副标题存在的理由是补充原文 identity，
+  // 不是展示另一种语言。en 时整个槽不渲染（originalTitle === null，JSX 已有 null 闸）。
+  const title = displayTitle(lang, work.title, work.chineseTitle ?? null)
+  const originalTitle =
+    lang === 'zh' && work.chineseTitle && work.chineseTitle !== work.title
+      ? work.title
+      : null
 
   return (
     <Section>

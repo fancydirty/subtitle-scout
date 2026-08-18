@@ -339,6 +339,9 @@ export const zh = {
   settings_provider_last_test_passed_ago: '通过',
   settings_provider_last_test_failed_ago: '失败',
   settings_provider_last_test_ago_suffix: '前',
+  // 界面语言切换（BehaviorSection 第一行）——浏览器本地偏好，不走后端 PUT。
+  settings_ui_language_label: '界面语言',
+  settings_ui_language_note: '仅作用于当前浏览器',
   // 密钥的人话标签（审计 P0-5）——设置页不再直接显示 env 变量名。
   secret_tmdb_api_key: 'TMDB API 密钥',
   secret_assrt_token: 'ASSRT token',

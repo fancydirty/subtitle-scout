@@ -835,6 +835,44 @@
   display: contents;
 }
 
+/* 界面语言切换（BehaviorSection 第一行）：SegmentedControl 两选项。
+   未选中 transparent + muted，选中 bg-secondary + fg；整体 1px hairline 外框。
+   不用 Select——两个选项的切换不该开下拉（点一下 vs 点两下）。 */
+.settings-lang-switch {
+  display: inline-flex;
+  align-items: stretch;
+  width: fit-content;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  overflow: hidden;
+  background: transparent;
+}
+.settings-lang-switch > button {
+  appearance: none;
+  background: transparent;
+  border: none;
+  padding: 5px 12px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--color-weak);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.settings-lang-switch > button + button {
+  border-left: 1px solid var(--color-border);
+}
+.settings-lang-switch > button[aria-pressed='true'] {
+  background: var(--color-secondary);
+  color: var(--color-fg);
+}
+.settings-lang-switch > button:hover {
+  color: var(--color-fg);
+}
+.settings-lang-switch > button:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: -2px;
+}
+
 /* ── 鉴权 A2/A3（AuthShell + auth 表单）：setup 向导 / 一次性 API key 屏 / 登录页 / Security 区。
    auth 界面是脱离常规 dashboard chrome 的独立面，输入框用原生 <input>（Astryx TextInput 不透传
    autocomplete，而密码管理器契约不可谈判——见 design-recon）。所有配色一律读 tw.css @theme

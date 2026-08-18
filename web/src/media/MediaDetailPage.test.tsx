@@ -470,12 +470,13 @@ describe('图例 / unplaced / 异常态', () => {
     expect(screen.getByLabelText('loading media detail')).toBeInTheDocument()
   })
 
-  it('中文名与原名都有且不同 → 两行都显示；相同则只显示一次', () => {
+  it('en：有中文名时**只**显示原名（副标题槽不渲染）；相同则只显示一次', () => {
     renderDetail(asyncOf(detail({
       work: { workId: 'w', title: 'Breaking Bad', chineseTitle: '绝命毒师', year: 2008,
               posterPath: null, mediaType: 'tv' },
     })))
-    expect(screen.getByRole('heading', { name: '绝命毒师' })).toBeInTheDocument()
-    expect(screen.getByText('Breaking Bad')).toBeInTheDocument()
+    // 2026-08-18 裁决：英文 UI 下外国人不需要知道中文名，副标题槽整体不渲染
+    expect(screen.getByRole('heading', { name: 'Breaking Bad' })).toBeInTheDocument()
+    expect(screen.queryByText('绝命毒师')).not.toBeInTheDocument()
   })
 })
