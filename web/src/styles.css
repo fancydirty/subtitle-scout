@@ -1800,13 +1800,30 @@
   min-height: 46px;
 }
 
-/* 通知英雄：复用在跑卡 B 切分（左 16:9 + 右实色），不定高。 */
+/* 通知英雄：**恒定高 96px** + 海报 16:9（高推宽）。
+   与活动页 B 切分**几何相反**：那边是「宽 61% → 海报 16:9 撑高」，
+   这边是「高 96px 恒定 → 海报 16:9 推宽 ≈171px」。
+   用户 2026-08-18 裁决：显示器宽度变化不影响海报与文字的排布，
+   只影响「去片库看」与标题之间的距离。 */
 .notif-row.wb-run-card {
   display: flex;
   align-items: stretch;
   gap: 0;
   padding: 0;
-  height: auto;
+  height: var(--notif-card-h);
+}
+/* 海报：100% 高 × 16/9 → 宽恒定。width:auto 覆盖活动页的 var(--card-split-poster)。 */
+.notif-row.wb-run-card .wb-run-img {
+  width: auto;
+  height: 100%;
+  aspect-ratio: 16 / 9;
+  flex-shrink: 0;
+}
+/* 右栏左边界对齐海报实际宽（≈171px），不是 61%。 */
+.notif-row.wb-run-card .wb-run-body {
+  position: absolute;
+  left: calc(var(--notif-card-h) * 16 / 9);
+  text-align: right;
 }
 .wb-hero-bleed { /* 与 .wb-run-card 同出血；类名给测试/调用方复用 */ }
 
@@ -1873,6 +1890,11 @@
    移动端那一轮**在 media query 里改变量值、不改组件**——这才是真正的留路。 */
 :root {
   --card-split-poster: 61%; /* B 切分左栏 16:9 海报占宽 */
+  /* 通知卡的恒定高度。**高 → 宽**：海报 height:100% × aspect-ratio:16/9 推出 ≈171px 宽，
+     与视口宽度无关——显示器变宽只改变右栏弹性空间的宽度（标题与「去片库看」之间），
+     海报尺寸永远不变。用户 2026-08-18 字面裁决：「卡片高度恒定，海报本身保持 16:9」。
+     活动页 .wb-run-card / .wb-queue-card 不用这个变量，那边仍是「宽 → 高」。 */
+  --notif-card-h: 96px;
 }
 
 /* ---- 两个 tab（Steam 式）---- */
