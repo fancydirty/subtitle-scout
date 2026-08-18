@@ -1800,14 +1800,12 @@
   min-height: 46px;
 }
 
-/* 通知英雄：复用在跑卡 mask。当天满高；更早的天收一档（~96px）。 */
+/* 通知英雄：复用在跑卡 B 切分（左 16:9 + 右实色），不定高。 */
 .notif-row.wb-run-card {
-  display: block;
+  display: flex;
+  align-items: stretch;
   padding: 0;
-  height: var(--card-run-h);
-}
-.notif-row.wb-run-card.notif-hero-compact {
-  height: 96px;
+  height: auto;
 }
 .wb-hero-bleed { /* 与 .wb-run-card 同出血；类名给测试/调用方复用 */ }
 
@@ -1854,35 +1852,26 @@
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
-   Task ⑨ 活动页（#/activity）—— R-F13 全背景式卡片 + R-F11 Linear 视觉基准
+   Task ⑨ 活动页（#/activity）—— B 切分卡片 + R-F11 Linear 视觉基准
    ══════════════════════════════════════════════════════════════════════════════
 
-   R-F13 的形态演进（设计文档 §六·八）：纯文字列表 → 卡片里放缩略图 → **图本身就是卡片**。
-   最终：左侧图铺满，横向渐变渐隐进 surface-1 **实色**，文字浮在渐隐区。
+   在跑与排队共用 B 切分：左栏 16:9 backdrop（宽走 --card-split-poster），右栏实色排字。
+   不定高——高度由 16:9 海报撑开，变量宽不能把静帧横向拉长。mask 朝右溶进右栏。
 
-   三个关键决定（原文照录，因为它们解释了下面每一个数字）：
-    1. **渐变终点用实色，不是半透明黑**——右半区底色与普通卡片完全一致，文字对比度稳定，
-       不会因背后有图而发飘。本仓的 surface-1 实色 = var(--color-card)（#111318）。
-       ⚠️ DESIGN.md 写的是 #0f1011，但那套 token 在本仓 grep 零命中——写
+   关键约束：
+    1. **右栏是实色，不是半透明黑 overlay**——文字对比度稳定。本仓实色 = var(--color-card)。
+       ⚠️ DESIGN.md 那套 --color-surface-* / --color-hairline 在本仓 grep 零命中——写
        `var(--color-surface-1, transparent)` 会**静默 fallback 成透明**（Task ⑦ 的实施者
        踩过并记在 PlaceholderPage 头注释里）。故一律用本仓真实存在的 --color-* 那套。
-    2. **在跑用横版 backdrop、排队用竖版 poster**——用户实测发现矛盾的根源是宽高比：
-       16:9 @ 70px高 = 124px宽（太窄看不清）vs 2:3 @ 70px高 = 47px宽（天生适合窄行）。
-       两个位置职责不同，形状不同不是缺陷是分工。
-    3. **排队行 88px 高 + 标题 16px**——行高撑起来右侧才不显空。
+    2. **不再「在跑用横版、排队用竖版 2:3」**——两槽同一几何；旧 2:3 排队行高不再有效。
 
    R-F11：四层 surface 阶梯 + 三层 hairline，**拒绝投影**（深色上投影糊成一团）。
    下面没有任何一条 box-shadow，这是刻意的。
 
-   ⚠️ **尺寸走 CSS 变量，不写死 px、也不用 clamp()**（设计文档 §七 的"留路"，
-   三轮审计 🔵 点名：clamp 要三个参数而 R-F13 只给了一个，实施者会卡住）。
+   ⚠️ **尺寸走 CSS 变量，不写死 px、也不用 clamp()**。
    移动端那一轮**在 media query 里改变量值、不改组件**——这才是真正的留路。 */
 :root {
-  --card-run-h: 186px;      /* 在跑卡片高度 */
-  --card-run-img: 60%;      /* 横版 backdrop 占宽 */
-  --card-queue-w: 59px;     /* 排队卡片的竖版 poster 宽 */
-  --card-queue-h: 88px;     /* 排队卡片行高 */
-  --card-queue-fade: 118px; /* 排队卡片渐变区宽（图的两倍） */
+  --card-split-poster: 61%; /* B 切分左栏 16:9 海报占宽 */
 }
 
 /* ---- 两个 tab（Steam 式）---- */
@@ -1940,42 +1929,75 @@
   background: currentColor;
 }
 
-/* ---- 在跑卡片：全幅 backdrop + mask 溶边，字在左 46% ---- */
+/* ---- 在跑 / 排队卡片：B 切分（左 16:9 backdrop + 右实色）----
+   选择器拆开写两份，是因为 cards.css.test.ts 的 decl() 只认「选择器紧挨 {」的第一块。 */
 .wb-run-card {
   position: relative;
-  height: var(--card-run-h);
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-control);
+  background: var(--color-card);
+}
+.wb-queue-card {
+  position: relative;
+  display: flex;
+  align-items: stretch;
   overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
   background: var(--color-card);
 }
 .wb-run-img {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
+  width: var(--card-split-poster);
+  flex-shrink: 0;
+  aspect-ratio: 16 / 9;
+  height: auto;
   object-fit: cover;
   object-position: 70% 38%;
-  -webkit-mask-image: linear-gradient(to left, #000 0%, #000 42%, transparent 78%);
-          mask-image: linear-gradient(to left, #000 0%, #000 42%, transparent 78%);
+  -webkit-mask-image: linear-gradient(to right, #000 58%, transparent 100%);
+          mask-image: linear-gradient(to right, #000 58%, transparent 100%);
   display: block;
 }
-/* 有图时组件不渲染这一层（不许再罩一层把图压暗）。无图才铺实色。 */
-.wb-run-fade {
-  position: absolute;
-  inset: 0;
-  background: var(--color-card);
+.wb-queue-img {
+  width: var(--card-split-poster);
+  flex-shrink: 0;
+  aspect-ratio: 16 / 9;
+  height: auto;
+  object-fit: cover;
+  object-position: 70% 38%;
+  -webkit-mask-image: linear-gradient(to right, #000 58%, transparent 100%);
+          mask-image: linear-gradient(to right, #000 58%, transparent 100%);
+  display: block;
 }
 .wb-run-body {
   position: relative;
-  height: 100%;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   justify-content: center;
   gap: 6px;
-  padding: 16px 20px;
-  margin-left: 0;
-  width: 46%;
+  padding: 14px 16px;
+  text-align: right;
+}
+.wb-queue-body {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  padding: 14px 16px;
+  text-align: right;
+}
+.wb-run-card[data-noimg='true'] .wb-run-body,
+.wb-queue-card[data-noimg='true'] .wb-queue-body {
+  text-align: left;
 }
 .wb-run-bar {
   height: 4px;
@@ -2001,51 +2023,6 @@
 .wb-run-log-latest {
   color: var(--color-fg);
 }
-
-/* ---- 排队卡片：竖版 poster 59px，渐变区 118px ---- */
-.wb-queue-card {
-  position: relative;
-  height: var(--card-queue-h);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-control);
-  overflow: hidden;
-  background: var(--color-card);
-}
-.wb-queue-img {
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: var(--card-queue-w);
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-.wb-queue-fade {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(
-    to right,
-    rgba(1, 1, 2, 0) 0,
-    rgba(1, 1, 2, 0.2) 40px,
-    var(--color-card) 118px
-  );
-}
-.wb-queue-body {
-  position: relative;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 2px;
-  padding: 0 16px;
-  margin-left: var(--card-queue-fade);
-}
-/* 无图降级：不留空槽（那会让卡片看起来缺了一块），渐变区直接从最左开始。
-   判据是 data-noimg，由组件在 posterPath/backdropPath 为 null 时置上——
-   `posterPath` 为 null 是**必然分支**不是边缘兜底（后端 DTO 注释明写可为 null）。 */
-.wb-run-card[data-noimg='true'] .wb-run-body,
-.wb-queue-card[data-noimg='true'] .wb-queue-body { margin-left: 0; }
-.wb-run-card[data-noimg='true'] .wb-run-fade,
-.wb-queue-card[data-noimg='true'] .wb-queue-fade { background: var(--color-card); }
 
 .wb-card-title {
   font-size: 16px;

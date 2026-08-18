@@ -89,72 +89,54 @@ describe('切片自检（防"守卫作用域随文件增长而漂移"）', () =>
   })
 })
 
-describe('R-F13：尺寸走 CSS 变量（移动端只改变量、不改组件）', () => {
-  it('四个几何变量都在 :root 上，且是 R-F13 给的那几个值', () => {
-    // 这些数字来自设计文档 §六·八，不是排版偏好——见文件头。
-    const root = /:root\s*\{([^}]*--card-run-h[^}]*)\}/.exec(CSS)?.[1] ?? ''
-    expect(root).toMatch(/--card-run-h:\s*186px/)
-    expect(root).toMatch(/--card-run-img:\s*60%/)
-    expect(root).toMatch(/--card-queue-w:\s*59px/)
-    expect(root).toMatch(/--card-queue-h:\s*88px/)
-    expect(root).toMatch(/--card-queue-fade:\s*118px/)
+describe('B 切分：左 16:9 + 右实色（覆盖 R-F13 固定高度 / 2:3 排队）', () => {
+  it('唯一几何变量 --card-split-poster 在 :root 上，值为 61%', () => {
+    const root = /:root\s*\{([^}]*--card-split-poster[^}]*)\}/.exec(CSS)?.[1] ?? ''
+    expect(root).toMatch(/--card-split-poster:\s*61%/)
+    expect(CSS).not.toMatch(/--card-run-h\s*:/)
+    expect(CSS).not.toMatch(/--card-run-img\s*:/)
+    expect(CSS).not.toMatch(/--card-queue-w\s*:/)
+    expect(CSS).not.toMatch(/--card-queue-h\s*:/)
+    expect(CSS).not.toMatch(/--card-queue-fade\s*:/)
   })
 
-  it('🔴 组件引用变量而**不是写死 px**（写死了移动端那一轮就得改组件）', () => {
-    expect(decl('.wb-run-card', 'height')).toBe('var(--card-run-h)')
-    // 在跑图改为全幅 mask 溶边，不再吃 --card-run-img 当宽度
-    expect(decl('.wb-run-img', 'width')).toBe('100%')
-    expect(decl('.wb-queue-card', 'height')).toBe('var(--card-queue-h)')
-    expect(decl('.wb-queue-img', 'width')).toBe('var(--card-queue-w)')
+  it('在跑图宽走变量、锁 16/9，不定高', () => {
+    expect(decl('.wb-run-img', 'width')).toBe('var(--card-split-poster)')
+    expect(decl('.wb-run-img', 'aspect-ratio')).toMatch(/16\s*\/\s*9/)
+    expect(decl('.wb-run-card', 'height')).not.toBe('var(--card-run-h)')
+    expect(decl('.wb-run-card', 'display')).toBe('flex')
   })
 
-  it('在跑图用 mask-image 溶边，不是靠 width: var(--card-run-img)', () => {
+  it('mask 朝右溶进右栏，不是 to left，也不是 overlay fade', () => {
     const img = new RegExp('\\.wb-run-img\\s*\\{([^}]*)\\}').exec(WB_CSS)?.[1] ?? ''
     expect(img).toContain('mask-image')
     expect(img).toContain('-webkit-mask-image')
-    expect(decl('.wb-run-img', 'width')).not.toBe('var(--card-run-img)')
+    expect(img).toContain('to right')
+    expect(img).not.toContain('to left')
+    expect(WB_CSS).not.toContain('.wb-queue-fade')
+    expect(WB_CSS).not.toContain('.notif-hero-compact')
   })
 
-  it('🔴 **不许出现 clamp()**（三轮审计 🔵：R-F13 只给了一个值，clamp 要三个）', () => {
+  it('右栏 overflow hidden + text-align right；无图改左对齐', () => {
+    expect(decl('.wb-run-body', 'overflow')).toBe('hidden')
+    expect(decl('.wb-run-body', 'text-align')).toBe('right')
+    expect(decl('.wb-run-body', 'width')).not.toBe('46%')
+    expect(WB_CSS).toMatch(/\[data-noimg='true'\][\s\S]*?text-align:\s*left/)
+  })
+
+  it('🔴 **不许出现 clamp()**', () => {
     expect(WB_CSS).not.toContain('clamp(')
-  })
-
-  it('排队卡片的渐变区是图宽的两倍（118 vs 59）——那是 R-F13 的原话', () => {
-    const w = /--card-queue-w:\s*(\d+)px/.exec(CSS)?.[1]
-    const fade = /--card-queue-fade:\s*(\d+)px/.exec(CSS)?.[1]
-    expect(Number(fade)).toBe(Number(w) * 2)
   })
 })
 
-describe('R-F13：渐变终点是 surface 实色，不是半透明黑', () => {
-  // 决定 1 的原话：「渐变终点用 surface-1 实色，不是半透明黑——右半区底色与普通卡片
-  // 完全一致，文字对比度稳定，不会因背后有图而发飘」。
-  it('🔴 排队渐变终点是 var(--color-card)；在跑 fade 不再以 --card-run-img 为终点压暗', () => {
-    const run = decl('.wb-run-fade', 'background') ?? ''
-    const queue = decl('.wb-queue-fade', 'background') ?? ''
-    expect(queue).toContain('var(--color-card)')
-    // 在跑有图走 mask，fade 不许再停在 var(--card-run-img) 罩一层黑
-    expect(run).not.toMatch(/var\(--card-run-img\)/)
-  })
-
-  it('🔴 .wb-queue-fade 的 background 不含 %', () => {
-    const queue = decl('.wb-queue-fade', 'background') ?? ''
-    expect(queue).not.toMatch(/\d+%/)
-    expect(queue).toContain('118px')
-  })
-
+describe('B 切分：实色栏与 legend', () => {
   it('🔴 .media-legend 宽度 100%', () => {
     expect(declFromFullCss('.media-legend', 'width')).toBe('100%')
   })
 
-  it('🔴 **不引用 DESIGN.md 那套 surface-* token**（本仓 grep 零命中，会静默 fallback 成透明）', () => {
-    // Task ⑦ 的实施者踩过：写 var(--color-surface-1, transparent) 不报错，只是透明。
+  it('🔴 **不引用 DESIGN.md 那套 surface-* token**', () => {
     expect(WB_CSS).not.toMatch(/--color-surface-\d/)
     expect(WB_CSS).not.toMatch(/--color-hairline/)
-  })
-
-  it('无图降级时渐变层塌成纯实色（不留一道说不清的暗角）', () => {
-    expect(WB_CSS).toMatch(/\[data-noimg='true'\][\s\S]*?\{[^}]*background:\s*var\(--color-card\)/)
   })
 })
 
