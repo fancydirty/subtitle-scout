@@ -84,13 +84,17 @@ describe('通知卡：恒定高 96px + 海报 16:9（高 → 宽）', () => {
     expect(decl('.notif-row.wb-run-card .wb-run-body', 'inset')).toBe('auto')
   })
 
-  it('🔴 右栏 flex item 贴右缘 align-items:flex-end——「去片库看」不许飘到中间', () => {
-    // 事故（2026-08-18 用户截图）：.wb-run-body 是 column flex，flex item 默认
-    // align-items:stretch。纯文字 span 被拉满行宽后靠 text-align:right 把字推到右边，
-    // 看不出来；但「去片库看」是 buttonVariants 的 inline-flex justify-center，
-    // 被 stretch 成整行宽后**文字在自己盒内居中**——按钮肉眼上飘到了卡片中间。
-    // 纯文字节点靠 text-align 贴右、inline-flex 节点靠 align-items 贴右，两个通道都要。
-    expect(decl('.notif-row.wb-run-card .wb-run-body', 'align-items')).toBe('flex-end')
+  it('🔴 右栏**左对齐**（text-align:left + align-items:flex-start）——mockup 承诺的', () => {
+    // 2026-08-18 用户裁决：visual companion mockup 是「左对齐文字 + 右端按钮」，
+    // 代码却写成了全右对齐。这是实现与承诺不一致。
+    expect(decl('.notif-row.wb-run-card .wb-run-body', 'text-align')).toBe('left')
+    expect(decl('.notif-row.wb-run-card .wb-run-body', 'align-items')).toBe('flex-start')
+  })
+
+  it('🔴 「去片库看」单独右端（margin-left:auto），不跟文字一起左对齐', () => {
+    // mockup：时钟/标题/副标题从左开始，「去片库看」单独在右端——中间有呼吸空间。
+    // 实现：NotificationRow 里给按钮 span 加 class="notif-row-cta"，CSS 里 margin-left:auto。
+    expect(decl('.notif-row-cta', 'margin-left')).toBe('auto')
   })
 
   it('🔴 右栏有 padding——时间戳/标题/按钮不许顶到卡片右缘', () => {
