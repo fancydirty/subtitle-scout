@@ -818,6 +818,23 @@
   color: var(--color-fn-red);
 }
 
+/* ── 设置页 Provider 卡 KV 栅格（2026-08-18 Vercel 风重构）────────────────
+   密钥清单的排版纪律：label 列 110px、值列 1fr，dt 是 11px muted label，
+   dd 是 12px mono 值（masked token / URL 是技术读数，跟活动页 .wb-card-progress
+   同语言）。三张卡（TMDB 1 行 / LLM 3 行 / 翻译 3 行）共用同一套列宽，自动对齐。
+   `.settings-kv-row` 用 `display: contents` 让 <div> 包装在 grid 里"消失"——
+   React 需要 key 但不能多套一层产生额外盒子的场合的标准做法。 */
+.settings-kv {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  row-gap: 8px;
+  column-gap: 14px;
+  margin: 0;
+}
+.settings-kv-row {
+  display: contents;
+}
+
 /* ── 鉴权 A2/A3（AuthShell + auth 表单）：setup 向导 / 一次性 API key 屏 / 登录页 / Security 区。
    auth 界面是脱离常规 dashboard chrome 的独立面，输入框用原生 <input>（Astryx TextInput 不透传
    autocomplete，而密码管理器契约不可谈判——见 design-recon）。所有配色一律读 tw.css @theme

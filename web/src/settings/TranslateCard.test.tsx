@@ -138,8 +138,8 @@ describe('TranslateCard', () => {
     expect(screen.getByText('✓ Configured')).toBeInTheDocument()
     expect(screen.queryByLabelText('Base URL')).not.toBeInTheDocument()
     expect(screen.queryByText('All three fields are required')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Test' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Test connection' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Edit credentials' })).toBeInTheDocument()
   })
 
   it('配齐 + 关闭 → 凭证已保存文案，无必填输入', () => {
@@ -162,7 +162,7 @@ describe('TranslateCard', () => {
     fireEvent.click(screen.getByRole('switch', { name: 'AI subtitle translation' }))
     await waitFor(() => expect(update).toHaveBeenCalled())
     expect(screen.queryByLabelText('Base URL')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Test' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Test connection' })).toBeInTheDocument()
   })
 
   it('Edit 后空草稿点 Save → 不 putSecret 空键', async () => {
@@ -174,7 +174,7 @@ describe('TranslateCard', () => {
       settings: { ai_translate_enabled: 'true' } as SettingsDTO,
       reload,
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit credentials' }))
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(api.validateSetup).toHaveBeenCalledWith('translate', {}))
     expect(put).not.toHaveBeenCalled()
@@ -188,7 +188,7 @@ describe('TranslateCard', () => {
       settings: { ai_translate_enabled: 'true' } as SettingsDTO,
       reload,
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Test' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }))
     await waitFor(() => expect(validate).toHaveBeenCalledWith('translate'))
     expect(reload).toHaveBeenCalled()
   })

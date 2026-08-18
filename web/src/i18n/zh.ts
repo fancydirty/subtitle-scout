@@ -332,7 +332,13 @@ export const zh = {
   settings_provider_save: '保存',
   settings_provider_cancel: '取消',
   settings_provider_test: '测试',
+  settings_provider_test_connect: '测试连接',
+  settings_provider_edit_credentials: '编辑凭据',
   settings_provider_last_test_ok: '上次测试通过',
+  // rest 态 footer 的相对时间后缀（与 relDuration 拼：「2 天前通过」「3 小时前失败」）。
+  settings_provider_last_test_passed_ago: '通过',
+  settings_provider_last_test_failed_ago: '失败',
+  settings_provider_last_test_ago_suffix: '前',
   // 密钥的人话标签（审计 P0-5）——设置页不再直接显示 env 变量名。
   secret_tmdb_api_key: 'TMDB API 密钥',
   secret_assrt_token: 'ASSRT token',

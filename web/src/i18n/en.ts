@@ -398,7 +398,13 @@ export const en = {
   settings_provider_save: 'Save',
   settings_provider_cancel: 'Cancel',
   settings_provider_test: 'Test',
+  settings_provider_test_connect: 'Test connection',
+  settings_provider_edit_credentials: 'Edit credentials',
   settings_provider_last_test_ok: 'Last test passed',
+  // rest 态 footer 的相对时间后缀（与 relDuration 拼：「2d ago」「3h ago」）。
+  settings_provider_last_test_passed_ago: 'passed',
+  settings_provider_last_test_failed_ago: 'failed',
+  settings_provider_last_test_ago_suffix: 'ago',
   // 密钥的人话标签（审计 P0-5）——设置页不再直接显示 env 变量名。
   secret_tmdb_api_key: 'TMDB API key',
   secret_assrt_token: 'ASSRT token',

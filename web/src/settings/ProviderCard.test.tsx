@@ -23,14 +23,14 @@ describe('ProviderCard', () => {
     const card = within(screen.getByTestId('providers-tmdb'))
     expect(card.getByText('abc••••xyz')).toBeInTheDocument()
     expect(card.getByText('✓ Configured')).toBeInTheDocument()
-    expect(card.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
+    expect(card.queryByRole('button', { name: 'Edit credentials' })).not.toBeInTheDocument()
   })
 
   it('db 源：可编辑 + Edit 按钮 + configured badge', () => {
     renderCard(ASSRT)
     const card = within(screen.getByTestId('providers-assrt'))
     expect(card.getByText('✓ Configured')).toBeInTheDocument()
-    expect(card.getByRole('button', { name: 'Edit' })).toBeInTheDocument()
+    expect(card.getByRole('button', { name: 'Edit credentials' })).toBeInTheDocument()
   })
 
   it('Edit → 输入 → Save → putSecret + reload', async () => {
@@ -38,7 +38,7 @@ describe('ProviderCard', () => {
     const reload = vi.fn()
     renderCard(ASSRT, reload)
     const card = within(screen.getByTestId('providers-assrt'))
-    fireEvent.click(card.getByRole('button', { name: 'Edit' }))
+    fireEvent.click(card.getByRole('button', { name: 'Edit credentials' }))
     fireEvent.change(card.getByLabelText('ASSRT token'), { target: { value: 'new-tok' } })
     fireEvent.click(card.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(put).toHaveBeenCalledWith('ASSRT_TOKEN', 'new-tok'))
@@ -49,7 +49,7 @@ describe('ProviderCard', () => {
     const put = vi.spyOn(api, 'putSecret').mockResolvedValue({ ok: true })
     renderCard(ASSRT)
     const card = within(screen.getByTestId('providers-assrt'))
-    fireEvent.click(card.getByRole('button', { name: 'Edit' }))
+    fireEvent.click(card.getByRole('button', { name: 'Edit credentials' }))
     fireEvent.click(card.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(put).not.toHaveBeenCalled())
   })
@@ -58,18 +58,19 @@ describe('ProviderCard', () => {
     const validate = vi.spyOn(api, 'validateSetup').mockResolvedValue({ ok: true } as any)
     const reload = vi.fn()
     renderCard(ASSRT, reload)
-    fireEvent.click(within(screen.getByTestId('providers-assrt')).getByRole('button', { name: 'Test' }))
+    fireEvent.click(within(screen.getByTestId('providers-assrt')).getByRole('button', { name: 'Test connection' }))
     await waitFor(() => expect(validate).toHaveBeenCalledWith('assrt'))
     await waitFor(() => expect(reload).toHaveBeenCalled())
   })
 
-  it('lastTest ok → 绿点 + Last test passed；fail → Last test failed + 错误行', () => {
+  it('lastTest ok → 绿点 + passed；fail → failed + 错误行', () => {
     renderCard(ASSRT)
-    expect(within(screen.getByTestId('providers-assrt')).getByText(/Last test passed/)).toBeInTheDocument()
+    // Vercel 风 rest 态：footer 行是「passed {rel} ago」的相对时间格式
+    expect(within(screen.getByTestId('providers-assrt')).getByText(/passed/i)).toBeInTheDocument()
     const fail: ProviderRowDTO = { id: 'llm', secrets: [{ name: 'LLM_API_KEY' as any, set: true, source: 'db', masked: 'sk••••' }], lastTest: { ok: false, at: 1700000000000, error: 'Invalid credentials' }, quota: null }
     cleanup(); renderCard(fail)
     const card = within(screen.getByTestId('providers-llm'))
-    expect(card.getByText(/Last test failed/)).toBeInTheDocument()
+    expect(card.getByText(/failed/i)).toBeInTheDocument()
     expect(card.getByText('Invalid credentials')).toBeInTheDocument()
   })
 
@@ -80,7 +81,7 @@ describe('ProviderCard', () => {
     ], lastTest: null, quota: null }
     renderCard(mixed)
     const card = within(screen.getByTestId('providers-llm'))
-    fireEvent.click(card.getByRole('button', { name: 'Edit' }))
+    fireEvent.click(card.getByRole('button', { name: 'Edit credentials' }))
     expect(card.queryByLabelText('LLM_BASE_URL')).not.toBeInTheDocument()
     expect(card.getByText('htt••••/v1')).toBeInTheDocument()
     expect(card.getByLabelText('API key')).toBeInTheDocument()
@@ -90,7 +91,7 @@ describe('ProviderCard', () => {
     vi.spyOn(api, 'putSecret').mockRejectedValue(new Error('boom'))
     renderCard(ASSRT)
     const card = within(screen.getByTestId('providers-assrt'))
-    fireEvent.click(card.getByRole('button', { name: 'Edit' }))
+    fireEvent.click(card.getByRole('button', { name: 'Edit credentials' }))
     fireEvent.change(card.getByLabelText('ASSRT token'), { target: { value: 'new-tok' } })
     fireEvent.click(card.getByRole('button', { name: 'Save' }))
     expect(await card.findByText(/Couldn't save: /)).toBeInTheDocument()
@@ -181,7 +182,7 @@ describe('ProviderCard', () => {
       renderCard(withQuota({ resetAt: null, observedAt: NOW }))
       const card = within(screen.getByTestId('providers-assrt'))
       expect(card.getByTestId('provider-quota-note')).toBeInTheDocument()
-      expect(card.getByText(/Last test passed/)).toBeInTheDocument()
+      expect(card.getByText(/passed/i)).toBeInTheDocument()
       expect(card.getByText('ass••••123')).toBeInTheDocument()
     })
   })
