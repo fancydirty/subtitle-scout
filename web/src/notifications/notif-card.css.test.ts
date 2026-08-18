@@ -66,15 +66,22 @@ describe('通知卡：恒定高 96px + 海报 16:9（高 → 宽）', () => {
     expect(w ?? '').not.toMatch(/%$/)
   })
 
-  it('🔴 右栏左边界 = 海报实际宽（calc(96px × 16/9) ≈ 171px），不是 61%', () => {
+  it('右栏左边界 = 海报实际宽（calc(96px × 16/9) ≈ 171px），不是 61%', () => {
     const l = decl('.notif-row.wb-run-card .wb-run-body', 'left')
-    expect(l).toBe('calc(var(--notif-card-h) * 16 / 9)')
-    expect(l).not.toBe('var(--card-split-poster)')
+    // normal flow 下 left 不再生效，但保留这条断言防回退：如果谁把 position 改回 absolute，
+    // left 必须仍是 calc 而不是 var(--card-split-poster)。
+    expect(l === null || l === 'calc(var(--notif-card-h) * 16 / 9)').toBe(true)
   })
 
-  it('右栏仍 absolute + text-align:right（通知行既有布局不变，只换参照）', () => {
-    expect(decl('.notif-row.wb-run-card .wb-run-body', 'position')).toBe('absolute')
-    expect(decl('.notif-row.wb-run-card .wb-run-body', 'text-align')).toBe('right')
+  it('🔴 通知行右栏**不用 absolute**——normal flow 才是通知行的正确形态', () => {
+    // 事故（2026-08-18 用户截图）：absolute 定位的 right:0 把内容顶到卡片 border-box
+    // 右缘，border-radius 裁掉了「21:35」的右上角。padding 只推了 16px 但 top:0 仍在
+    // 圆角裁切区。活动页需要 absolute 是因为右栏要覆盖在海报 mask 上；通知行海报
+    // 只有 ~171px，右栏从 171px 开始，根本不需要 absolute——normal flow 的 flex:1
+    // 才是它的正确形态（同活动页 data-noimg='true' 的降级）。
+    expect(decl('.notif-row.wb-run-card .wb-run-body', 'position')).toBe('relative')
+    expect(decl('.notif-row.wb-run-card .wb-run-body', 'flex')).toBe('1')
+    expect(decl('.notif-row.wb-run-card .wb-run-body', 'inset')).toBe('auto')
   })
 
   it('🔴 右栏 flex item 贴右缘 align-items:flex-end——「去片库看」不许飘到中间', () => {
