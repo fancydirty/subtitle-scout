@@ -77,6 +77,15 @@ describe('通知卡：恒定高 96px + 海报 16:9（高 → 宽）', () => {
     expect(decl('.notif-row.wb-run-card .wb-run-body', 'text-align')).toBe('right')
   })
 
+  it('🔴 右栏 flex item 贴右缘 align-items:flex-end——「去片库看」不许飘到中间', () => {
+    // 事故（2026-08-18 用户截图）：.wb-run-body 是 column flex，flex item 默认
+    // align-items:stretch。纯文字 span 被拉满行宽后靠 text-align:right 把字推到右边，
+    // 看不出来；但「去片库看」是 buttonVariants 的 inline-flex justify-center，
+    // 被 stretch 成整行宽后**文字在自己盒内居中**——按钮肉眼上飘到了卡片中间。
+    // 纯文字节点靠 text-align 贴右、inline-flex 节点靠 align-items 贴右，两个通道都要。
+    expect(decl('.notif-row.wb-run-card .wb-run-body', 'align-items')).toBe('flex-end')
+  })
+
   it('🔴 不许出现 --notif-card-w（宽度是推出来的，不能再起一个变量把它写死）', () => {
     expect(CSS).not.toMatch(/--notif-card-w\s*:/)
   })
