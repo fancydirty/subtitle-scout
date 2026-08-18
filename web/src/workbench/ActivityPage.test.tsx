@@ -410,16 +410,16 @@ describe('🔴 断线重连 → 拉 /api/v2/health 快照纠正当前态（后�
 // R-F13：两种卡片与无图降级
 // ═══════════════════════════════════════════════════════════════════════════
 describe('R-F13：全背景式卡片与无图降级', () => {
-  it('排队卡片用**竖版 poster**（w400 CDN），在跑卡片用**横版 backdrop**（w1280）', async () => {
+  it('排队与在跑都用横版 backdrop（w1280），不再用竖版 poster', async () => {
     renderPage()
     await ready()
-    // 排队：poster
     const queued = screen.getAllByTestId('wb-queue-card')[0]!
     const qImg = queued.querySelector('img')!
-    expect(qImg.getAttribute('src')).toContain('/p.jpg')
-    expect(qImg.getAttribute('src')).toContain('w400')
+    expect(qImg.getAttribute('src')).toContain('/bd.jpg')
+    expect(qImg.getAttribute('src')).toContain('w1280')
+    expect(qImg.getAttribute('src')).not.toContain('w400')
+    expect(queued.querySelector('.wb-queue-fade')).toBeNull()
 
-    // 在跑：backdrop（靠 data.workId 从队列表里查到同一个作品）
     act(() => {
       bus().emit(ev({
         type: 'activity', message: '正在找字幕：Queued Show', title: 'Queued Show',
@@ -430,7 +430,6 @@ describe('R-F13：全背景式卡片与无图降级', () => {
     const rImg = screen.getByTestId('wb-run-card').querySelector('img')!
     expect(rImg.getAttribute('src')).toContain('/bd.jpg')
     expect(rImg.getAttribute('src')).toContain('w1280')
-    // 有图：不许再罩一层把图压暗（mask 在 img 上，不在 fade overlay）
     expect(screen.getByTestId('wb-run-card').querySelector('.wb-run-fade')).toBeNull()
   })
 
@@ -451,9 +450,9 @@ describe('R-F13：全背景式卡片与无图降级', () => {
     expect(card.getAttribute('data-noimg')).toBe('true')
   })
 
-  it('posterPath 为 null → 无图降级（data-noimg，不画 img、不画首字母块）', async () => {
+  it('backdropPath 为 null → 无图降级（有 poster 也不拿竖图填 16:9）', async () => {
     activityBody = {
-      subtitleQueue: [{ ...QUEUE_ITEM, posterPath: null, backdropPath: null }],
+      subtitleQueue: [{ ...QUEUE_ITEM, posterPath: '/p.jpg', backdropPath: null }],
       translateQueue: [],
     }
     renderPage()
