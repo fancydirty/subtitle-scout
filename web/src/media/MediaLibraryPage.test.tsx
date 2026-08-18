@@ -310,15 +310,16 @@ describe('三态齐 + 标题回落', () => {
     await waitFor(() => expect(f.mock.calls.length).toBeGreaterThan(before))
   })
 
-  it('中文名优先于原名；没有中文名时回落原名', async () => {
+  it('en：显示原名，不显示中文名（2026-08-18 裁决：跟随 UI 语言）', async () => {
     vi.stubGlobal('fetch', mockFetch([
       item({ workId: 'a', chineseTitle: '绝命毒师', title: 'Breaking Bad' }),
       item({ workId: 'b', chineseTitle: null, title: 'Chernobyl' }),
     ]))
     renderPage()
     await waitFor(() => expect(screen.getAllByRole('link')).toHaveLength(2))
-    expect(screen.getByRole('link', { name: '绝命毒师' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Breaking Bad' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Chernobyl' })).toBeInTheDocument()
+    expect(screen.queryByText('绝命毒师')).not.toBeInTheDocument()
   })
 
   it('无 posterPath → 首字母占位（§4.4 点名：这是必然分支，不是边缘兜底）', async () => {
