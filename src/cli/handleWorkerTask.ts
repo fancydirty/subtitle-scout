@@ -308,6 +308,10 @@ export const makeHandleWorkerTask = (deps: HandleWorkerTaskDeps) => {
         const fetchSourceSub = makeRealFetchSourceSub(db, adapters, emitProviderEvent)
         const runItem = makeDaemonTranslateRunItem({
           db, cfg: translateCfg, fetchSourceSub, tmdb: c.tmdb, roots: currentRoots,
+          // F2（spec §4.3）：目标语言与同文件 find_subtitle 分支（上方两处
+          // languagesNow().targetLanguages[0]）同一个来源——不另算一份，already-covered
+          // 按它判定，不再硬编码中文。
+          targetLanguage: languagesNow().targetLanguages[0],
         })
         await runTranslateWorkerTask(job, {
           runItem,

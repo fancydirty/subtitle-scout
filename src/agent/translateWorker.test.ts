@@ -40,7 +40,7 @@ function finalizeResult(output: unknown) {
 function baseTask(over: Partial<TranslateTask> = {}): TranslateTask {
   return {
     jobId: 'job-1', videoPath: join(root, 'Show', 'x.mkv'), itemId: 'tmdb:1/s1e1',
-    originLang: 'en', title: 'Show', mediaRoot: join(root, 'Show'), stagingRoot: root,
+    originLang: 'en', targetLanguage: 'zh', title: 'Show', mediaRoot: join(root, 'Show'), stagingRoot: root,
     ...over,
   }
 }
