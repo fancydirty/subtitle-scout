@@ -2058,8 +2058,11 @@
   height: auto;
   object-fit: cover;
   object-position: 70% 38%;
-  -webkit-mask-image: linear-gradient(to right, #000 58%, transparent 100%);
-          mask-image: linear-gradient(to right, #000 58%, transparent 100%);
+  /* fade 起点曾评 58%（淡出又晚又急，海报与右栏实色是「贴上去」不是「融进去」）。
+     2026-08-18 用户裁决「再往左延伸一点，要水乳交融」→ 40% 起溶，fade 占海报 60%。
+     终点钉死 100%：海报右缘（= 文字栏左界）必须完全透明，否则露一条海报硬边。 */
+  -webkit-mask-image: linear-gradient(to right, #000 40%, transparent 100%);
+          mask-image: linear-gradient(to right, #000 40%, transparent 100%);
   display: block;
 }
 .wb-queue-img {
@@ -2069,8 +2072,9 @@
   height: auto;
   object-fit: cover;
   object-position: 70% 38%;
-  -webkit-mask-image: linear-gradient(to right, #000 58%, transparent 100%);
-          mask-image: linear-gradient(to right, #000 58%, transparent 100%);
+  /* 孪生块：与 .wb-run-img 逐字同步（含 40% fade 起点），见那边的注释。 */
+  -webkit-mask-image: linear-gradient(to right, #000 40%, transparent 100%);
+          mask-image: linear-gradient(to right, #000 40%, transparent 100%);
   display: block;
 }
 .wb-run-body {
