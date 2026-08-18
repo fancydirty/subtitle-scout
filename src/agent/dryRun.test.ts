@@ -13,6 +13,13 @@
  *   S6 结构可疑   → "信字节不信标签"
  *   S7 跨季同名   → itemId 消歧（首轮发现弱模型会省略）
  *   S8 混语言 pack→ 不许为"有个东西"装错语言
+ *
+ * T4 identity-first（2026-08-18 用户裁决：不以匹配压制为目标，有字幕且需微调对齐好过没有）：
+ *   SC-A 跨压制组 → 组名/来源/分辨率全不同，身份对（同作品同年同集）必须装
+ *   SC-B 年份±1   → 跨年上映形态仍是同一作品
+ *   SC-C 版本后缀 → v2/v3=同集重定时，候选无 vN 仍属匹配
+ *   SC-D 同名异作（回归闸）→ 身份矛盾（年份+origin）零 install
+ *   SC-E 错集（回归闸）→ 集号映射不上不装
  */
 
 import { describe, it, expect } from 'vitest'
@@ -387,9 +394,164 @@ const S8_wrongLanguageInPack: Scenario = {
   },
 }
 
+// ───────────────────────── T4 identity-first：SC 系列 ─────────────────────────
+// 用户裁决（2026-08-18 原话）：「无论中英还是其他语言，都不以匹配压制为目标，因为对用户而言，
+// 重点是在于有字幕，而非是否完美匹配，哪怕需要微调对齐，也比没有字幕更好。」
+// 推论成测试：身份 = 作品 + 季/集；release group / release name / 分辨率 / 来源全是弱证据，
+// 绝不构成安装 blocker。SC-A/B/C 是这条裁决的行为探针（对现状 skill 跑 RED 取证），
+// SC-D/E 是反向回归闸——身份哲学收窄的同时，同名异作与错集的安全底线不许破。
+
+const SC_A_crossGroup: Scenario = {
+  id: 'SC-A 跨压制组（组名/来源/分辨率全不同，同作品同年同集）→ 身份对就装',
+  prompt: `Find and install a Chinese subtitle.\n\ntitle: Show (2023)\ntargets (1 item):\n- itemId: ep-1 | S01E05 | runtime ~24 min | file: [GroupA] Show - 05 [BD 1080p].mkv`,
+  searchResult: () => ({
+    result_set_id: 'rs-1', count: 1,
+    preview: [{
+      id: 'assrt-801', name: '[GroupB] Show S01E05 WEB-DL 720p 简体',
+      videoname: '[GroupB] Show S01E05 WEB-DL 720p', year: 2023,
+    }],
+  }),
+  candidateDetail: {
+    id: 'assrt-801', name: '[GroupB] Show S01E05 WEB-DL 720p 简体',
+    videoname: '[GroupB] Show S01E05 WEB-DL 720p', year: 2023,
+    fileList: [{ index: 0, name: '[GroupB] Show S01E05 (WEB 720p).chs.srt' }],
+  },
+  downloadResult: {
+    stagedFileId: 'stub-staged-1', detectedScript: 'Hans',
+    cueCount: 245, spanMinutes: 23.6, decodable: true, isHtml: false,
+  },
+  check: (_calls, report) => {
+    expect(report.installed.map(i => i.itemId)).toContain('ep-1')
+    expect(ids(report.no_safe_match)).not.toContain('ep-1')
+    expect(ids(report.retry_later)).not.toContain('ep-1')
+  },
+}
+
+const SC_B_yearOffByOne: Scenario = {
+  id: 'SC-B 年份±1（任务 2025 vs 候选 2024，跨年上映形态）→ 仍属同一作品，装',
+  prompt: `Find and install a Chinese subtitle.\n\ntitle: Show (2025)\ntargets (1 item):\n- itemId: ep-1 | S01E05 | runtime ~24 min | file: Show.S01E05.1080p.mkv`,
+  searchResult: () => ({
+    result_set_id: 'rs-1', count: 1,
+    preview: [{
+      id: 'assrt-802', name: 'Show 第一季 全12集 简体字幕包', videoname: 'Show', year: 2024,
+    }],
+  }),
+  candidateDetail: {
+    id: 'assrt-802', name: 'Show 第一季 全12集 简体字幕包', videoname: 'Show', year: 2024,
+    fileList: [{ index: 0, name: 'Show.S01E05.chs.srt' }],
+  },
+  downloadResult: {
+    stagedFileId: 'stub-staged-1', detectedScript: 'Hans',
+    cueCount: 240, spanMinutes: 23.5, decodable: true, isHtml: false,
+  },
+  check: (_calls, report) => {
+    expect(report.installed.map(i => i.itemId)).toContain('ep-1')
+    expect(ids(report.no_safe_match)).not.toContain('ep-1')
+    expect(ids(report.retry_later)).not.toContain('ep-1')
+  },
+}
+
+const SC_C_versionSuffix: Scenario = {
+  id: 'SC-C 版本后缀（视频 v3 vs 候选无 vN）→ vN=同集重定时，仍属匹配，装',
+  prompt: `Find and install a Chinese subtitle.\n\ntitle: Show (2023)\ntargets (1 item):\n- itemId: ep-1 | S01E05 | runtime ~24 min | file: Show.S01E05v3.1080p.mkv`,
+  searchResult: () => ({
+    result_set_id: 'rs-1', count: 1,
+    preview: [{ id: 'assrt-803', name: 'Show S01 字幕包 简体', videoname: 'Show', year: 2023 }],
+  }),
+  candidateDetail: {
+    id: 'assrt-803', name: 'Show S01 字幕包 简体', videoname: 'Show', year: 2023,
+    fileList: [{ index: 0, name: 'Show.S01E05.chs.srt' }],
+  },
+  downloadResult: {
+    stagedFileId: 'stub-staged-1', detectedScript: 'Hans',
+    cueCount: 238, spanMinutes: 23.4, decodable: true, isHtml: false,
+  },
+  check: (_calls, report) => {
+    expect(report.installed.map(i => i.itemId)).toContain('ep-1')
+    expect(ids(report.no_safe_match)).not.toContain('ep-1')
+    expect(ids(report.retry_later)).not.toContain('ep-1')
+  },
+}
+
+const SC_D_sameNameDifferentWork: Scenario = {
+  id: 'SC-D 同名异作（年份+origin 矛盾，fileList 完美匹配）→ no_safe_match，零 install（回归闸）',
+  prompt: `Find and install a Chinese subtitle.\n\ntitle: Show (2023)\nnative/original title: Show\norigin: US\ntargets (1 item):\n- itemId: ep-1 | S01E05 | runtime ~24 min | file: Show.S01E05.1080p.mkv`,
+  searchResult: () => ({
+    result_set_id: 'rs-1', count: 1,
+    preview: [{
+      id: 'assrt-804', name: '日剧 Show (2021) 全12集 中文字幕',
+      videoname: 'Show', year: 2021, origin: 'Japan',
+    }],
+  }),
+  candidateDetail: {
+    id: 'assrt-804', name: '日剧 Show (2021) 全12集 中文字幕',
+    videoname: 'Show', year: 2021, origin: 'Japan',
+    // 陷阱比 S3 更狠：单文件候选、集码精确对上、结构读数正常——唯一破绽是身份矛盾
+    // （任务 origin:US vs 候选日剧+2021。出处矛盾要可判定，任务侧必须也带出处，
+    // 同 S3 的 "DC" 形态；否则"日剧标记与你的剧矛盾"这个谓词无从评估）
+    fileList: [{ index: 0, name: 'Show.S01E05.chs.srt' }],
+  },
+  downloadResult: {
+    stagedFileId: 'stub-staged-1', detectedScript: 'Hans',
+    cueCount: 240, spanMinutes: 23.5, decodable: true, isHtml: false,
+  },
+  check: (_calls, report) => {
+    expect(report.installed).toHaveLength(0)
+    expect(ids(report.no_safe_match)).toContain('ep-1')
+  },
+}
+
+const SC_E_wrongEpisode: Scenario = {
+  id: 'SC-E 错集（pack 只有 S02，含 E05 诱饵但季对不上且无映射）→ 该集不装（回归闸）',
+  prompt: `Find and install a Chinese subtitle.\n\ntitle: Show (2023)\ntargets (1 item):\n- itemId: ep-1 | S01E05 | runtime ~24 min | file: Show.S01E05.1080p.mkv`,
+  searchResult: () => ({
+    result_set_id: 'rs-1', count: 1,
+    preview: [{ id: 'assrt-805', name: 'Show 第二季 全12集 简体', videoname: 'Show', year: 2023 }],
+  }),
+  candidateDetail: {
+    id: 'assrt-805', name: 'Show 第二季 全12集 简体', videoname: 'Show', year: 2023,
+    // E05 诱饵：集号对上但季错，目标没有绝对集号可映射
+    fileList: [
+      { index: 0, name: 'Show.S02E01.chs.srt' },
+      { index: 1, name: 'Show.S02E05.chs.srt' },
+    ],
+  },
+  check: (_calls, report) => {
+    expect(report.installed).toHaveLength(0)
+  },
+}
+
+const SC_F_combinedStrict: Scenario = {
+  id: 'SC-F 组合加严（组名+来源+分辨率+年份差一同时不同，同作品同集）→ 仍必须装',
+  prompt: `Find and install a Chinese subtitle.\n\ntitle: Show (2025)\ntargets (1 item):\n- itemId: ep-1 | S01E05 | runtime ~24 min | file: [GroupA] Show - 05 [BD 1080p].mkv`,
+  searchResult: () => ({
+    result_set_id: 'rs-1', count: 1,
+    preview: [{
+      id: 'assrt-806', name: '[GroupC] Show S01E05 WEBrip 480p 简体',
+      videoname: '[GroupC] Show S01E05 WEBrip 480p', year: 2024,
+    }],
+  }),
+  candidateDetail: {
+    id: 'assrt-806', name: '[GroupC] Show S01E05 WEBrip 480p 简体',
+    videoname: '[GroupC] Show S01E05 WEBrip 480p', year: 2024,
+    fileList: [{ index: 0, name: '[GroupC] Show S01E05 (WEB 480p).chs.srt' }],
+  },
+  downloadResult: {
+    stagedFileId: 'stub-staged-1', detectedScript: 'Hans',
+    cueCount: 242, spanMinutes: 23.5, decodable: true, isHtml: false,
+  },
+  check: (_calls, report) => {
+    expect(report.installed.map(i => i.itemId)).toContain('ep-1')
+    expect(ids(report.no_safe_match)).not.toContain('ep-1')
+    expect(ids(report.retry_later)).not.toContain('ep-1')
+  },
+}
+
 const SCENARIOS = [
   S1_throttled, S2_packOnly, S3_nameTrap, S4_firstSearchEmpty,
   S5_absoluteEpisode, S6_structurallyWrong, S7_crossSeasonCollision, S8_wrongLanguageInPack,
+  SC_A_crossGroup, SC_B_yearOffByOne, SC_C_versionSuffix,
+  SC_D_sameNameDifferentWork, SC_E_wrongEpisode, SC_F_combinedStrict,
 ]
 
 // ───────────────────────── 测试 ─────────────────────────

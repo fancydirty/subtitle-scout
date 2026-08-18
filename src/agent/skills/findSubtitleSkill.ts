@@ -101,16 +101,62 @@ returning the own-id you use as the itemId for every subtitle operation in this 
 `
     : ''
 
+  // T4 identity-first 重构（用户裁决 2026-08-18 原话）：「无论中英还是其他语言，都不以匹配压制
+  // 为目标，因为对用户而言，重点是在于有字幕，而非是否完美匹配，哪怕需要微调对齐，也比没有
+  // 字幕更好。」落地：归属判据严格排序为 ①作品身份 ②季/集 ③结构验证；release group / release
+  // name / 分辨率 / 来源降级为注释性弱证据（至多预判时轴偏移），绝不作为安装 blocker；v2/v3
+  // 后缀=同集重定时；no_safe_match 收窄为"不同作品/不同集/结构反常"三义。dry-run RED 取证：
+  // 现状 skill 对跨压制组/年份±1/vN 后缀本就放行（SC-A/B/C/F 绿，降级为回归锁），唯一行为病是
+  // SC-D pro——年份±1–2 笔误豁免吞掉了 origin 矛盾的同名异作，重写时在例外条款里堵死。
   const content = `
 # Find-Subtitle Judgment Playbook
 
 ## The one rule that overrides everything else
 
-You judge whether a candidate subtitle BELONGS to an exact video by its METADATA and
-CONTEXT — release name, native name, filelist entries, season/episode numbers, and the
-structural inspection signals (cue count, time span, detected script) of a file you have
-actually downloaded and opened. You judge the way a person picking a subtitle off a fansub
-site would: by what the file is labeled and what it structurally looks like.
+You judge whether a candidate subtitle BELONGS to an exact video — and belonging is IDENTITY
+FIRST, judged strictly in this order:
+
+1. The WORK is your work. The candidate's title (including native/alternative titles), year,
+   and origin point at the same show/movie as your task. A bare year difference of 1–2 on a
+   unique title is still your work (the bound-target exception below); a year difference that
+   arrives WITH a contradicting origin marker or a clearly different native name is a
+   DIFFERENT work, no matter how well the fileList lines up.
+2. The EPISODE is your episode. Season/episode numbers line up — directly, or through the
+   absolute-number mapping when a pack numbers episodes differently than your files do. A
+   v2/v3-style version suffix on either side is a RE-TIMING of the same episode (the fansubber
+   fixed their timing and re-released), never a different episode: \`...05v2\` and \`...05\` are
+   the same episode.
+3. The structure is not anomalous. The structural inspection signals of a file you have
+   actually downloaded and opened — cue count, time span, detected script — look like a normal
+   episode/movie of this runtime. Concretely: a ~24-minute episode is a few hundred cues
+   spanning most of those minutes; a file with a dozen cues spanning two minutes does not
+   qualify, whatever its filename says.
+
+All three hold → the candidate BELONGS. Install it.
+
+What is NOT part of this judgment, ever: the release group, the release-name wording, the
+resolution (1080p/720p/480p), and the source (BD/WEB-DL/WEBrip/TV). These are descriptive
+facts about which ENCODE a subtitle happened to be timed against, not facts about which work
+or episode it belongs to. A candidate whose group, source, and resolution ALL differ from your
+video — or one that carries no release labels at all — is still the same subtitle-bearing file
+for that episode. Their mismatch is NEVER a reason to refuse an install: a subtitle that needs
+a slight timing nudge after installation beats having no subtitle at all. At most, a large
+provenance gap (e.g. a BD-timed subtitle onto a WEB video) is a hint that the timing may be
+offset — useful to know when you write your reason, never a blocker.
+
+That tolerance is about release provenance ONLY — branding, not bytes. It does not soften
+point 3 in any way: a file whose structural signals are absurd for its runtime — a handful of
+cues spanning a couple of minutes against a 24-minute episode — is not an "imperfect but
+usable" match the user's ruling tells you to accept; it is not a subtitle track for that
+episode at all, and it stays refused. "Having a subtitle beats a perfect one" resolves
+disagreements about GROUPS and RELEASES; it never overrides the bytes.
+
+You judge all of this by METADATA and CONTEXT — title, native name, year, origin, filelist
+entries, season/episode numbers, and the structural inspection signals of the downloaded
+file. You judge the way a person picking a subtitle off a fansub site would: by what the file
+is labeled and what it structurally looks like — with one correction to that habit: where a
+fansub site tells you to wait for "your group's" release, you must not; any group's file for
+the right work and episode is the match.
 
 You MUST NOT judge a candidate by its dialogue content or storyline — opening a file to check
 its cue count and time span is fine (that is structural inspection, not judging by story
@@ -168,21 +214,26 @@ Two real cases from this library, one defended and one lost:
   a Finnish drama, wrong year, origin marker right there in the title — was installed for all
   8 episodes because the fileList looked right. Every file was the wrong show.
 
-The rule: a year mismatch, a foreign-origin marker (e.g. 芬兰剧集/韩剧/日剧 prefixes naming a
-different country than your show), or a native name that is clearly another work DISQUALIFIES
-the candidate no matter how well its fileList lines up — unless you have positive evidence it
-really is your show. When the candidate's stated identity is absent or ambiguous, do not
-install a whole batch on filename structure alone: download ONE entry first and sample its
-dialogue for identity anchors (main character names, setting) before you commit the rest. A
-structurally perfect fileList is evidence of packaging, never of identity.
+The rule: an identity contradiction — a year mismatch with no typo-style explanation, a
+foreign-origin marker (e.g. 芬兰剧集/韩剧/日剧 prefixes naming a different country than your
+show), or a native name that is clearly another work — DISQUALIFIES the candidate no matter
+how well its fileList lines up, unless you have positive evidence it really is your show. A
+bare year difference of 1–2 on a unique title is the one form of year mismatch that is NOT a
+contradiction (the bound-target exception below). When the candidate's stated identity is
+absent or ambiguous, do not install a whole batch on filename structure alone: download ONE
+entry first and sample its dialogue for identity anchors (main character names, setting)
+before you commit the rest. A structurally perfect fileList is evidence of packaging, never of identity.
 
 Exception for a bound target: if the task already has an itemId, do not report
-identification-failed when the directory year and this work's TMDB year are off by 1–2
-and search shows no other exact-name title in a different year — that is a folder typo
-on a unique title, not a second work. Install. A candidate pack whose year matches the
-directory year or this unique title's TMDB year ±1–2 is still this work (Casablanca 1942
-pack vs TMDB 1943). A pack that is a different title (Rauhantekijä) is still a trap and
-still disqualifies.
+identification-failed when the directory year and this work's TMDB year are off by 1–2,
+search shows no other exact-name title in a different year, AND no other identity signal
+contradicts the match — that is a folder typo on a unique title, not a second work. Install.
+A candidate pack whose year matches the directory year or this unique title's TMDB year ±1–2
+is still this work (Casablanca 1942 pack vs TMDB 1943) — but ONLY as a bare year difference:
+when the year gap arrives WITH an origin marker naming a different country than your work or
+a native name that is clearly another work, that is positive evidence of a different work and
+disqualifies at ANY year distance, inside ±1–2 exactly as outside it. A pack that is a
+different title (Rauhantekijä) is still a trap and still disqualifies.
 
 ### How to work with a pack (like scanning a downloaded zip's contents)
 
@@ -300,14 +351,22 @@ ${identityVerification ? `0. FIRST, identify the media from the raw evidence per
    - \`installed\`: targets you installed — each with the exact path \`install_subtitle\`
      returned, the language tag you installed, the candidate's provider/providerId, and your
      reason.
-   - \`no_safe_match\`: targets you genuinely exhausted the real candidates for — pack or
-     single, nothing containing that episode could be verified. What this bucket asserts is
-     that the sources ANSWERED you and what came back held nothing whose belonging you could
-     verify. "I am not confident" belongs here, per item, with your reason. It is NOT "there
-     was no clean single-episode file" (a pack that spans the season DOES contain it), and it
-     is NOT for a target that still has an untried query variant, an unexplored provider, or
-     an unopened pack left (step 4) — while anything is still left to try, this target is
-     unfinished, not hopeless.
+    - \`no_safe_match\`: targets you genuinely exhausted the real candidates for — pack or
+      single — and nothing that came back BELONGS to that target. "Does not belong" means one
+      of exactly three things: the candidate is a different WORK (a same-name trap — year,
+      origin, or native name contradicts yours with no reasonable explanation), a different
+      EPISODE (its numbers cannot be lined up with the target's by direct match, absolute
+      mapping, or version-suffix equivalence), or its structure is anomalous for the runtime.
+      A differing release group / release name / resolution / source is NOT "does not belong"
+      — per the one rule that candidate is still a match, and refusing on release mismatch is
+      a misfile, not a judgment. What this bucket asserts is that the sources ANSWERED you
+      and what came back held nothing whose belonging you could verify. "I am not confident"
+      belongs here, per item, with your reason. It is NOT "there was no clean single-episode
+      file" (a pack that spans the season DOES contain it), it is NOT "the only candidate was
+      from another group/release" (that candidate IS the match), and it is NOT for a target
+      that still has an untried query variant, an unexplored provider, or an unopened pack
+      left (step 4) — while anything is still left to try, this target is unfinished, not
+      hopeless.
      You must have ACTUALLY called \`search_source\` for a target before reporting it here.
      The system mechanically checks this: a \`no_safe_match\` report from a run where
      \`search_source\` was never called is recorded as a fabricated no-match and raises an
