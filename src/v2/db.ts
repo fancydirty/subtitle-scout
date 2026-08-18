@@ -1487,6 +1487,51 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
       db.exec("DELETE FROM settings WHERE key LIKE 'session:%'")
     }
   },
+  // v46（2026-08-18，spec: docs/superpowers/specs/2026-08-18-en-target-judgechain-and-match-
+  // philosophy-design.md §4.2b / F1+F3）：判需规则修正后的**全量重判触发器**——
+  // `UPDATE files SET needs_subtitle = NULL, skip_reason = NULL`（全行）。
+  //
+  // ── 为什么必须有这条（没有它，规则修正对存量库一行都不生效）─────────────────────
+  // judge 的取件谓词是 `needs_subtitle IS NULL`（daemonV2.judgeOnce），而本轮修的正是
+  // judge 规则 2（embedded 判据改用 isLang 认 ffprobe 三字母码 eng/jpn）：生产库 149 个
+  // 有内嵌 eng 轨的文件**早已被判成** needs_subtitle=1——判据修了、判决还是旧的，
+  // 这是本仓栽过多次的"写了新判据却没定谁触发重判"（v44 清特典判决是同型先例）。
+  // 清空即重判：judge 是纯机械零 LLM 的纯函数，判据（origin_lang/embedded_langs）都在
+  // files/works 两表现成，下一次 boot/巡检全量重判。照 retarget.ts 语言切换的既有先例
+  // （语言切换正是这么清的——本次等于「判据修了，重判一遍」）。
+  //
+  // ── 为什么全量清而不挑行（不在 SQL 里复刻判据）─────────────────────────────────
+  // "哪些行判错了"的判据就是 judge 规则本身（isLang × embedded_langs × target_languages），
+  // 在 SQL 里再写一份就是第二份实现（C30 的原型：改 TS 那份时这里不跟着变，且没有测试
+  // 会红）。全量清的代价是零——judge 下一轮把它们照新规则重判一遍，结果该相同的自会相同。
+  // skip_reason 与 needs_subtitle **同一条 UPDATE 一起清**（照 v44/retarget 的既有口径）：
+  // 分两条会在掉电时留下"判决已清、理由还是旧的"的行。
+  //
+  // ── **刻意不碰 sub_status**（spec §4.2b 的"不做的"）────────────────────────────
+  // R24 铁律 + D10 乐观守卫的理由链仍然成立：清它会掀掉飞行中的翻译（回写时守卫匹配
+  // 0 行 → tr_recheck_after 不写 → 付费 LLM 热循环）。被洗的 handoff 僵尸行（DxD 形态）
+  // 由 §4.2a 的谓词卫生挡在取件口外（TRANSLATE_QUEUE_WHERE 已加 `needs_subtitle = 1`），
+  // 留着无害；用户将来切回 zh，needs 重判翻 1，行自然复活，状态连续。
+  //
+  // 条件式表存在性 + 列存在性检查照抄 v44：迁移链会流经没有 files 表的库形状（db.test.ts
+  // 的 meta-only 老库用例）与没有 needs_subtitle 列的极简 files 形状（v39 组的 7 列 files），
+  // 裸 UPDATE 会 `no such table/column` 把 openDb 整个炸掉 → 用户的库再也打不开。
+  // 列存在性检查同时保证幂等（重放在已清空的库上是无害的不动点）。
+  (db) => {
+    const exists = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'files'")
+      .get()
+    if (!exists) return
+    const columns = new Set(
+      (db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>)
+        .map((c) => c.name),
+    )
+    if (!columns.has('needs_subtitle')) return
+    db.exec(
+      'UPDATE files SET needs_subtitle = NULL'
+      + (columns.has('skip_reason') ? ', skip_reason = NULL' : '')
+    )
+  },
 ]
 
 /** pre-fold（v9 折叠之前，Jellyfin 时代）老库的结构指纹：series.poster_tag 列存在。

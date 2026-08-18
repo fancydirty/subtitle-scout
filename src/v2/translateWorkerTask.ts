@@ -135,11 +135,19 @@ export interface NewTranslateCandidate {
  *  自己写一份一条的 WHERE"，漂移形态是界面把 covered / unsolvable / 未识别的行也算成
  *  "在等"——用户看到的队列比 daemon 会跑的长，还是一句假话。
  *
+ *  `needs_subtitle = 1`（2026-08-18 / spec §4.2a，F3 僵尸卡片实案）**不是**第五条孤立的
+ *  闸，而是与字幕台 SUBTITLE_QUEUE_WHERE 对称的归属条件：移交只在 needs=1 时发生
+ *  （subtitleScheduler 只从字幕工作台捞行移交），needs 翻 0（如目标语言切换后重判出
+ *  内嵌目标轨）后，停牌行必须随之失去取件资格——「这个文件不再需要字幕」是比任何
+ *  停牌态更强的真理。daemon 领活与界面 includeBackoff 两口径共用这一份 WHERE，
+ *  一处生效。完整论证见下方函数注释的第 ④ 条。
+ *
  *  ⚠️ 生产现状（2026-08-14）：`handoff_translate` **0 行**、翻译开关未配置，所以本条今天
  *  还不是用户可见的假话，是个**装好的陷阱**——用户一开翻译就踩。故它没有生产数据可验，
  *  全靠 translateWorkerTask.test.ts / activityApi.test.ts 里构造的场景钉着。 */
 const TRANSLATE_QUEUE_WHERE = `
         f.sub_status = 'handoff_translate'
+        AND f.needs_subtitle = 1
         AND (? = 1 OR f.tr_recheck_after IS NULL OR f.tr_recheck_after <= ?)`
 
 /** `listNewTranslateCandidates` 的可选行为。 */
@@ -155,7 +163,7 @@ export interface TranslateQueueOpts {
 
 /** 翻译工作台（spec §2）：`sub_status='handoff_translate'` 且 `tr_recheck_after` 到点。
  *
- *  ── 为什么谓词必须是这三条，逐条对应一处曾经/可能的静默失效 ──
+ *  ── 为什么谓词必须是这四条，逐条对应一处曾经/可能的静默失效 ──
  *  ① `sub_status = 'handoff_translate'`：旧谓词是 `sub_status='unavailable'`，而那个第五态
  *     已被 R17 废止（3-2 拆写入点、v33 洗存量）→ 旧翻译流从第 2 步起**零候选静默饿死**
  *     （C34 明记这个窗口期）。这一条就是把翻译接回来的那一行。
@@ -166,6 +174,13 @@ export interface TranslateQueueOpts {
  *  ③ `INNER JOIN works`：没有 work_id 就构造不出合法 itemId（第一段就是 work_id）。
  *     LEFT JOIN + 占位值会让 glossary key 退化成每文件一个（C20 的实质伤害），
  *     而那是纯质量漂移、没有任何断言会红。故未识别行整行不取。
+ *  ④ `needs_subtitle = 1`（2026-08-18 / spec §4.2a，生产实案 DxD 僵尸卡片）：移交只在
+ *     needs=1 时发生（subtitleScheduler 只从字幕工作台捞行移交），needs 翻 0（目标语言
+ *     切换后重判出内嵌目标轨）后停牌行必须随之失去取件资格——「这个文件不再需要字幕」
+ *     是比任何停牌态更强的真理。没有这一条，僵尸形态是：handoff 行每天被重领 → worker
+ *     对着与目标无关的旧 sidecar 说 already-covered → 再 +1 天退避 → 无限循环，界面永远
+ *     显示「等待重试」。与字幕台 SUBTITLE_QUEUE_WHERE 本就有的 `needs_subtitle = 1`
+ *     对称；daemon 领活与界面 includeBackoff 两口径共用此 WHERE，一处生效。
  *
  *  **不做可救性预筛**（不看 origin_lang / embedded_langs）：那是 judge 在阶段 2.5 的活
  *  （R21/D9 的 translatable 列），能进 handoff_translate 就意味着 judge 已判 translatable=1。
@@ -173,7 +188,8 @@ export interface TranslateQueueOpts {
  *
  *  ── `opts.includeBackoff`（2026-08-14）───────────────────────────────────────
  *  第二条（退避窗）现在可短路，谓词文本仍只有 `TRANSLATE_QUEUE_WHERE` 那一份。
- *  完整论证在那个常量上方。**daemon 侧不传**（默认 false = 原语义，一字未改）。 */
+ *  完整论证在那个常量上方。**daemon 侧不传**（默认 false = 原语义，一字未改）。
+ *  第四条（needs=1）是归属条件，**不受** includeBackoff 短路影响——两口径下都生效。 */
 export function listNewTranslateCandidates(
   db: ScoutDb, now: number, opts: TranslateQueueOpts = {},
 ): NewTranslateCandidate[] {

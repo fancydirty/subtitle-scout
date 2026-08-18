@@ -200,6 +200,11 @@ function seedFile(
     trAttempt?: number
     trRecheckAfter?: number | null
     originLang?: string | null
+    /** files.needs_subtitle。**缺省 1**（2026-08-18 起入谓词）：生产上移交只在 needs=1
+     *  时发生（subtitleScheduler 只从字幕工作台捞行移交），handoff 行带着 needs=1 才是
+     *  真实形状；needs 翻 0 的 handoff 行是"目标语言切换后重判出内嵌目标轨"的僵尸形态
+     *  （spec §F3，DxD 实案），专门有用例钉它出局。 */
+    needsSubtitle?: number | null
   } = {},
 ): void {
   const workId = opts.workId ?? 'tmdb:1'
@@ -210,11 +215,12 @@ function seedFile(
       .run(workId, `Title ${workId}`, 'tv', opts.originLang ?? 'en', 1000, 1000)
   }
   db.prepare(
-    `INSERT INTO files (path, dir, filename, size, mtime, work_id, sub_status, tr_attempt, tr_recheck_after, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO files (path, dir, filename, size, mtime, work_id, sub_status, needs_subtitle, tr_attempt, tr_recheck_after, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
     path, dir, path.slice(path.lastIndexOf('/') + 1), 100, 1000, workId,
     opts.subStatus === undefined ? 'handoff_translate' : opts.subStatus,
+    opts.needsSubtitle === undefined ? 1 : opts.needsSubtitle,
     opts.trAttempt ?? 0, opts.trRecheckAfter ?? null, 1000,
   )
 }
@@ -350,6 +356,43 @@ describe('listNewTranslateCandidates — includeBackoff（界面语义 vs daemon
 
   it('🔴 空态仍是真的空态：includeBackoff 不许无中生有', () => {
     expect(listNewTranslateCandidates(db, NOW, { includeBackoff: true })).toEqual([])
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 🔴 2026-08-18：needs_subtitle=0 的 handoff 行必须失去取件资格（spec §4.2a / F3）
+// ══════════════════════════════════════════════════════════════════════════════
+// 生产实案（DxD 僵尸卡片，2026-08-18）：用户把 target_languages 切到 en 后，重判把该文件
+// needs 翻成 0（有内嵌 eng 轨），但 sub_status 还停在 handoff_translate（R24：judge 不碰它）。
+// 旧谓词只看 sub_status + 退避窗 → 翻译队列每天重领它 → worker 硬编码中文检查说
+// already-covered → 再 +1 天退避 → 无限循环，界面永远显示「等待重试」。
+//
+// 「这个文件不再需要字幕」是比任何停牌态更强的真理——needs 翻 0 后，行必须从翻译
+// 工作台出局，daemon 领活（默认）与界面显示（includeBackoff）**两口径同时**出局。
+// 与字幕队列 SUBTITLE_QUEUE_WHERE 本就有 `needs_subtitle = 1` 对称。
+describe('listNewTranslateCandidates — needs_subtitle=0 的 handoff 行出局（F3 僵尸卡片）', () => {
+  it('🔴🔴 needs_subtitle=0 且 sub_status=handoff_translate → 默认（daemon 口径）**不取**', () => {
+    seedFile('/media/tv/DxD/S01E01.mkv', { needsSubtitle: 0 })
+    expect(listNewTranslateCandidates(db, NOW)).toEqual([])
+  })
+
+  it('🔴🔴 needs_subtitle=0 的 handoff 行 → includeBackoff:true（界面口径）**也不取**', () => {
+    // 界面说"还有什么在等"也不许把它算进去——它等的不是翻译，是什么都不等。
+    // 退避窗里（tr_recheck_after 未来）与到点（NULL）两种形态都验：出局的判据是 needs，
+    // 不是退避时刻。
+    seedFile('/media/tv/DxD/S01E01.mkv', { needsSubtitle: 0, trRecheckAfter: NOW + 16 * 3_600_000 })
+    seedFile('/media/tv/DxD/S01E02.mkv', { needsSubtitle: 0, trRecheckAfter: null })
+    expect(listNewTranslateCandidates(db, NOW, { includeBackoff: true })).toEqual([])
+  })
+
+  it('🔴 needs_subtitle=1 的 handoff 行 → 两口径照取（收紧不许误伤正主）', () => {
+    // 阳性对照：没有它，一个恒返回 [] 的实现也会让上面两条全绿（假绿）。
+    seedFile('/media/tv/Show/S01E01.mkv', { needsSubtitle: 1 })
+    seedFile('/media/tv/Show/S01E02.mkv', { needsSubtitle: 1, trRecheckAfter: NOW + 16 * 3_600_000 })
+    expect(listNewTranslateCandidates(db, NOW).map((c) => c.videoPath))
+      .toEqual(['/media/tv/Show/S01E01.mkv'])
+    expect(listNewTranslateCandidates(db, NOW, { includeBackoff: true }).map((c) => c.videoPath).sort())
+      .toEqual(['/media/tv/Show/S01E01.mkv', '/media/tv/Show/S01E02.mkv'])
   })
 })
 

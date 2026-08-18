@@ -74,10 +74,17 @@ export function judgeSubtitle(input: JudgeInput, deps: JudgeDeps): JudgeVerdict 
   if (input.originLang != null && deps.targetLanguages.includes(input.originLang.toLowerCase())) {
     return { needs: false, reason: 'origin-skip' }
   }
-  // 2. 已有内嵌中字
+  // 2. 已有内嵌目标语言轨（如中字）。
+  //    🔴 必须用 isLang 而不是 langOf 直比（2026-08-18 生产实案，spec F1）：ffprobe 写
+  //    ISO-639-2 三字母码（eng/jpn），TMDB 目标语言是两字母（en/zh）——langOf 只折叠
+  //    中文别名（chi/zho/cmn→zh），对 eng 透传得 'eng'，`includes('eng')` 对 ['en'] 恒
+  //    false。目标语言切到 en 的那一轮，222 个目标里 149 个（67%）有内嵌 eng 轨却仍被
+  //    判「需要找字幕」，整场找字幕大半在为不需要字幕的文件白烧 agent session。
+  //    isLang（同文件下方）复用 tagsForLanguage 的三字母映射（'en'→['en','eng']），
+  //    不另写第二份折叠表——本仓已因"留两份漂移实现"栽过（C30），语言映射尤其不能分叉。
   if (input.embeddedLangs != null) {
     const hasTargetEmbedded = input.embeddedLangs.some((l) =>
-      deps.targetLanguages.includes(langOf(l)))
+      deps.targetLanguages.some((t) => isLang(l, t)))
     if (hasTargetEmbedded) return { needs: false, reason: 'embedded' }
   }
   // 3. 需要找字幕
