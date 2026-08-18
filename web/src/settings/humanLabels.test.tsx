@@ -22,7 +22,7 @@ describe('ProviderCard 密钥人话标签', () => {
     const row: ProviderRowDTO = { id: 'assrt', secrets: [{ name: 'ASSRT_TOKEN', set: true, source: 'db', masked: 'ass••••123' }], lastTest: null, quota: null }
     render(<I18nProvider initialLang="zh"><ProviderCard row={row} reload={vi.fn()} /></I18nProvider>)
     const card = within(screen.getByTestId('providers-assrt'))
-    fireEvent.click(card.getByRole('button', { name: '编辑' }))
+    fireEvent.click(card.getByRole('button', { name: '编辑凭据' }))
     expect(card.getByLabelText('ASSRT token')).toBeInTheDocument()
   })
 })

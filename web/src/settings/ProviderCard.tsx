@@ -143,38 +143,59 @@ export function ProviderCard({ row, reload }: { row: ProviderRowDTO; reload: () 
     finally { setBusy(false) }
   }
 
+  const footer = (
+    <>
+      <Button size="sm" disabled={busy && !editing} onClick={() => void onTest()}>
+        {t('settings_provider_test_connect')}
+      </Button>
+      {editable && !editing && (
+        <Button size="sm" variant="secondary" onClick={() => setEditing(true)}>{t('settings_provider_edit_credentials')}</Button>
+      )}
+      {row.lastTest && (
+        <span className="ml-auto flex items-center gap-2 text-[11px] leading-4 text-muted-foreground">
+          <StatusDot variant={row.lastTest.ok ? 'success' : 'error'} label={row.lastTest.ok ? t('settings_provider_last_test_ok') : t('settings_provider_last_test_fail')} />
+          <span title={new Date(row.lastTest.at).toLocaleString()}>
+            {row.lastTest.ok ? t('settings_provider_last_test_passed_ago') : t('settings_provider_last_test_failed_ago')}
+            {' '}
+            {relDuration(Date.now() - row.lastTest.at)}
+            {' '}
+            {t('settings_provider_last_test_ago_suffix')}
+          </span>
+        </span>
+      )}
+    </>
+  )
+
   return (
-    <SettingsCard title={PROVIDER_NAME[row.id]} status={status} data-testid={`providers-${row.id}`}>
+    <SettingsCard
+      title={PROVIDER_NAME[row.id]}
+      status={status}
+      statusDot={status === 'configured' ? 'success' : undefined}
+      footer={footer}
+      data-testid={`providers-${row.id}`}
+    >
       <div className="flex flex-col gap-2">
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant="secondary" disabled={busy && !editing} onClick={() => void onTest()}>
-            {t('settings_provider_test')}
-          </Button>
-          {editable && !editing && (
-            <Button size="sm" variant="secondary" onClick={() => setEditing(true)}>{t('settings_provider_edit')}</Button>
-          )}
-          {row.lastTest && (
-            <>
-              <StatusDot variant={row.lastTest.ok ? 'success' : 'error'} label={row.lastTest.ok ? t('settings_provider_last_test_ok') : t('settings_provider_last_test_fail')} />
-              <span className="text-[11px] leading-4 text-muted-foreground">
-                {row.lastTest.ok ? t('settings_provider_last_test_ok') : t('settings_provider_last_test_fail')}{` · ${new Date(row.lastTest.at).toLocaleString()}`}
-              </span>
-            </>
-          )}
-        </div>
         {row.lastTest && !row.lastTest.ok && row.lastTest.error && (
           <span className="text-[11px] leading-4 text-muted-foreground">{localizeErrorValue(row.lastTest.error, lang)}</span>
         )}
-        {/* 配额行排在 lastTest 之后、密钥清单之前：它比"上次测试"更**当下**（测试是
-            用户上次手动点的，配额是引擎刚刚撞上的），又比密钥明细更该被先看到。
+        {/* 配额行排在密钥清单之前：它比"上次测试"更**当下**（测试是
+            用户上次手动点的，配额是引擎刚刚撞上的）。
             没有这个事实时组件自己返回 null，一个字都不占屏。 */}
         <ProviderQuotaNote quota={row.quota} />
-        {row.secrets.map((s) => (
-          <div key={s.name} className="flex items-center gap-2">
-            <span className="text-[13px] leading-5" title={s.name}>{t(SECRET_LABEL_KEY[s.name])}</span>
-            <ProviderSecretField secret={s} editing={editing} draft={drafts[s.name] ?? ''} onDraft={(v) => setDrafts((d) => ({ ...d, [s.name]: v }))} />
-          </div>
-        ))}
+        {/* KV 栅格：dt=label（11px muted）、dd=mono 值。三张卡（TMDB 1 行 /
+            LLM 3 行 / 翻译 3 行）自动对齐——这是 B 方案的核心排版纪律。 */}
+        <dl className="settings-kv">
+          {row.secrets.map((s) => (
+            <div key={s.name} className="settings-kv-row contents">
+              <dt className="text-[11px] leading-4 text-muted-foreground" title={s.name}>
+                {t(SECRET_LABEL_KEY[s.name])}
+              </dt>
+              <dd className="font-mono text-[12px] leading-4 text-foreground m-0">
+                <ProviderSecretField secret={s} editing={editing} draft={drafts[s.name] ?? ''} onDraft={(v) => setDrafts((d) => ({ ...d, [s.name]: v }))} />
+              </dd>
+            </div>
+          ))}
+        </dl>
         {editing && (
           <div className="flex items-center gap-2">
             <Button size="sm" disabled={busy} onClick={() => void onSave()}>{t('settings_provider_save')}</Button>

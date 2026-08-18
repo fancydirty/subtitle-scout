@@ -27,6 +27,18 @@ const PLACEHOLDERS: Record<string, string> = {
   TRANSLATE_MODEL: 'gpt-5.6-sol',
 }
 
+/** 相对时长（`3h` / `12m`）。与 ProviderCard.relDuration 同口径同粒度。
+ *  四行的小函数，重复一次比建一条跨文件依赖便宜（同 ProviderCard 注释里的论证）。 */
+function relDuration(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h`
+  return `${Math.floor(h / 24)}d`
+}
+
 export function TranslateCard({ translate, settings, onUpdated, reload }: Props) {
   const { t, lang } = useT()
   const [enabled, setEnabled] = useState(settings.ai_translate_enabled === 'true')
@@ -115,11 +127,39 @@ export function TranslateCard({ translate, settings, onUpdated, reload }: Props)
       ? t('settings_translate_all_fields_required')
       : null
 
+  const restFooter = enabled && isDedicated && !editing ? (
+    <>
+      <Button size="sm" disabled={busy} onClick={() => void onTest()}>
+        {t('settings_provider_test_connect')}
+      </Button>
+      <Button size="sm" variant="secondary" onClick={() => setEditing(true)}>
+        {t('settings_provider_edit_credentials')}
+      </Button>
+      {translate.lastTest && (
+        <span className="ml-auto flex items-center gap-2 text-[11px] leading-4 text-muted-foreground">
+          <StatusDot
+            variant={translate.lastTest.ok ? 'success' : 'error'}
+            label={translate.lastTest.ok ? t('settings_provider_last_test_ok') : t('settings_provider_last_test_fail')}
+          />
+          <span title={new Date(translate.lastTest.at).toLocaleString()}>
+            {translate.lastTest.ok ? t('settings_provider_last_test_passed_ago') : t('settings_provider_last_test_failed_ago')}
+            {' '}
+            {relDuration(Date.now() - translate.lastTest.at)}
+            {' '}
+            {t('settings_provider_last_test_ago_suffix')}
+          </span>
+        </span>
+      )}
+    </>
+  ) : undefined
+
   return (
     <SettingsCard
       title={t('settings_translate_card_title')}
       description={t('settings_translate_card_description')}
       status={status}
+      statusDot={status === 'configured' ? 'success' : undefined}
+      footer={restFooter}
       data-testid="providers-translate"
     >
       {!enabled && (
@@ -156,35 +196,17 @@ export function TranslateCard({ translate, settings, onUpdated, reload }: Props)
 
         {enabled && isDedicated && !editing && (
           <div className="flex flex-col gap-2">
-            <div className="flex items-center gap-2">
-              <Button size="sm" variant="secondary" disabled={busy} onClick={() => void onTest()}>
-                {t('settings_provider_test')}
-              </Button>
-              <Button size="sm" variant="secondary" onClick={() => setEditing(true)}>
-                {t('settings_provider_edit')}
-              </Button>
-              {translate.lastTest && (
-                <>
-                  <StatusDot
-                    variant={translate.lastTest.ok ? 'success' : 'error'}
-                    label={translate.lastTest.ok ? t('settings_provider_last_test_ok') : t('settings_provider_last_test_fail')}
-                  />
-                  <span className="text-[11px] leading-4 text-muted-foreground">
-                    {translate.lastTest.ok ? t('settings_provider_last_test_ok') : t('settings_provider_last_test_fail')}
-                    {` · ${new Date(translate.lastTest.at).toLocaleString()}`}
-                  </span>
-                </>
-              )}
-            </div>
-            {TRANSLATE_FIELDS.map((name) => {
-              const s = secretMap[name]
-              return (
-                <div key={name} className="flex items-center gap-2">
-                  <span className="text-[13px] leading-5">{t(SECRET_LABEL_KEY[name])}</span>
-                  <span className="text-[11px] leading-4">{s?.masked ?? '••••'}</span>
-                </div>
-              )
-            })}
+            <dl className="settings-kv">
+              {TRANSLATE_FIELDS.map((name) => {
+                const s = secretMap[name]
+                return (
+                  <div key={name} className="settings-kv-row contents">
+                    <dt className="text-[11px] leading-4 text-muted-foreground">{t(SECRET_LABEL_KEY[name])}</dt>
+                    <dd className="font-mono text-[12px] leading-4 text-foreground m-0">{s?.masked ?? '••••'}</dd>
+                  </div>
+                )
+              })}
+            </dl>
           </div>
         )}
 
