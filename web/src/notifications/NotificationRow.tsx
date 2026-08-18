@@ -117,7 +117,7 @@ export function NotificationRow({ group }: { group: FoundGroupDTO }) {
         <span className="text-faint">·</span>
         <span>{t(VIA_LABEL[group.via])}</span>
       </div>
-      <span className={buttonVariants({ variant: 'ghost', size: 'sm' })}>
+      <span className={`notif-row-cta ${buttonVariants({ variant: 'ghost', size: 'sm' })}`}>
         {t('notif_open_library')}
       </span>
     </SplitHero>
