@@ -132,6 +132,7 @@ describe('makeDaemonTranslateRunItem — P3 daemon runItem', () => {
       db,
       cfg: { baseUrl: 'http://x', apiKey: 'k', model: 'm' },
       roots: () => [],
+      targetLanguage: 'zh',
       agentRunner: (() => {
         return async () => { agentCalls++; return { status: 'installed', reason: null, sourceRef: null, sidecarPath: '/x.srt', llmCalls: 9 } as never }
       })() as never,
@@ -149,6 +150,7 @@ describe('makeDaemonTranslateRunItem — P3 daemon runItem', () => {
       db,
       cfg: { baseUrl: 'http://x', apiKey: 'k', model: 'm' },
       roots: () => ['/media/tv'],
+      targetLanguage: 'zh',
       agentRunner: (() => {
         return async (task: Record<string, unknown>) => {
           seenTask = task
@@ -167,6 +169,28 @@ describe('makeDaemonTranslateRunItem — P3 daemon runItem', () => {
       sidecarPath: '/media/tv/ww/e02.zh-Hans.srt', llmCalls: 9,
     })
     expect(r.reason).toBeUndefined() // null → undefined 归一化
+    db.close()
+  })
+
+  // F2（spec §4.3）：targetLanguage 必须透传进 agent 任务——already-covered 按它判定。
+  // DxD 实案：daemon 侧漏传/硬编码中文，en 目标被旧 zh-Hans sidecar 误判已覆盖。
+  it('🔴 F2: targetLanguage 原样透传进 agent 任务（en 就是 en，不在中途漂成 zh）', async () => {
+    const db = seedDb()
+    let seenTarget: unknown
+    const runItem = makeDaemonTranslateRunItem({
+      db,
+      cfg: { baseUrl: 'http://x', apiKey: 'k', model: 'm' },
+      roots: () => ['/media/tv'],
+      targetLanguage: 'en',
+      agentRunner: (() => {
+        return async (task: Record<string, unknown>) => {
+          seenTarget = task.targetLanguage
+          return { status: 'installed', reason: null, sourceRef: null, sidecarPath: '/x.srt', llmCalls: 1 } as never
+        }
+      })() as never,
+    })
+    await runItem('/media/tv/ww/e02.mkv')
+    expect(seenTarget).toBe('en')
     db.close()
   })
 
@@ -196,6 +220,7 @@ describe('makeDaemonTranslateRunItem — P3 daemon runItem', () => {
       db,
       cfg: { baseUrl: 'http://x', apiKey: 'k', model: 'm' },
       roots: () => ['/media/tv'],
+      targetLanguage: 'zh',
       agentRunner: (() => {
         return async (task: Record<string, unknown>) => {
           seen.push(task.jobId as string)
@@ -223,6 +248,7 @@ describe('makeDaemonTranslateRunItem — P3 daemon runItem', () => {
       db,
       cfg: { baseUrl: 'http://x', apiKey: 'k', model: 'm' },
       roots: () => ['/media/tv'],
+      targetLanguage: 'zh',
       agentRunner: (() => {
         return async (task: Record<string, unknown>) => {
           seen.push(task.jobId as string)
@@ -290,9 +316,11 @@ describe('locateTranslateIdentity — 新架构读 files/works（C4 + C20 的生
     for (const [path, season, ep] of [
       ['/media/tv/ww/e02.mkv', 1, 2], ['/media/tv/ww/e03.mkv', 1, 3],
     ] as const) {
+      // needs_subtitle=1 是 handoff 行的生产形状（2026-08-18 起入翻译台取件谓词）：
+      // 移交只在 needs=1 时发生，不带它下面的 candidate 用例选不出行。
       db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_id, season, episode,
-                                     sub_status, updated_at)
-                  VALUES (?,?,?,100,0,'tmdb:261868',?,?,'handoff_translate',0)`)
+                                     sub_status, needs_subtitle, updated_at)
+                  VALUES (?,?,?,100,0,'tmdb:261868',?,?,'handoff_translate',1,0)`)
         .run(path, '/media/tv/ww', path.slice(path.lastIndexOf('/') + 1), season, ep)
     }
   }

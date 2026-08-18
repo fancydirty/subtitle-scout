@@ -25,6 +25,36 @@ describe('judgeSubtitle（需字幕判定）', () => {
       { targetLanguages: ['zh', 'ja'] },
     )).toEqual({ needs: false, reason: 'origin-skip' })
   })
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 🔴 2026-08-18 生产实案（spec: 2026-08-18-en-target-judgechain §F1）：目标语言切到 en 后，
+  // 规则 2 用 `langOf(l)` 直比 targetLanguages，而 langOf **只折叠中文别名**（chi/zho/cmn→zh），
+  // 对 eng 透传得 'eng' ≠ 'en' → 有内嵌英文文本轨的文件被判「需要找字幕」。
+  // 本轮 222 个目标里 **149 个（67%）** 有内嵌 eng 轨——整场找字幕大半在为不需要字幕的
+  // 文件白烧 agent session。DxD ep01（embedded_langs=["jpn","eng"]）正是这样进的找字幕流。
+  // 修法 = 改用同文件的 isLang()（含 tagsForLanguage 的三字母映射 eng→en / jpn→ja）。
+  // ─────────────────────────────────────────────────────────────────────────────
+  it('🔴 F1：embeddedLangs=["jpn","eng"] × targetLanguages=["en"] → 内嵌目标轨算覆盖（eng≠en 的陷阱）', () => {
+    // ffprobe 写 ISO-639-2 三字母（eng/jpn），TMDB 目标语言是两字母（en）——两种形态
+    // 在生产里必然同时出现，判据必须跨形态认亲（同文件 isLang 的注释逐字论证过这一点）。
+    expect(judgeSubtitle(
+      { originLang: 'ja', embeddedLangs: ['jpn', 'eng'] },
+      { targetLanguages: ['en'] },
+    )).toEqual({ needs: false, reason: 'embedded' })
+  })
+  it('🔴 回归：zh 目标不受 isLang 改动影响（zh-Hans 折叠仍覆盖；无目标轨仍缺）', () => {
+    expect(judgeSubtitle(
+      { originLang: 'ja', embeddedLangs: ['zh-Hans'] }, DEPS,
+    )).toEqual({ needs: false, reason: 'embedded' })
+    expect(judgeSubtitle(
+      { originLang: 'ja', embeddedLangs: ['jpn'] },
+      { targetLanguages: ['en'] },
+    )).toEqual({ needs: true, reason: 'missing' })
+    // 反向：en 轨对 zh 目标不算覆盖（不许 isLang 放宽成"有任何轨就跳过"）
+    expect(judgeSubtitle(
+      { originLang: 'ja', embeddedLangs: ['eng'] }, DEPS,
+    )).toEqual({ needs: true, reason: 'missing' })
+  })
   it('origin_lang null（TMDB 查不到）→ 不按国产片跳过，继续查内嵌', () => {
     expect(judgeSubtitle(
       { originLang: null, embeddedLangs: null }, DEPS,
