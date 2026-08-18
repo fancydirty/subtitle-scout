@@ -875,16 +875,24 @@ describe('英雄卡：当天 backdrop 出血 + 更早的天矮卡', () => {
     expect(row.textContent).toContain('3 / 5 / 7')
     expect(row.textContent ?? '').not.toContain('已经齐了')
     expect(row.textContent ?? '').not.toMatch(/season complete|all episodes/i)
+    const body = row.querySelector('.wb-run-body')
+    expect(body?.textContent).toMatch(/\d{2}:\d{2}/)
+    expect(body?.textContent).toContain('Cassandra')
   })
 
-  it('更早的天：同一出血的矮卡（notif-hero-compact），不是无图英文行', async () => {
+  it('更早的天：同一套 B 卡，无 notif-hero-compact，片名可见', async () => {
     vi.stubGlobal('fetch', mock([art({ latestAt: NOW - 2 * DAY })]))
     renderPage()
     const row = await screen.findByRole('link', { name: 'Cassandra' })
     expect(row.className).toMatch(/wb-run-card/)
-    expect(row.className).toMatch(/notif-hero-compact/)
+    expect(row.className).not.toMatch(/notif-hero-compact/)
     expect(row.querySelector('.wb-run-img')).not.toBeNull()
+    expect(row.textContent).toContain('Cassandra')
     expect(row.textContent).toContain(en.notif_open_library)
+    const body = row.querySelector('.wb-run-body')
+    expect(body?.textContent).toContain('Cassandra')
+    expect(body?.textContent).toMatch(/\d{2}:\d{2}/)
+    expect(row.querySelector('.absolute')).toBeNull()
   })
 
   it('displayTitle：zh 用 chineseTitle，en 用 snapshot title', async () => {

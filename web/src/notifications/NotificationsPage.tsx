@@ -38,7 +38,7 @@ function DaySection({ bucket }: { bucket: DayBucket }) {
       <h2 className="notif-day-heading">{heading}</h2>
       <div className="notif-day-rows">
         {bucket.groups.map((g) => (
-          <NotificationRow key={groupKey(g)} group={g} compact={bucket.offset !== 0} />
+          <NotificationRow key={groupKey(g)} group={g} />
         ))}
       </div>
     </section>

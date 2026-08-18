@@ -22,7 +22,8 @@ export interface WorkbenchCardFace {
   backdropPath: string | null
 }
 
-/** 左 16:9 图 + 右实色栏。`as` 只换根节点；几何 class 由调用方给。 */
+/** 左 16:9 图 + 右实色栏。`as` 只换根节点；几何 class 由调用方给。
+ *  `{...rest}` 先铺，chrome 后写——调用方不能靠 rest 盖掉 data-noimg / data-testid。 */
 export function SplitHero({
   src,
   className,
@@ -30,27 +31,50 @@ export function SplitHero({
   as: Tag = 'div',
   stale,
   children,
+  href,
   ...rest
 }: {
   src: string | null
   className: string
   testId: string
-  as?: 'div' | 'li'
+  as?: 'div' | 'li' | 'a'
   stale?: boolean
   children: ReactNode
+  href?: string
+  'data-via'?: string
+  'data-shape'?: string
 } & HTMLAttributes<HTMLElement>) {
   const [failed, setFailed] = useState(false)
   const noimg = !src || failed
+  const inner = (
+    <>
+      {!noimg && src ? <CardImage src={src} className="wb-run-img" onFail={() => setFailed(true)} /> : null}
+      <div className="wb-run-body">{children}</div>
+    </>
+  )
+  if (Tag === 'a') {
+    return (
+      <a
+        {...rest}
+        className={className}
+        data-noimg={noimg ? 'true' : 'false'}
+        data-stale={stale ? 'true' : 'false'}
+        data-testid={testId}
+        href={href}
+      >
+        {inner}
+      </a>
+    )
+  }
   return (
     <Tag
+      {...rest}
       className={className}
       data-noimg={noimg ? 'true' : 'false'}
       data-stale={stale ? 'true' : 'false'}
       data-testid={testId}
-      {...rest}
     >
-      {!noimg && src ? <CardImage src={src} className="wb-run-img" onFail={() => setFailed(true)} /> : null}
-      <div className="wb-run-body">{children}</div>
+      {inner}
     </Tag>
   )
 }
