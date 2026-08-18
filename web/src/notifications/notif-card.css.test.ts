@@ -91,10 +91,19 @@ describe('通知卡：恒定高 96px + 海报 16:9（高 → 宽）', () => {
     expect(decl('.notif-row.wb-run-card .wb-run-body', 'align-items')).toBe('flex-start')
   })
 
-  it('🔴 「去片库看」单独右端（margin-left:auto），不跟文字一起左对齐', () => {
-    // mockup：时钟/标题/副标题从左开始，「去片库看」单独在右端——中间有呼吸空间。
-    // 实现：NotificationRow 里给按钮 span 加 class="notif-row-cta"，CSS 里 margin-left:auto。
-    expect(decl('.notif-row-cta', 'margin-left')).toBe('auto')
+  it('🔴 右栏**从顶部开始排**（justify-content:flex-start），不是垂直居中', () => {
+    // 事故（2026-08-18 用户截图）：「21:35」在海报区域而不是右栏顶部——
+    // .wb-run-body 基类有 justify-content:center，覆写没改它，内容垂直居中，
+    // 第一个 item（时钟）被推到中间偏上，视觉上在海报上。
+    // mockup 的节奏：时钟在顶部、标题中间、副标题中间偏下、CTA 在底部。
+    expect(decl('.notif-row.wb-run-card .wb-run-body', 'justify-content')).toBe('flex-start')
+  })
+
+  it('🔴 「去片库看」在底部（margin-top:auto），不是跟文字一起居中', () => {
+    // mockup：CTA 在卡片底部，不是跟文字挤在中间。
+    // 实现：NotificationRow 里给按钮 span 加 class="notif-row-cta"，
+    // CSS 里 margin-top:auto 把它推到底部。
+    expect(decl('.notif-row-cta', 'margin-top')).toBe('auto')
   })
 
   it('🔴 右栏有 padding——时间戳/标题/按钮不许顶到卡片右缘', () => {
