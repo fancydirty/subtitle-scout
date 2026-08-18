@@ -181,6 +181,14 @@ describe('排队卡：恒定高 96px + 海报 16:9（高 → 宽，2026-08-18 �
     expect(decl('.wb-queue-card .wb-run-img', 'aspect-ratio')).toMatch(/16\s*\/\s*9/)
   })
 
+  it('🔴 排队卡海报**不带 mask**——171px 小海报禁不起渐变溶接（同通知卡）', () => {
+    // mask 是 ~700px 宽在跑海报的语言；小海报上渐变要么吃掉大半张图（40% 版）
+    // 要么硬过渡（58% 版），都试过不行（2026-08-18 用户裁决「不如不要这个遮罩了」）。
+    // 硬边 + 右栏实色才是小卡的干净形态。在跑卡保留 mask（见上面那条 40% 的锁）。
+    expect(decl('.wb-queue-card .wb-run-img', 'mask-image')).toBe('none')
+    expect(decl('.wb-queue-card .wb-run-img', '-webkit-mask-image')).toBe('none')
+  })
+
   it('🔴 排队右栏 normal flow（relative + flex:1 + inset:auto），不是 absolute', () => {
     // 海报只有 ~171px，右栏必须 normal flow 紧贴海报右侧——absolute + left:61%
     // 会在 171px 海报与 61% 左边界之间留出巨大空档（通知卡同日修过同一个坑）。

@@ -1867,12 +1867,17 @@
   padding: 0;
   height: var(--notif-card-h);
 }
-/* 海报：100% 高 × 16/9 → 宽恒定。width:auto 覆盖活动页的 var(--card-split-poster)。 */
+/* 海报：100% 高 × 16/9 → 宽恒定。width:auto 覆盖活动页的 var(--card-split-poster)。
+   **不带 mask**：渐变溶接是 ~700px 宽在跑海报的语言；171px 小海报上 40% 起溶会把
+   大半张图溶没、58% 版则是既窄又急的硬过渡——两版用户都判了「不行」（2026-08-18）。
+   海报硬边 + 右栏实色才是小卡的干净形态。 */
 .notif-row.wb-run-card .wb-run-img {
   width: auto;
   height: 100%;
   aspect-ratio: 16 / 9;
   flex-shrink: 0;
+  -webkit-mask-image: none;
+          mask-image: none;
 }
 /* 通知行右栏：**normal flow 的 flex:1**，不是 absolute。
    活动页需要 absolute 是因为右栏要覆盖在海报 mask 上（海报 61% 宽，右栏从 61% 开始
@@ -2134,7 +2139,8 @@
 
    · 卡高 = --notif-card-h = 96px 恒定（写在上面的 .wb-queue-card 基块里）
    · 海报 height:100% × aspect-ratio:16/9 → 宽 ≈171px 恒定，width:auto 覆盖
-     基类的 var(--card-split-poster)（61%）
+     基类的 var(--card-split-poster)（61%）；**mask 关掉**——小海报禁不起渐变
+     溶接（同通知卡的裁决，见 notif 段注释），硬边 + 右栏实色才是干净形态
    · 右栏 normal flow 的 flex:1 紧贴海报右侧——**不再 absolute**：海报只有
      ~171px，absolute + left:61% 会在海报与 61% 左边界之间留出巨大空档
      （通知卡同日修的同一个坑，见 notif 段注释）
@@ -2147,6 +2153,8 @@
   width: auto;
   height: 100%;
   aspect-ratio: 16 / 9;
+  -webkit-mask-image: none;
+          mask-image: none;
 }
 .wb-queue-card .wb-run-body {
   position: relative;
