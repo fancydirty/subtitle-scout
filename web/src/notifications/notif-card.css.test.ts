@@ -60,6 +60,15 @@ describe('通知卡：恒定高 96px + 海报 16:9（高 → 宽）', () => {
     expect(decl('.notif-row.wb-run-card .wb-run-img', 'aspect-ratio')).toMatch(/16\s*\/\s*9/)
   })
 
+  it('🔴 通知卡海报**不带 mask**——171px 小海报禁不起渐变溶接', () => {
+    // mask 渐变是 ~700px 宽在跑海报的语言；在 ~171px 的小海报上，40% 起溶 = 只有
+    // ~68px 实心、剩下全在溶化，图被吃掉大半（58% 版则是既窄又急的硬过渡）。
+    // 试过拉长过渡带仍不行（2026-08-18 用户实测「还是不太行」）→ 干脆不要：
+    // 海报硬边 + 右栏实色才是小卡的干净形态。
+    expect(decl('.notif-row.wb-run-card .wb-run-img', 'mask-image')).toBe('none')
+    expect(decl('.notif-row.wb-run-card .wb-run-img', '-webkit-mask-image')).toBe('none')
+  })
+
   it('🔴 通知卡海报宽**不走** --card-split-poster（61% 是活动页的，不是通知的）', () => {
     const w = decl('.notif-row.wb-run-card .wb-run-img', 'width')
     expect(w).not.toBe('var(--card-split-poster)')
