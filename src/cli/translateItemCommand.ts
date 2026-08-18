@@ -17,6 +17,7 @@ import { buildAdapters } from '../adapters/buildAdapters.js'
 import { makeAdapterConfigResolver, envOnlyAdapterConfig, SECRET_NAMES, type AdapterConfigResolver } from '../v2/secrets.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
 import { CHINESE_SIDECAR_TAGS } from '../agent/languages.js'
+import { resolveTargetLanguages } from './targetLanguages.js'
 // C20：itemId 的唯一构造入口 + work_id 的唯一解析入口（自有 id 空间，不在本文件另写解析）。
 import { translateItemId, translateJobId, workIdFromTranslateItemId, tmdbIdFromOwnId } from '../v2/ownIds.js'
 
@@ -168,7 +169,10 @@ export function makeTranslateAgentDeps(
     },
     install: (v, content) => writeSidecarAtomic(v, content),
     videoDurationSec: (v) => probeDurationSec(v),
-    readExistingChineseSidecar: (v) => findExternalSidecar(v, CHINESE_SIDECAR_TAGS, existsSync)?.path ?? null,
+    // F2（spec §4.3）：旧接线写死 CHINESE_SIDECAR_TAGS——目标语言切 en 后对盘上旧中文
+    // sidecar 误报 already-covered（DxD ep01 实案）。tags 改由调用方按 task.targetLanguage
+    // 用 tagsForLanguage 组好传入，本处只做纯透传（语言映射不在 CLI 层再写一份）。
+    readExistingSidecar: (v, tags) => findExternalSidecar(v, tags, existsSync)?.path ?? null,
     glossaryStore,
     critic,
     fetchTmdbContext: opts.fetchTmdbContext,
@@ -239,6 +243,10 @@ export function makeDaemonTranslateRunItem(opts: {
   fetchSourceSub?: import('../translate/workspace/resolveSource.js').ResolveSourceDeps['fetchSourceSub']
   tmdb?: import('../adapters/providers/tmdb.js').TmdbClient | null
   roots: () => string[]
+  /** F2（spec §4.3）：目标语言（BCP-47 主码）。daemon 侧由 cli/index.ts 从 languagesNow()
+   *  （settings 的 target_languages 首选值）传入——与 daemonV2 deps.targetLanguage 同一个
+   *  来源，不另算一份。already-covered 检查按它判定，不再硬编码中文。 */
+  targetLanguage: string
   agentRunner?: ReturnType<typeof makeTranslateWorker>
 }): (videoPath: string) => Promise<DaemonTranslateRunItemResult> {
   return async (videoPath) => {
@@ -280,6 +288,9 @@ export function makeDaemonTranslateRunItem(opts: {
       videoPath,
       itemId: identity.itemId,
       originLang: identity.originLang,
+      // F2：目标语言随任务下传，already-covered 按它判定（DxD ep01 实案：en 目标 + 盘上
+      // 旧 zh-Hans sidecar 不该被判"已覆盖"）。
+      targetLanguage: opts.targetLanguage,
       title: identity.title,
       mediaRoot: videoDir,
       stagingRoot: containingRoot(videoDir, opts.roots()) ?? videoDir,
@@ -395,6 +406,12 @@ export async function cmdTranslateItem(videoPath: string): Promise<void> {
         }
         const videoDir = dirname(videoPath)
         const stagingRoot = containingRoot(videoDir, roots) ?? videoDir
+        // F2（spec §4.3）：目标语言从 settings 的 target_languages 读当前值——与 daemon 侧
+        // （cli/index.ts 的 languagesNow()）走同一个 resolveTargetLanguages 入口、同一优先级
+        // （settings 行为级 > 默认 'zh'），不另算一份。already-covered 按它判定。
+        const targetLanguage = resolveTargetLanguages(
+          {}, new SettingsRepo(db).get('target_languages'),
+        ).targetLanguages[0]
         const deps = makeTranslateAgentDeps(cfg, fetchSourceSub, { db, fetchTmdbContext })
         const run = makeTranslateWorker(deps)
         const report = await run({
@@ -407,6 +424,7 @@ export async function cmdTranslateItem(videoPath: string): Promise<void> {
           videoPath,
           itemId: identity.itemId,
           originLang: identity.originLang,
+          targetLanguage,
           title: identity.title,
           mediaRoot: videoDir,
           stagingRoot,

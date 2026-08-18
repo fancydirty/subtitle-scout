@@ -50,7 +50,9 @@ beforeEach(() => {
   base = mkdtempSync(join(tmpdir(), 'tw-tools-'))
   task = {
     jobId: 'job-1', videoPath: join(base, 'x.mkv'), itemId: 'tmdb:1/s1e1',
-    originLang: 'en', title: 'Show', mediaRoot: base,
+    // 历史默认目标 = zh（target_languages 未设置时的 parseTargetLanguages 缺省）。
+    // F2 用例按场景覆写。
+    originLang: 'en', targetLanguage: 'zh', title: 'Show', mediaRoot: base,
   }
   paths = ensureWorkspaceLayout(base, 'job-1')
 })
@@ -292,7 +294,9 @@ describe('translate workspace tools', () => {
 
   // write_workspace_doc 测试已删（第 5.5 步第 2 项）
 
-  it('already-covered: embedded zh text track or existing sidecar short-circuits resolve_source', async () => {
+  // 回归锁（F2 改造后 zh 时代行为不变）：zh 目标下 embedded 中文轨 / 盘上 zh sidecar
+  // 仍然短路。deps 形状已改 readExistingSidecar(v, tags)（tags 由调用方组好传入）。
+  it('already-covered 回归:zh 目标 + embedded 中文轨或 zh sidecar → 短路 resolve_source', async () => {
     const zhTrack = makeTranslateWorkspaceTools(baseDeps({
       resolveDeps: {
         probe: async () => [{ lang: 'chi', codec: 'subrip', isImageBased: false }],
@@ -302,10 +306,82 @@ describe('translate workspace tools', () => {
     expect((await call(zhTrack.resolve_source)).status).toBe('already-covered')
 
     const sidecar = makeTranslateWorkspaceTools(baseDeps({
-      readExistingChineseSidecar: () => join(base, 'x.zh-Hans.srt'),
+      resolveDeps: { probe: async () => [], extract: async () => SAMPLE_SRT },
+      readExistingSidecar: (_v, tags) => tags.includes('zh-Hans') ? join(base, 'x.zh-Hans.srt') : null,
     }))
     expect((await call(sidecar.resolve_source)).status).toBe('already-covered')
     expect(existsSync(paths.canonicalSourcePath)).toBe(false)
+  })
+
+  // ── F2（2026-08-18 生产实案，spec §4.3）：already-covered 必须按目标语言判定 ──────
+  //
+  // DxD ep01：用户目标语言切 en，盘上有旧中文时代的 zh-Hans sidecar。旧实现（embedded
+  // 检查写死 zh/chi/zho/chs/cht 前缀、sidecar 检查只认中文 tags）对着 en 目标说"已有中文
+  // 覆盖"——与目标无关的答案，且配合每日目标语言扫描确认不了覆盖，引发永久日循环的僵尸
+  // 卡片。already-covered 的语义必须是「**目标语言**已覆盖」，硬编码中文是 zh-only 时代
+  // 的遗产。
+  describe('F2: resolve_source already-covered 按目标语言判定', () => {
+    // 盘上 sidecar 桩：模拟 findExternalSidecar(v, tags) 的契约——只认被问到的那份 tags
+    // （en 目标只会问到 ['en','eng']，zh 目标问到 zh-Hans 等），模拟"盘上实际有什么"。
+    const diskWith = (present: string[]) => (_v: string, tags: string[]) =>
+      tags.find((t) => present.includes(t)) ? join(base, `x.${present[0]}.srt`) : null
+
+    it('en 目标 + 盘上只有 zh sidecar → 不短路 already-covered（DxD 实案），继续走找源路径', async () => {
+      task.targetLanguage = 'en'
+      task.originLang = 'ja'
+      const tools = makeTranslateWorkspaceTools(baseDeps({
+        resolveDeps: {
+          probe: async () => [{ lang: 'jpn', codec: 'subrip', isImageBased: false }],
+          extract: async () => SAMPLE_SRT,
+        },
+        readExistingSidecar: diskWith(['zh-Hans']),
+      }))
+      const r = await call(tools.resolve_source)
+      expect(r.status).not.toBe('already-covered')
+      // 继续走完找源：单跳抽日文内嵌轨成功 → ok（而不是被"已有中文"挡回去重领）
+      expect(r.status).toBe('ok')
+    })
+
+    it('en 目标 + en sidecar → already-covered 短路，reason 提到目标语言', async () => {
+      task.targetLanguage = 'en'
+      const tools = makeTranslateWorkspaceTools(baseDeps({
+        resolveDeps: { probe: async () => [], extract: async () => SAMPLE_SRT },
+        readExistingSidecar: diskWith(['en']),
+      }))
+      const r = await call(tools.resolve_source)
+      expect(r.status).toBe('already-covered')
+      expect(String(r.reason)).toMatch(/en/)
+      expect(existsSync(paths.canonicalSourcePath)).toBe(false)
+    })
+
+    it('zh 目标 + zh sidecar → already-covered（回归不变）', async () => {
+      const tools = makeTranslateWorkspaceTools(baseDeps({
+        resolveDeps: { probe: async () => [], extract: async () => SAMPLE_SRT },
+        readExistingSidecar: diskWith(['zh-Hans']),
+      }))
+      expect((await call(tools.resolve_source)).status).toBe('already-covered')
+    })
+
+    it('embedded：en 目标 + embedded eng 文本轨 → already-covered，reason 提到目标语言', async () => {
+      task.targetLanguage = 'en'
+      // baseDeps 默认 probe 即 eng 文本轨
+      const tools = makeTranslateWorkspaceTools(baseDeps())
+      const r = await call(tools.resolve_source)
+      expect(r.status).toBe('already-covered')
+      expect(String(r.reason)).toMatch(/en/)
+    })
+
+    it('embedded：en 目标 + embedded jpn 轨 → 不短路（源语言轨不构成目标语言覆盖）', async () => {
+      task.targetLanguage = 'en'
+      const tools = makeTranslateWorkspaceTools(baseDeps({
+        resolveDeps: {
+          probe: async () => [{ lang: 'jpn', codec: 'subrip', isImageBased: false }],
+          extract: async () => SAMPLE_SRT,
+        },
+      }))
+      const r = await call(tools.resolve_source)
+      expect(r.status).not.toBe('already-covered')
+    })
   })
 
   it('P2: freeze merges prior series glossary (prior wins), install persists merged terms', async () => {
@@ -367,7 +443,7 @@ describe('translate workspace tools', () => {
       const t: TranslateTask = {
         jobId: 'job-c20', videoPath: join(dir, 'x.mkv'),
         itemId: translateItemId(workId, p),          // ← 新架构形态，现造不写死
-        originLang: 'en', title: 'Show', mediaRoot: dir,
+        originLang: 'en', targetLanguage: 'zh', title: 'Show', mediaRoot: dir,
       }
       const tools = makeTranslateWorkspaceTools({
         task: t, paths: jobPaths,
@@ -402,7 +478,7 @@ describe('translate workspace tools', () => {
     const t: TranslateTask = {
       jobId: 'job-c20m', videoPath: join(dir, 'x.mkv'),
       itemId: translateItemId('tmdb:9', '/mnt/media/Movies/Shelby Oaks (2025)/movie.mkv'),
-      originLang: 'en', title: 'Shelby Oaks', mediaRoot: dir,
+      originLang: 'en', targetLanguage: 'zh', title: 'Shelby Oaks', mediaRoot: dir,
     }
     const tools = makeTranslateWorkspaceTools({
       task: t, paths: jobPaths,

@@ -8,6 +8,7 @@ import { materializeAgentView } from '../translate/workspace/materialize.js'
 import { mergeBilingualToSrt } from '../translate/workspace/merge.js'
 import { resolveTranslateSource, type ResolveSourceDeps } from '../translate/workspace/resolveSource.js'
 import { seriesKeyOf } from '../v2/glossaryRepo.js'
+import { tagsForLanguage, langOf } from './languages.js'
 import type { BilingualRow, GlossaryTerm, WorkspacePaths } from '../translate/workspace/types.js'
 import type { TranslateTask } from './translateWorker.schemas.js'
 
@@ -21,8 +22,11 @@ export interface TranslateToolDeps {
   /** Optional duration gate: max cue end / video duration must sit in [0.85, 1.15].
    *  When provided, a failed/absent probe fails closed (see translateItem hardening). */
   videoDurationSec?: (videoPath: string) => Promise<number | null>
-  /** Legacy-parity coverage check: existing Chinese sidecar path, or null. */
-  readExistingChineseSidecar?: (videoPath: string) => string | null
+  /** 目标语言覆盖检查：盘上已有目标语言 sidecar 的路径，或 null。F2（spec §4.3）：旧名
+   *  readExistingChineseSidecar 是 zh-only 时代的遗产——already-covered 的语义必须是
+   *  「**目标语言**已覆盖」，tags 由调用方用 tagsForLanguage(task.targetLanguage) 组好传入
+   *  （不在此处再算一份，语言映射全仓只有 languages.ts 一个定义处）。 */
+  readExistingSidecar?: (videoPath: string, tags: string[]) => string | null
   /** Optional context enrichers (P1: TMDB + same-series target-language subs). */
   fetchTmdbContext?: (task: TranslateTask) => Promise<string | null>
   fetchSeriesTargetSubs?: (task: TranslateTask) => Promise<string | null>
@@ -117,6 +121,18 @@ function gateMarkerValid(paths: WorkspacePaths): boolean {
 
 // ---------- tools ----------
 
+/** 一个语言标签是否算作某个 BCP-47 主语言码（'eng' 算 'en'、'zh-Hans' 算 'zh'）。
+ *  F2（spec §4.3）引入。ffprobe 写 ISO-639-2 三字母（eng/jpn），目标语言是两字母（en/zh），
+ *  字面比较恒 false——与 v2/subtitleJudge.ts 的私有 isLang、dashboard/mediaLibraryApi.ts 的
+ *  同构臂并列，三处谓词逻辑同构，但底层映射**只有一份**：全部收在 languages.ts 的
+ *  tagsForLanguage（'en'→['en','eng']）+ langOf（去地区/脚本后缀归一）上，不另写语言映射。 */
+function isLang(tag: string | null | undefined, primary: string): boolean {
+  if (!tag) return false
+  const t = tag.toLowerCase()
+  return tagsForLanguage(primary).some((x) => x.toLowerCase() === t)
+    || langOf(tag) === langOf(primary)
+}
+
 export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
   const { paths, task } = deps
 
@@ -127,17 +143,19 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
       'Returns no-source when no valid same-language source exists — never fall back to another language.',
     inputSchema: z.object({}),
     execute: async () => {
-      // Legacy parity: already covered → never re-translate (embedded zh text track / sidecar).
+      // F2（2026-08-18 生产实案，spec §4.3）：already-covered 的语义必须是「**目标语言**已覆盖」，
+      // 硬编码中文是 zh-only 时代的遗产。DxD ep01：用户目标语言切 en，盘上有旧中文时代的
+      // zh-Hans sidecar，旧实现（embedded 写死 zh/chi/zho/chs/cht 前缀、sidecar 只认中文 tags）
+      // 对着 en 目标说"已有中文覆盖"——与目标无关的答案，且引发每日重领的僵尸循环。
+      // 两处检查都改按 task.targetLanguage 判定：embedded 用 isLang 认三字母码（eng 算 en），
+      // sidecar 的 tags 用 tagsForLanguage(task.targetLanguage) 组（语言映射只在 languages.ts）。
       const probeTracks = await deps.resolveDeps.probe(task.videoPath)
       if (probeTracks === null) return { status: 'probe-failed', reason: 'subtitle probe unavailable' }
-      if (probeTracks.some((t) => {
-        const l = (t.lang ?? '').toLowerCase()
-        return !t.isImageBased && (l.startsWith('zh') || l === 'chi' || l === 'zho' || l === 'chs' || l === 'cht')
-      })) {
-        return { status: 'already-covered', reason: 'embedded Chinese text track present' }
+      if (probeTracks.some((t) => !t.isImageBased && isLang(t.lang, task.targetLanguage))) {
+        return { status: 'already-covered', reason: `embedded ${task.targetLanguage} text track present` }
       }
-      if (deps.readExistingChineseSidecar?.(task.videoPath)) {
-        return { status: 'already-covered', reason: 'Chinese sidecar already exists' }
+      if (deps.readExistingSidecar?.(task.videoPath, tagsForLanguage(task.targetLanguage))) {
+        return { status: 'already-covered', reason: `${task.targetLanguage} sidecar already exists` }
       }
       // Duration-aware fetch predicate (fail-closed when probe missing).
       let preVideoSec: number | null | undefined

@@ -24,6 +24,13 @@ export interface TranslateTask {
   /** series/movies.origin_lang (lowercased code like 'en'/'ja'), or null. Drives single-hop
    *  source selection — ja never falls back to English embedded tracks. */
   originLang: string | null
+  /** 目标语言（BCP-47 主码，如 'zh'/'en'）——F2（2026-08-18 生产实案，spec §4.3）：用户把
+   *  target_languages 切到 en 后，DxD ep01（盘上有旧中文时代的 zh-Hans sidecar）被移交翻译流，
+   *  worker 的 already-covered 检查却硬编码中文，对着 en 目标说"已有中文覆盖"——与目标无关
+   *  的答案，且引发每日重领的僵尸循环。already-covered 的语义必须是「**目标语言**已覆盖」，
+   *  硬编码中文是 zh-only 时代的遗产。来源：settings 的 target_languages 首选值（daemon 与
+   *  手动 CLI 同源，见 translateItemCommand.ts 两处接线的注释）。 */
+  targetLanguage: string
   /** Human title for prompt context only. */
   title: string
   /** The video's own directory — sandbox boundary for the final sidecar install. */

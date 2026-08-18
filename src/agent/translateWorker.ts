@@ -16,8 +16,11 @@ export interface TranslateWorkerDeps {
   /** Install merge-produced SRT as the Chinese sidecar; returns installed path. */
   install: (videoPath: string, srtContent: string) => string
   videoDurationSec?: (videoPath: string) => Promise<number | null>
-  /** Legacy parity: existing Chinese sidecar path, or null (already-covered short-circuit). */
-  readExistingChineseSidecar?: (videoPath: string) => string | null
+  /** 目标语言覆盖检查：盘上已有目标语言 sidecar 的路径，或 null（already-covered 短路）。
+   *  F2（spec §4.3）：旧名 readExistingChineseSidecar 硬编码中文，目标语言切 en 后对盘上
+   *  旧中文 sidecar 误报 already-covered（DxD ep01 实案）——改为 (videoPath, tags)，tags 由
+   *  调用方按 task.targetLanguage 组好传入。 */
+  readExistingSidecar?: (videoPath: string, tags: string[]) => string | null
   /** P2: 剧级术语持久化(v2/glossaryRepo 的真实现由 CLI/daemon 接线)。 */
   glossaryStore?: {
     load: (seriesKey: string) => GlossaryTerm[]
@@ -56,7 +59,7 @@ export function makeTranslateWorker(deps: TranslateWorkerDeps) {
         resolveDeps: deps.resolveDeps,
         install: deps.install,
         videoDurationSec: deps.videoDurationSec,
-        readExistingChineseSidecar: deps.readExistingChineseSidecar,
+        readExistingSidecar: deps.readExistingSidecar,
         glossaryStore: deps.glossaryStore,
         fetchTmdbContext: deps.fetchTmdbContext,
         fetchSeriesTargetSubs: deps.fetchSeriesTargetSubs,

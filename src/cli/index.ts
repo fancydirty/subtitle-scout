@@ -702,6 +702,13 @@ async function cmdWatch() {
       const fetchSourceSub = makeRealFetchSourceSub(db, adapters, emitProviderEvent)
       const runItem = makeDaemonTranslateRunItem({
         db, cfg: translateCfg, fetchSourceSub, tmdb: clients.current.tmdb, roots: currentRoots,
+        // F2（2026-08-18 生产实案，spec §4.3）：目标语言用 languagesNow() 现取——与
+        // daemonV2 deps.targetLanguage（上方 buildDaemonV2Deps 的同一来源）逐字同源，不另算
+        // 一份。translateRunItem 每次领活现建 runItem，故这里的求值是 per-claim 新鲜的：
+        // dashboard 里改 target_languages，下一个翻译任务就吃到新值，不用重启容器。
+        // 不传的后果已被 DxD 实案证明：worker 对着 en 目标说"已有中文覆盖"→ 每日重领的
+        // 僵尸循环。
+        targetLanguage: languagesNow().targetLanguages[0],
       })
       return runItem(videoPath)
     },
