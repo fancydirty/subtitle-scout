@@ -127,8 +127,18 @@ export interface ParsedStructure {
  *  （多递增的代价只是全库跑一遍纯函数，漏递增的代价是这条修复对存量库静默失效——
  *  两种错误的伤害不对称，拿不准时就 +1）。
  *
- *  值取 1 而非 cf0453c 的 commit 号/日期：它只需要**单调递增且可比较**，语义是序数不是时刻。 */
-export const PARSER_VERSION = 1
+ *  ── v2（2026-08-18，spec §4.4 / F4 四修）─────────────────────────────────
+ *  parseFilename 四处规则修复，全部来自 en 目标巡检的生产实案：
+ *   ① R3 WxH 边界闸——'1280x720' 不再拆出 s=80 e=720（Overflow 实案）
+ *   ② R1/R5 粘连版本后缀——'S01E04v2' 认出 s=1 e=4（Nukitashi / 芬芳实案）
+ *   ③ 集号 ≥ 1 全局闸——'AAC2.0' 的 '0' 不再当 episode=0
+ *   ④ R8 小数声道闸——'DDP5.1' 的 '1' 不再当 abs=1（电影变剧集）
+ *  四修都会改变已有文件名的解析结果 → 必须递增。依赖既有 C48 机制自动重解析全库存量：
+ *  指纹不变（mtime/size 未动），只重算 work_dir/season/episode/parse_confidence，不碰字幕状态。
+ *  Overflow / Nukitashi / 芬芳的错行全部自愈。
+ *
+ *  值取小整数（1→2）而非 commit 号/日期：它只需要**单调递增且可比较**，语义是序数不是时刻。 */
+export const PARSER_VERSION = 2
 
 /** 解析路径结构（照 Jellyfin 约定 + parse_confidence 判定）。 */
 export function parseStructure(

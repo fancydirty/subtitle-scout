@@ -5,7 +5,10 @@
 // 方法论（学自 MediaBrowser/Emby.Naming）：
 //  - 一组按优先级排序的正则，逐个尝试，第一个成功就用——不是一个超级正则。
 //  - seriesname 用 negative lookahead 防截断（lookahead 排除季/集标记，剧名不会被 S01E01 吃掉）。
-//  - 防错闸：season 200-1927 或 >2500 作废（防 '1920x1080'/'2025' 被拆成季/集）。
+//  - 防错闸：season 200-1927 或 >2500 作废（防 '1920x1080'/'2025' 被拆成季/集）；
+//    episode ≥ 1（0 不是集号，防 'AAC2.0' 小数尾被当集号）；R3 对 WxH 加数字边界
+//    （'1280x720' 不拆季集）；R1/R5 消化粘连版本后缀 vN（'S01E04v2'）；R8 分隔符
+//    前是数字即拒（'DDP5.1'/'AAC2.0' 的小数点不是分隔符）。
 //  - 季/集只认明确标记（SxxExx / 1x03 / [01] / 第N集），绝不把 4 位数字拆成季/集。
 
 /** Recognition-ready shape for a single filename or bare path segment. Consumed by C2 (path-aware
@@ -69,6 +72,14 @@ function looksLikeYear(s: number, e: number): boolean {
   return four >= 1900 && four <= 2099
 }
 
+/** 防错闸：episode/absoluteEpisode ≥ 1——集号从 1 起，0 不是集号。
+ *  生产实案（2026-08-18 en 巡检，spec §4.4）：'Nukitashi...S01E04v2...AAC2.0' 在 R1 因
+ *  "4|v" 无词边界失配后，R8 兜底把 'AAC2.0' 的小数尾 '0' 当集号 → episode=0 进库。
+ *  0 一律视同该规则失配，让优先级更低的规则继续找（宁可落到诚实的 null，绝不产出 0）。 */
+function isPlausibleEpisode(n: number): boolean {
+  return n >= 1
+}
+
 /** 括号包裹的、恰好 8 位的十六进制串 —— CRC32 校验和。
  *
  *  病灶（2026-08-14 生产实测）：ep04 的文件名尾部是 `...第04話「...」[BDRip][AVC_AAC][1080P][CHS](4FE33E90).mp4`。
@@ -112,12 +123,16 @@ function extractSeasonEpisode(rawText: string): { season: number | null; episode
   // R1: S01E01 / S1E1 / s01e01（Kodi 标准，最严格）。seriesname 用 negative lookahead 防截断。
   //  多集文件（S01E05E06 / S01E05-E06 / S01E05+E06）取第一集（Emby/jellyfin 同款：multi-episode
   //  collapse to first episode，多集 span 不在识别层处理）。
+  //  粘连版本后缀（2026-08-18 en 巡检实案）：'S01E04v2' 的 "4|v" 之间没有词边界，尾部 \b 让
+  //  R1 整条失配——Nukitashi 因此落到 R8 吃掉 'AAC2.0' 的 '0'（episode=0），芬芳 Flowers 甚至
+  //  季集全 NULL。点分隔 '.v2' 本就正常（"1|." 有边界），只有粘连 vN 出事。修法：epnumber 后
+  //  插入 (?:v\d{1,2})? 把 v2 当重定时版本消化掉，多集组与 \b 照旧。
   {
-    const m = text.match(/(?<seriesname>.*?)[sS](?<seasonnumber>\d{1,2})[\s._-]*[eE](?<epnumber>\d{1,3})(?:[\s._+\-]*[eE]?\d{1,3})*\b/i)
+    const m = text.match(/(?<seriesname>.*?)[sS](?<seasonnumber>\d{1,2})[\s._-]*[eE](?<epnumber>\d{1,3})(?:v\d{1,2})?(?:[\s._+\-]*[eE]?\d{1,3})*\b/i)
     if (m?.groups) {
       const season = Number(m.groups.seasonnumber)
       const episode = Number(m.groups.epnumber)
-      if (isPlausibleSeason(season) && !looksLikeYear(season, episode)) {
+      if (isPlausibleSeason(season) && isPlausibleEpisode(episode) && !looksLikeYear(season, episode)) {
         return { season, episode, absoluteEpisode: null, seriesname: unmask(m.groups.seriesname) }
       }
     }
@@ -142,19 +157,25 @@ function extractSeasonEpisode(rawText: string): { season: number | null; episode
     if (m?.groups) {
       const season = Number(m.groups.seasonnumber)
       const episode = Number(m.groups.epnumber)
-      if (isPlausibleSeason(season) && !looksLikeYear(season, episode)) {
+      if (isPlausibleSeason(season) && isPlausibleEpisode(episode) && !looksLikeYear(season, episode)) {
         return { season, episode, absoluteEpisode: null, seriesname: unmask(m.groups.seriesname) }
       }
     }
   }
 
   // R3: 1x03 / 01x03（season X episode，x 分隔）
+  //  数字边界闸（2026-08-18 en 巡检实案，spec §4.4）：WxH 分辨率的宽度尾部不再是独立季号
+  //  token——'1280x720' 的 "80x720" 曾被拆成 season=80 episode=720 且 parse_confidence='high'
+  //  （Overflow ×8 实案；isPlausibleSeason(80) 放行、looksLikeYear(80,720)=80720 不是年，
+  //  两道旧闸全漏）。seasonnumber 前加 (?<!\d)（"1280" 里的 "80" 前面是数字，拒收），
+  //  epnumber 后加 (?!\d)（对称收口）。1920x1080/3840x2160 的四位高度本就被 \d{1,3}+\b
+  //  挡住，此闸补的是 720 这类三位高度。
   {
-    const m = text.match(/(?<seriesname>.*?)(?<seasonnumber>\d{1,2})[xX](?<epnumber>\d{1,3})\b/)
+    const m = text.match(/(?<seriesname>.*?)(?<!\d)(?<seasonnumber>\d{1,2})[xX](?<epnumber>\d{1,3})(?!\d)\b/)
     if (m?.groups) {
       const season = Number(m.groups.seasonnumber)
       const episode = Number(m.groups.epnumber)
-      if (isPlausibleSeason(season) && !looksLikeYear(season, episode)) {
+      if (isPlausibleSeason(season) && isPlausibleEpisode(episode) && !looksLikeYear(season, episode)) {
         return { season, episode, absoluteEpisode: null, seriesname: unmask(m.groups.seriesname) }
       }
     }
@@ -166,18 +187,22 @@ function extractSeasonEpisode(rawText: string): { season: number | null; episode
     if (m?.groups) {
       const season = Number(m.groups.seasonnumber)
       const episode = Number(m.groups.ep1 ?? m.groups.ep2)
-      if (isPlausibleSeason(season) && !looksLikeYear(season, episode)) {
+      if (isPlausibleSeason(season) && isPlausibleEpisode(episode) && !looksLikeYear(season, episode)) {
         return { season, episode, absoluteEpisode: null, seriesname: unmask(m.groups.seriesname) }
       }
     }
   }
 
   // R5: EP01 / E01 / ep01（明确集标记，含前导零，前面不是字母）——绝对集号
+  //  粘连版本后缀（同 R1 实案）：'E05v3' 的 "5|v" 无词边界 → \b 失配。epnumber 后加
+  //  (?:v\d{1,2})? 消化 vN 再 \b，与 R1 同理。
   {
-    const m = text.match(/(?<seriesname>.*?)(?<![a-zA-Z])[eE](?:p(?:isode)?)?[\s._-]*(?<epnumber>\d{2,3})\b/i)
+    const m = text.match(/(?<seriesname>.*?)(?<![a-zA-Z])[eE](?:p(?:isode)?)?[\s._-]*(?<epnumber>\d{2,3})(?:v\d{1,2})?\b/i)
     if (m?.groups) {
       const episode = Number(m.groups.epnumber)
-      return { season: null, episode: null, absoluteEpisode: episode, seriesname: unmask(m.groups.seriesname) }
+      if (isPlausibleEpisode(episode)) {
+        return { season: null, episode: null, absoluteEpisode: episode, seriesname: unmask(m.groups.seriesname) }
+      }
     }
   }
 
@@ -186,7 +211,7 @@ function extractSeasonEpisode(rawText: string): { season: number | null; episode
     const m = text.match(/(?<seriesname>.*?)\[(?<epnumber>0{0,2}\d{1,3})\]/)
     if (m?.groups) {
       const episode = Number(m.groups.epnumber)
-      if (!(episode >= 1900 && episode <= 2099)) { // [2025] 是年份不是集号
+      if (!(episode >= 1900 && episode <= 2099) && isPlausibleEpisode(episode)) { // [2025] 是年份不是集号
         return { season: null, episode: null, absoluteEpisode: episode, seriesname: unmask(m.groups.seriesname) }
       }
     }
@@ -196,23 +221,32 @@ function extractSeasonEpisode(rawText: string): { season: number | null; episode
   {
     const m = text.match(new RegExp(`(?<seriesname>.*?)第\\s*(?<epnumber>\\d{1,3})\\s*${CJK_EPISODE_MARKER_CLASS}`))
     if (m?.groups) {
-      return { season: null, episode: null, absoluteEpisode: Number(m.groups.epnumber), seriesname: unmask(m.groups.seriesname) }
+      const episode = Number(m.groups.epnumber)
+      if (isPlausibleEpisode(episode)) {
+        return { season: null, episode: null, absoluteEpisode: episode, seriesname: unmask(m.groups.seriesname) }
+      }
     }
   }
 
   // R8: ' - 26' / ' 26 [' / ' 26.'（fansub 绝对编号，前面是空格/连字符/点，不是年份）——绝对集号
-  //  防错闸：① epnumber 后面不能跟 .数字（'5.1' 是声道）或字母（'10bit' 是质量标记）
-  //  ② seriesname 不能以 4 位数字开头（'2026.2160p...' 是年份）或以 season/E 结尾（'Season 2'/'E06' 是季/集标记不是绝对编号）。
+  //  防错闸：① epnumber 后面不能跟「.一位小数」（'5.1'/'2.0' 是声道——真实声道小数的小数位
+  //    恒为一位；'.1280' 这种多位"小数"不是小数，是点分隔的分辨率宽度，'Show.01.1280x720'
+  //    的 01 必须能被接住）或字母（'10bit' 是质量标记）
+  //  ② seriesname 不能以 4 位数字开头（'2026.2160p...' 是年份）或以 season/E 结尾（'Season 2'/'E06' 是季/集标记不是绝对编号）
+  //  ③ 前置数字闸（2026-08-18 en 巡检实案）：分隔符前一个字符是数字时拒收——'DDP5.1' 的 '1'、
+  //    'AAC2.0' 的 '0' 是小数声道尾不是编号（'Movie.2020.DDP5.1' 曾被判 abs=1 电影变剧集；
+  //    'AAC2.0' 曾被判 episode=0）。闸 ① 只看了数字后面（'.1' 跟在 epnumber 后），这里补的是
+  //    数字前面（'.' 前是数字 → 这是小数点不是分隔符），两个方向合围才封死 5.1/2.0 形态。
   {
-    const m = text.match(/(?<seriesname>.*?)[\s._-](?<epnumber>\d{1,3})(?![\da-zA-Z])/)
+    const m = text.match(/(?<seriesname>.*?)(?<!\d)[\s._-](?<epnumber>\d{1,3})(?![\da-zA-Z])/)
     if (m?.groups) {
       const episode = Number(m.groups.epnumber)
       const seriesname = unmask(m.groups.seriesname)
       const startsWithYear = seriesname !== null && /^\s*(19\d{2}|20\d{2})\b/.test(seriesname)
       const seriesEndsWithSeasonOrE = seriesname !== null && /(?:season|[sS]|[eE])\s*$|(?:^|\s)season$/i.test(seriesname)
       const afterMatch = text.slice((m.index ?? 0) + m[0].length)
-      const isDecimal = /^\.\d/.test(afterMatch)
-      if (!(episode >= 1900 && episode <= 2099) && !startsWithYear && !seriesEndsWithSeasonOrE && !isDecimal) {
+      const isDecimal = /^\.\d(?!\d)/.test(afterMatch)
+      if (isPlausibleEpisode(episode) && !(episode >= 1900 && episode <= 2099) && !startsWithYear && !seriesEndsWithSeasonOrE && !isDecimal) {
         return { season: null, episode: null, absoluteEpisode: episode, seriesname }
       }
     }

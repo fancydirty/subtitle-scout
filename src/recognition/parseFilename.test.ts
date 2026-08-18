@@ -299,6 +299,119 @@ describe('parseFilename — R5 排除 CRC32 校验和（病二：自信的谎话
   })
 })
 
+// ===========================================================================
+// 2026-08-18 en 目标巡检生产事故的对抗语料（spec §4.4 / F4）。
+//
+// 四个病灶全部来自生产库实查（不是想象出来的合成样本）：
+//   P1 R3 '1x03'：'1280x720' 的 "80x720" 被拆成 s=80 e=720（Overflow ×8，parse_confidence='high'）
+//   P2 R1/R5：粘连版本后缀 'S01E04v2' 因 "4|v" 之间无词边界双双失配——Nukitashi ×8 落到
+//      R8 吃掉 'AAC2.0' 的 '0' → episode=0；芬芳 Flowers ×7 季集全 NULL。点分隔 '.v2'
+//      本就正常（"1|." 有词边界），只有粘连 vN 出事。
+//   P3 R8：小数声道 'DDP5.1' 的 '1'（abs=1，电影变剧集）/ 'AAC2.0' 的 '0'（episode=0）
+//   P4 中文数字季 / 单位数 E：spec §7 明确不修（agent 语义层兜住），下面锁现状防漂移。
+// ===========================================================================
+describe('parseFilename — 2026-08-18 en 巡检对抗语料（生产实案 + 合成陷阱）', () => {
+  // ── 生产实案 ────────────────────────────────────────────────────────────
+
+  it('🔴 Overflow：WxH 的宽度尾部不再是季号（s80e720 → 绝对编号 1）', () => {
+    // 旧状：R3 把 '1280x720' 的 "80x720" 拆成 season=80 episode=720，isPlausibleSeason(80)
+    // 放行、looksLikeYear(80,720)=80720 不是年——两道闸全漏，confidence 还落 'high'。
+    // 修后：'80' 前是数字 '2'，(?<!\d) 拒收；R8 接住 ' - 01 ' 的绝对编号。
+    const r = parseFilename('Overflow (TV ver.) - 01 (WebDL 1280x720 AAC).mkv')
+    expect(r.absoluteEpisode).toBe(1)
+    expect(r.season).toBeNull()
+    expect(r.episode).toBeNull()
+    expect(r.isTv).toBe(true)
+  })
+
+  it('🔴 Nukitashi：粘连 v2 后缀认出 s=1 e=4（不是 R8 吃 AAC2.0 的 0）', () => {
+    // 双病灶合一：R1 因 "4|v" 无词边界失配 → R8 兜底吃掉 'AAC2.0' 的小数尾 '0' → episode=0。
+    // 修后：R1 消化 'v2' → s=1 e=4；R8 的前置数字闸让 '2.0' 的 '0' 也不再可吃。
+    const r = parseFilename('Nukitashi.the.Animation.S01E04v2.Romp.Day.1080p.UNCENSORED.AAC2.0.mkv')
+    expect(r.season).toBe(1)
+    expect(r.episode).toBe(4)
+    expect(r.absoluteEpisode).toBeNull()
+    expect(r.isTv).toBe(true)
+  })
+
+  it('🔴 芬芳 Flowers：S01E05v3 → s=1 e=5（不是季集全 NULL）', () => {
+    // 同 Nukitashi 的 R1 失配，但这条连 R8 都没接住（名字里无可吃的编号）→ 季集全 NULL。
+    const r = parseFilename('The.Fragrant.Flower.S01E05v3.Premonition.1080p.mkv')
+    expect(r.season).toBe(1)
+    expect(r.episode).toBe(5)
+    expect(r.absoluteEpisode).toBeNull()
+  })
+
+  it('点分隔 .v2 回归保持：Hi10 系列照常 s=1 e=1', () => {
+    // "1|." 有词边界，R1 从来就正常——修粘连 vN 不得把这条弄坏。
+    const r = parseFilename('Highschool.of.the.Dead.S01E01.v2.1080p-Hi10p.BluRay.FLAC5.1.x264-CTR.[2FC76335].mkv')
+    expect(r.season).toBe(1)
+    expect(r.episode).toBe(1)
+  })
+
+  it('🔴 DDP5.1：小数声道尾不是绝对集号（电影不被判成剧集）', () => {
+    // 旧状：R8 把 'DDP5.1' 的 '1' 当编号 → absoluteEpisode=1，电影变剧集。
+    // 修后：分隔符 '.' 前是数字 '5'，前置数字闸拒收。
+    const r = parseFilename('Movie.2020.DDP5.1.Atmos.1080p.mkv')
+    expect(r.isTv).toBe(false)
+    expect(r.absoluteEpisode).toBeNull()
+    expect(r.season).toBeNull()
+    expect(r.episode).toBeNull()
+  })
+
+  // ── 合成陷阱（每个病灶的最小复现 + 修法的反向闸）─────────────────────────
+
+  it('🔴 Show.01.1280x720：R8 接住 01，R3 不再吃 720', () => {
+    const r = parseFilename('Show.01.1280x720.x264.mkv')
+    expect(r.absoluteEpisode).toBe(1)
+    expect(r.season).toBeNull()
+    expect(r.episode).toBeNull()
+  })
+
+  it('🔴 Movie.2023.3840x2160：4K 宽度尾部同样不拆季集', () => {
+    const r = parseFilename('Movie.2023.3840x2160.mkv')
+    expect(r.season).toBeNull()
+    expect(r.episode).toBeNull()
+    expect(r.absoluteEpisode).toBeNull()
+    expect(r.isTv).toBe(false)
+  })
+
+  it('Show.S01E01.1920x1080：正常 SxxExx 与分辨率共存（R1 优先级不降）', () => {
+    const r = parseFilename('Show.S01E01.1920x1080.mkv')
+    expect(r.season).toBe(1)
+    expect(r.episode).toBe(1)
+  })
+
+  it('🔴 Show.E05v3：R5 的粘连 vN 后缀（绝对集号标记形态）', () => {
+    const r = parseFilename('Show.E05v3.1080p.mkv')
+    expect(r.absoluteEpisode).toBe(5)
+    expect(r.season).toBeNull()
+    expect(r.episode).toBeNull()
+  })
+
+  it('Show.S01E05E06：多集组不被 vN 组破坏', () => {
+    const r = parseFilename('Show.S01E05E06.1080p.mkv')
+    expect(r.season).toBe(1)
+    expect(r.episode).toBe(5)
+  })
+
+  // ── 已知边界锁现状（P4：spec §7 明确不修，agent 语义层兜住）──────────────
+
+  it('「第一季 第05話」：汉字数字季不识别（锁现状）→ abs=5 / season=null', () => {
+    const r = parseFilename('第一季 第05話「标题」(2024)')
+    expect(r.absoluteEpisode).toBe(5)
+    expect(r.season).toBeNull()
+  })
+
+  it('「Show - E7」：单位数 E 不识别（锁现状）→ 季集 null', () => {
+    const r = parseFilename('Show - E7 (2024).mkv')
+    expect(r.season).toBeNull()
+    expect(r.episode).toBeNull()
+    expect(r.absoluteEpisode).toBeNull()
+    expect(r.isTv).toBe(false)
+  })
+})
+
 describe('cleanTitle 裸集数守卫 — 「第N話」必须与「第N话」行为一致', () => {
   // 这处守卫在 parseFilename.ts 的 cleanTitle 末尾（`if (/^(?:ep...|第\s*\d{1,3}\s*[话集]|\d{1,3})$/`）。
   // 上一轮它**零覆盖**——把整个 if 删掉，四判据依然全绿。这一组是它的专属锁。
