@@ -1,12 +1,13 @@
 // web/src/workbench/cards.css.test.ts —— B 切分几何与 R-F11 的"拒绝投影"。
 //
 // ── 为什么这些断言值得存在 ────────────────────────────────────────────────
-// 活动页在跑与排队共用 B 切分：左栏 16:9 backdrop（宽走 --card-split-poster: 61%），
-// 右栏实色排字。不定高——变量宽不能把静帧横向拉长。排队不再是 2:3。
-// **通知卡（.notif-row.wb-run-card）2026-08-18 起脱离这套「宽 → 高」**：
-// 它走「高 96px 恒定 → 海报 16:9 推宽 ≈171px」，由 notif-card.css.test.ts 单独守。
-// 本文件只守活动页那两张卡。数字被人顺手改掉时没有任何东西会红——卡片只是变得
-// 难看，而"难看"没有判据。
+// 活动页在跑卡走 B 切分：左栏 16:9 backdrop（宽走 --card-split-poster: 61%），
+// 右栏实色排字。不定高——变量宽不能把静帧横向拉长。
+// **排队卡（.wb-queue-card）2026-08-18 起脱离这套「宽 → 高」**：它右栏只有
+// 片名 + 一行副标题，与通知行同量级，被 B 切分撑到与在跑卡一样高（~390px）
+// 是错的——用户裁决「收成通知页的那种大小状态」，即恒定高 96px + 海报高推宽
+// ≈171px + 右栏 normal flow，几何与通知卡（notif-card.css.test.ts 守）完全同套。
+// 在跑卡仍走 B 切分「宽 → 高」（右栏有进度条 + 步骤 + 5 行 log，需要那个高度）。
 // 旧 R-F13 数字（60% / 186px / 59px / 88px / 118px）和「在跑用横版、排队用竖版」
 // 是这些测试现在**禁止**的历史，不是现行法。
 //
@@ -145,6 +146,37 @@ describe('B 切分：左 16:9 + 右实色（覆盖 R-F13 固定高度 / 2:3 排�
 
   it('🔴 **不许出现 clamp()**', () => {
     expect(WB_CSS).not.toContain('clamp(')
+  })
+})
+
+describe('排队卡：恒定高 96px + 海报 16:9（高 → 宽，2026-08-18 与通知卡同一套几何）', () => {
+  // 排队右栏只有片名 + 一行副标题——与通知行（时钟+片名+副标题+CTA）同量级。
+  // 此前排队与在跑共用 B 切分「宽 61% → 16:9 撑高」，两行字被撑到 ~390px，
+  // 与在跑卡一样大。用户 2026-08-18 裁决：排队收成通知页那种恒定高小卡。
+  it('🔴 排队卡高度 = var(--notif-card-h)（与通知卡共用），不是不定高', () => {
+    expect(decl('.wb-queue-card', 'height')).toBe('var(--notif-card-h)')
+  })
+
+  it('排队海报：height:100% + width:auto + 16:9——高推宽 ≈171px，不走 61%', () => {
+    expect(decl('.wb-queue-card .wb-run-img', 'width')).toBe('auto')
+    expect(decl('.wb-queue-card .wb-run-img', 'height')).toBe('100%')
+    expect(decl('.wb-queue-card .wb-run-img', 'aspect-ratio')).toMatch(/16\s*\/\s*9/)
+  })
+
+  it('🔴 排队右栏 normal flow（relative + flex:1 + inset:auto），不是 absolute', () => {
+    // 海报只有 ~171px，右栏必须 normal flow 紧贴海报右侧——absolute + left:61%
+    // 会在 171px 海报与 61% 左边界之间留出巨大空档（通知卡同日修过同一个坑）。
+    expect(decl('.wb-queue-card .wb-run-body', 'position')).toBe('relative')
+    expect(decl('.wb-queue-card .wb-run-body', 'flex')).toBe('1')
+    expect(decl('.wb-queue-card .wb-run-body', 'inset')).toBe('auto')
+  })
+
+  it('🔴 排队右栏左对齐从顶部排（text-align:left + justify-content:flex-start）', () => {
+    // 与通知卡同一节奏；也终结此前「有图右对齐 / 无图左对齐」的分裂——
+    // 排队卡有没有图从此是同一种排法。
+    expect(decl('.wb-queue-card .wb-run-body', 'text-align')).toBe('left')
+    expect(decl('.wb-queue-card .wb-run-body', 'align-items')).toBe('flex-start')
+    expect(decl('.wb-queue-card .wb-run-body', 'justify-content')).toBe('flex-start')
   })
 })
 
