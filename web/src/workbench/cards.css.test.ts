@@ -120,10 +120,28 @@ describe('B 切分：左 16:9 + 右实色（覆盖 R-F13 固定高度 / 2:3 排�
     expect(img).toContain('-webkit-mask-image')
     expect(img).toContain('to right')
     expect(img).not.toContain('to left')
+    // 🔴 fade 起点锁 40%（2026-08-18 用户裁决：「渐变遮罩再往左延伸一点，要水乳交融」）。
+    // 旧值 58%：实心海报占 58%、fade 只占 42%，淡出又晚又急，海报与右栏实色之间
+    // 是「贴上去」不是「融进去」。40% 起溶 → fade 占海报 60%，过渡带更长更缓。
+    // 终点必须钉 100%：海报右缘（= 文字栏左界）必须完全透明，否则那里会露一条海报硬边。
+    expect(img).toContain('#000 40%')
+    expect(img).toContain('transparent 100%')
+    expect(img).not.toContain('#000 58%')
     expect(WB_CSS).not.toContain('.wb-queue-fade')
     expect(WB_CSS).not.toContain('.wb-run-fade')
     expect(WB_CSS).not.toContain('.notif-hero-compact')
     expect(CSS.replace(/\/\*[\s\S]*?\*\//g, '')).not.toContain('.notif-hero-compact')
+  })
+
+  it('🔴 .wb-queue-img 与 .wb-run-img 的 mask 同值（两块是刻意复制的孪生块，不许漂移）', () => {
+    // SplitHero 现在只渲染 wb-run-img，wb-queue-img 是历史孪生块；但只要它还在文件里，
+    // 就必须和 wb-run-img 逐字一致——将来谁复活它时两页的溶接手感才不会悄悄分叉。
+    const run = new RegExp('\\.wb-run-img\\s*\\{([^}]*)\\}').exec(WB_CSS)?.[1] ?? ''
+    const queue = new RegExp('\\.wb-queue-img\\s*\\{([^}]*)\\}').exec(WB_CSS)?.[1] ?? ''
+    expect(queue).toContain('mask-image')
+    const runMask = /mask-image:\s*([^;]+)/.exec(run)?.[1] ?? ''
+    const queueMask = /mask-image:\s*([^;]+)/.exec(queue)?.[1] ?? ''
+    expect(queueMask).toBe(runMask)
   })
 
   it('右栏 overflow hidden + text-align right；无图改左对齐', () => {
