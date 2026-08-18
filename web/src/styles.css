@@ -1879,9 +1879,10 @@
    且要跟海报同高）；通知行海报只有 ~171px，右栏从 171px 开始，根本不需要 absolute——
    absolute 的 right:0 会把内容顶到卡片 border-box 右缘，border-radius 裁掉右上角
    的「21:35」（2026-08-18 用户实测截图，padding 只推了 16px 但 top:0 仍在裁切区）。
-   text-align:left + align-items:flex-start：visual companion mockup 是「左对齐文字
-   + 右端按钮」，不是全右对齐（2026-08-18 用户裁决）。「去片库看」单独 margin-left:auto
-   推到右端，中间留呼吸空间。 */
+   text-align:left + align-items:flex-start + justify-content:flex-start：
+   visual companion mockup 是「左对齐文字 + 从顶部开始排 + CTA 在底部」，
+   不是全右对齐也不是垂直居中（2026-08-18 用户裁决）。
+   「去片库看」margin-top:auto 推到底部，margin-left:auto 推到右端。 */
 .notif-row.wb-run-card .wb-run-body {
   position: relative;
   inset: auto;
@@ -1889,10 +1890,12 @@
   min-width: 0;
   text-align: left;
   align-items: flex-start;
+  justify-content: flex-start;
   padding: 14px 16px;
 }
-/* 「去片库看」单独右端——不跟文字一起左对齐。 */
+/* 「去片库看」：底部 + 右端——不跟文字一起左对齐，也不跟文字一起居中。 */
 .notif-row-cta {
+  margin-top: auto;
   margin-left: auto;
 }
 .wb-hero-bleed { /* 与 .wb-run-card 同出血；类名给测试/调用方复用 */ }
