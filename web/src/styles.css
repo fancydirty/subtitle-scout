@@ -1946,15 +1946,18 @@
    Task ⑨ 活动页（#/activity）—— B 切分卡片 + R-F11 Linear 视觉基准
    ══════════════════════════════════════════════════════════════════════════════
 
-   在跑与排队共用 B 切分：左栏 16:9 backdrop（宽走 --card-split-poster），右栏实色排字。
+   在跑卡走 B 切分：左栏 16:9 backdrop（宽走 --card-split-poster），右栏实色排字。
    不定高——高度由 16:9 海报撑开，变量宽不能把静帧横向拉长。mask 朝右溶进右栏。
+   排队卡 2026-08-18 起脱离这套几何：恒定高 96px + 海报高推宽（同通知卡），
+   见下面「排队卡恒定高几何」段的整段注释。
 
    关键约束：
-    1. **右栏是实色，不是半透明黑 overlay**——文字对比度稳定。本仓实色 = var(--color-card)。
-       ⚠️ DESIGN.md 那套 --color-surface-* / --color-hairline 在本仓 grep 零命中——写
-       `var(--color-surface-1, transparent)` 会**静默 fallback 成透明**（Task ⑦ 的实施者
-       踩过并记在 PlaceholderPage 头注释里）。故一律用本仓真实存在的 --color-* 那套。
-    2. **不再「在跑用横版、排队用竖版 2:3」**——两槽同一几何；旧 2:3 排队行高不再有效。
+     1. **右栏是实色，不是半透明黑 overlay**——文字对比度稳定。本仓实色 = var(--color-card)。
+        ⚠️ DESIGN.md 那套 --color-surface-* / --color-hairline 在本仓 grep 零命中——写
+        `var(--color-surface-1, transparent)` 会**静默 fallback 成透明**（Task ⑦ 的实施者
+        踩过并记在 PlaceholderPage 头注释里）。故一律用本仓真实存在的 --color-* 那套。
+     2. **不再「在跑用横版、排队用竖版 2:3」**——旧 2:3 排队行高不再有效；排队现在是
+        恒定高 96px 的横版小卡（不是竖版，也不是在跑那种不定高大卡）。
 
    R-F11：四层 surface 阶梯 + 三层 hairline，**拒绝投影**（深色上投影糊成一团）。
    下面没有任何一条 box-shadow，这是刻意的。
@@ -1963,10 +1966,11 @@
    移动端那一轮**在 media query 里改变量值、不改组件**——这才是真正的留路。 */
 :root {
   --card-split-poster: 61%; /* B 切分左栏 16:9 海报占宽 */
-  /* 通知卡的恒定高度。**高 → 宽**：海报 height:100% × aspect-ratio:16/9 推出 ≈171px 宽，
-     与视口宽度无关——显示器变宽只改变右栏弹性空间的宽度（标题与「去片库看」之间），
-     海报尺寸永远不变。用户 2026-08-18 字面裁决：「卡片高度恒定，海报本身保持 16:9」。
-     活动页 .wb-run-card / .wb-queue-card 不用这个变量，那边仍是「宽 → 高」。 */
+  /* 恒定高小卡的共用高度（通知行 + 活动页排队卡）。**高 → 宽**：海报
+      height:100% × aspect-ratio:16/9 推出 ≈171px 宽，与视口宽度无关——显示器变宽
+      只改变右栏弹性空间的宽度，海报尺寸永远不变。用户 2026-08-18 字面裁决：
+      「卡片高度恒定，海报本身保持 16:9」。在跑卡不用这个变量——它右栏有进度条
+      + 步骤 + 5 行 log，仍走「宽 → 高」。 */
   --notif-card-h: 96px;
 }
 
@@ -2044,6 +2048,8 @@
   border: 1px solid var(--color-border);
   border-radius: var(--radius-control);
   background: var(--color-card);
+  /* 🔴 恒定高（高 → 宽），与通知卡共用 --notif-card-h——见下面排队几何段的整段注释。 */
+  height: var(--notif-card-h);
 }
 .wb-run-img {
   width: var(--card-split-poster);
@@ -2114,6 +2120,37 @@
   right: auto;
   bottom: auto;
   text-align: left;
+}
+
+/* ---- 排队卡恒定高几何（高 → 宽）——2026-08-18 起脱离 B 切分，与通知卡同套 ----
+   排队右栏只有片名 + 一行副标题，与通知行（时钟+片名+副标题+CTA）同量级；
+   此前与在跑共用 B 切分「宽 61% → 16:9 撑高」，两行字被撑到与在跑卡一样高
+   （~390px——那是进度条 + 步骤 + 5 行 log 才需要的高度）。用户 2026-08-18 裁决：
+   「排队收成通知页的那种大小状态」。
+
+   · 卡高 = --notif-card-h = 96px 恒定（写在上面的 .wb-queue-card 基块里）
+   · 海报 height:100% × aspect-ratio:16/9 → 宽 ≈171px 恒定，width:auto 覆盖
+     基类的 var(--card-split-poster)（61%）
+   · 右栏 normal flow 的 flex:1 紧贴海报右侧——**不再 absolute**：海报只有
+     ~171px，absolute + left:61% 会在海报与 61% 左边界之间留出巨大空档
+     （通知卡同日修的同一个坑，见 notif 段注释）
+   · 左对齐、从顶部排——与通知卡同一节奏，也终结此前「有图右对齐 / 无图
+     左对齐」的分裂：有没有图从此是同一种排法（上面的 noimg 重置因此成了
+     冗余保险，保留它是 cards.css.test.ts 的既有守卫）。
+
+   在跑卡 .wb-run-card **不动**——它右栏内容多，仍走「宽 → 高」。 */
+.wb-queue-card .wb-run-img {
+  width: auto;
+  height: 100%;
+  aspect-ratio: 16 / 9;
+}
+.wb-queue-card .wb-run-body {
+  position: relative;
+  inset: auto;
+  flex: 1;
+  text-align: left;
+  align-items: flex-start;
+  justify-content: flex-start;
 }
 .wb-run-bar {
   height: 4px;
