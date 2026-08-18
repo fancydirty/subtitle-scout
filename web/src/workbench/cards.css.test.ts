@@ -132,6 +132,14 @@ describe('B 切分：左 16:9 + 右实色（覆盖 R-F13 固定高度 / 2:3 排�
     expect(WB_CSS).toMatch(/\[data-noimg='true'\][\s\S]*?text-align:\s*left/)
   })
 
+  it('排队无图重置打在 .wb-run-body（SplitHero 不再渲染 .wb-queue-body）', () => {
+    expect(WB_CSS).toContain(".wb-queue-card[data-noimg='true'] .wb-run-body")
+    const idx = WB_CSS.indexOf(".wb-queue-card[data-noimg='true'] .wb-run-body")
+    const block = /\{([^}]*)\}/.exec(WB_CSS.slice(idx))?.[1] ?? ''
+    expect(block).toContain('position: relative')
+    expect(block).toContain('text-align: left')
+  })
+
   it('🔴 **不许出现 clamp()**', () => {
     expect(WB_CSS).not.toContain('clamp(')
   })

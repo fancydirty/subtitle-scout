@@ -2011,7 +2011,7 @@
   bottom: auto;
   text-align: left;
 }
-.wb-queue-card[data-noimg='true'] .wb-queue-body {
+.wb-queue-card[data-noimg='true'] .wb-run-body {
   position: relative;
   inset: auto;
   left: auto;
