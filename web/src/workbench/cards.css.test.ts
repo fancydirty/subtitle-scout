@@ -103,8 +103,11 @@ describe('B 切分：左 16:9 + 右实色（覆盖 R-F13 固定高度 / 2:3 排�
   it('在跑图宽走变量、锁 16/9，不定高', () => {
     expect(decl('.wb-run-img', 'width')).toBe('var(--card-split-poster)')
     expect(decl('.wb-run-img', 'aspect-ratio')).toMatch(/16\s*\/\s*9/)
-    expect(decl('.wb-run-card', 'height')).not.toBe('var(--card-run-h)')
+    const h = decl('.wb-run-card', 'height')
+    expect(h === null || h === 'auto').toBe(true)
+    expect(h ?? '').not.toMatch(/\d+px/)
     expect(decl('.wb-run-card', 'display')).toBe('flex')
+    expect(declFromFullCss('.notif-row.wb-run-card', 'gap')).toBe('0')
   })
 
   it('mask 朝右溶进右栏，不是 to left，也不是 overlay fade', () => {
@@ -114,13 +117,18 @@ describe('B 切分：左 16:9 + 右实色（覆盖 R-F13 固定高度 / 2:3 排�
     expect(img).toContain('to right')
     expect(img).not.toContain('to left')
     expect(WB_CSS).not.toContain('.wb-queue-fade')
+    expect(WB_CSS).not.toContain('.wb-run-fade')
     expect(WB_CSS).not.toContain('.notif-hero-compact')
+    expect(CSS.replace(/\/\*[\s\S]*?\*\//g, '')).not.toContain('.notif-hero-compact')
   })
 
   it('右栏 overflow hidden + text-align right；无图改左对齐', () => {
     expect(decl('.wb-run-body', 'overflow')).toBe('hidden')
     expect(decl('.wb-run-body', 'text-align')).toBe('right')
     expect(decl('.wb-run-body', 'width')).not.toBe('46%')
+    expect(decl('.wb-run-body', 'position')).toBe('absolute')
+    expect(decl('.wb-run-body', 'left')).toBe('var(--card-split-poster)')
+    expect(decl(".wb-run-card[data-noimg='true'] .wb-run-body", 'position')).toBe('relative')
     expect(WB_CSS).toMatch(/\[data-noimg='true'\][\s\S]*?text-align:\s*left/)
   })
 

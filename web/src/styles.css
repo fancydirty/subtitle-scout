@@ -1804,6 +1804,7 @@
 .notif-row.wb-run-card {
   display: flex;
   align-items: stretch;
+  gap: 0;
   padding: 0;
   height: auto;
 }
@@ -1972,8 +1973,11 @@
   display: block;
 }
 .wb-run-body {
-  position: relative;
-  flex: 1;
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: var(--card-split-poster);
   min-width: 0;
   overflow: hidden;
   display: flex;
@@ -1984,8 +1988,11 @@
   text-align: right;
 }
 .wb-queue-body {
-  position: relative;
-  flex: 1;
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: var(--card-split-poster);
   min-width: 0;
   overflow: hidden;
   display: flex;
@@ -1995,8 +2002,22 @@
   padding: 14px 16px;
   text-align: right;
 }
-.wb-run-card[data-noimg='true'] .wb-run-body,
+.wb-run-card[data-noimg='true'] .wb-run-body {
+  position: relative;
+  inset: auto;
+  left: auto;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  text-align: left;
+}
 .wb-queue-card[data-noimg='true'] .wb-queue-body {
+  position: relative;
+  inset: auto;
+  left: auto;
+  top: auto;
+  right: auto;
+  bottom: auto;
   text-align: left;
 }
 .wb-run-bar {
