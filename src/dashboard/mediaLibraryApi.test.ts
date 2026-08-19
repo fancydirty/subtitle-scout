@@ -243,6 +243,23 @@ describe('buildMediaLibrary（列表：海报墙）', () => {
       const detail = buildMediaLibraryDetail(db, 'tmdb:dxe', 'en')
       expect(detail?.movie?.dot).toBe('blue')
     })
+
+    it('🔴 origin-skip（原生就是目标语言、无内嵌轨）→ uncovered=0，不显示「没字幕」（2026-08-19 Young Sheldon 实案）', () => {
+      // 小谢尔顿 origin=en + target=en → judge 判 origin-skip → embedded_langs=[]（BD 无内嵌
+      // 文本轨）→ dot 'none'。旧公式 uncovered = onDisk - subtitled - embedded = 16 - 0 - 0 = 16
+      // → 列表页「还有 16 集没字幕」，详情页「原生就是目标语言」——同一张页两个口径。
+      addWork('tmdb:ys', { title: 'Young Sheldon' })
+      for (let e = 1; e <= 16; e++) {
+        addFile({
+          path: `/y/s4e${e}.mkv`, workId: 'tmdb:ys', season: 4, episode: e,
+          embeddedLangs: [], needsSubtitle: 0, skipReason: 'origin-skip',
+        })
+      }
+      const [item] = buildMediaLibrary(db, 'en')
+      expect(item.subtitledEpisodeCount).toBe(0)
+      expect(item.embeddedEpisodeCount).toBe(0)
+      expect(item.uncoveredEpisodeCount).toBe(0)
+    })
   })
 
   it('🔴 R-F2 列表概览也按 work_id 合并：同一集两份文件只算一集，任一份有字幕就算已获取', () => {

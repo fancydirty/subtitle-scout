@@ -684,8 +684,15 @@ export function buildMediaLibrary(db: ScoutDb, targetLanguage: string = 'zh'): M
     // 互斥来自 aggregateDot 的三态本身：green/blue/none 三选一，所以两个计数之和恒
     // === 旧实现那个 `!== 'none'` 的合计——旧值没丢，只是被拆开了。
     const dots = [...cells.values()].map((rows) => aggregateDot(rows, targetLanguage).dot)
+    const states = [...cells.values()].map((rows) => aggregateDot(rows, targetLanguage).episodeState)
     const subtitled = dots.filter((d) => d === 'green').length
     const embedded = dots.filter((d) => d === 'blue').length
+    // 🔴 2026-08-19（Young Sheldon 实案）：uncovered 此前只减 subtitled + embedded，
+    // 漏掉了 origin-skip / extra —— 它们也是"不用管"（needs_subtitle=0），不是"没字幕"。
+    // 生产形态：小谢尔顿 origin=en + target=en → judge 判 origin-skip → embedded_langs=[]（无
+    // 内嵌轨）→ dot 'none' → 旧公式不减 → 16/16 全显示「没字幕」，而详情页显示「原生就是目标
+    // 语言」。修法：额外减 originSkip（episodeState === 'origin-skip' 或 'extra' 的格数）。
+    const originSkip = states.filter((s) => s === 'origin-skip' || s === 'extra').length
     return {
       workId: w.id,
       title: w.title,
@@ -698,7 +705,7 @@ export function buildMediaLibrary(db: ScoutDb, targetLanguage: string = 'zh'): M
       missingEpisodeCount: Math.max(0, expected - onDisk),
       subtitledEpisodeCount: subtitled,
       embeddedEpisodeCount: embedded,
-      uncoveredEpisodeCount: Math.max(0, onDisk - subtitled - embedded),
+      uncoveredEpisodeCount: Math.max(0, onDisk - subtitled - embedded - originSkip),
       unplacedFileCount: unplacedByWork.get(w.id) ?? 0,
     }
   })
