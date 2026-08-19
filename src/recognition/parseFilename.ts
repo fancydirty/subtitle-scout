@@ -98,23 +98,46 @@ function isPlausibleEpisode(n: number): boolean {
  *  **已知边界**而非遗漏——扩大排除面需要新的真实样本来立论，不能凭想象扩。 */
 const CRC32_TOKEN_RE = /\([0-9A-Fa-f]{8}\)/g
 
+/** 视频 codec token（`H.265` / `x.264` / `h.265` 等分隔符变体）——数字是 codec 编号
+ *  不是集号。
+ *
+ *  病灶（2026-08-19 生产实测，Chainsaw Reze 实案）：电影文件名尾 `...DV.HDR10P.H.265-BYNDR.mkv`
+ *  的 `.265` 被 R8 吃成 abs=265。单独看是无害的 low（P5 之前 listDir 不接线，季推导
+ *  不发生）；P5 接通后碰上该电影目录里真有 `Season 01` 子目录（剧场版特典），唯一季
+ *  推导把 abs=265 升级成 S1E265 **high**——一部电影被解析成"剧集第 265 集"，带着高
+ *  置信度进库。这是"两个各自无害的修复组合出有害行为"的实案，故 codec 遮蔽必须
+ *  与 P5 同批。
+ *
+ *  判据：`[hHxX]` + 分隔符（`.`/`_`/`-`/空格）+ `26[2-9]`（H.26x/x.26x 家族；262-269
+ *  覆盖现存与近未来的 AVC/HEVC/VVC 编号）。**不带分隔符的 `x265` 不在此列**——它后面
+ *  直接跟数字边界，R8 的现有闸已不认（`x` 是字母，分隔符字符类不匹配粘连），fansub
+ *  命名里 `x265-10Bit` 中的 `265` 也因此从未被吃。与 CRC32 同法**等长遮蔽**，保住
+ *  m.index / seriesname 的偏移对齐（见 maskCrc32 的论证）。 */
+const CODEC_TOKEN_RE = /[hHxX][\s._-]26[2-9]\b/g
+
+/** 把 CRC32 校验和与 codec token 整段替换成等长的 '#'（两处共用同一套等长论证）。 */
+function maskNoise(text: string): string {
+  return text.replace(CRC32_TOKEN_RE, (m) => '#'.repeat(m.length))
+    .replace(CODEC_TOKEN_RE, (m) => '#'.repeat(m.length))
+}
+
 /** 把 CRC32 校验和整段替换成等长的 '#'，让集号正则看不见它里面的 `E90`。
  *
  *  **等长**是关键：调用方（R8）依赖 `m.index` 在原串上做后置判据，长度一变索引就全错。
  *  '#' 既不是十六进制字符也不是 `\d`/`[a-zA-Z]`，任何集号规则都不会从它身上刨出数字。
  *  只做遮蔽不做删除，也保证 seriesname 的字符偏移与原串逐字对齐（见 R5 的还原逻辑）。 */
 function maskCrc32(text: string): string {
-  return text.replace(CRC32_TOKEN_RE, (m) => '#'.repeat(m.length))
+  return maskNoise(text)
 }
 
 /** 从一段文本提取季/集结构。只认明确标记，绝不把 4 位数字拆成季/集。 */
 function extractSeasonEpisode(rawText: string): { season: number | null; episode: number | null; absoluteEpisode: number | null; seriesname: string | null } {
   // 规则按优先级从高到低，第一个 plausible 的命中即返回。
   //
-  // 先把 CRC32 校验和遮蔽掉（等长替换成 '#'，见 maskCrc32）——它是发布命名的固定约定，
-  // 里面的 `E90`/数字对集号规则全是噪声。遮蔽而非删除：等长保证 m.index / seriesname 的
-  // 字符偏移与原串逐字对齐，下面所有规则都可以照旧用 text，唯一的额外责任是**返回
-  // seriesname 时切回原串**（'#' 不能进 title）。
+  // 先把 CRC32 / codec token 遮蔽掉（等长替换成 '#'，见 maskNoise）——CRC 是发布命名
+  // 的固定约定，codec 编号是编码事实，两者里面的数字对集号规则全是噪声。遮蔽而非
+  // 删除：等长保证 m.index / seriesname 的字符偏移与原串逐字对齐，下面所有规则都可以
+  // 照旧用 text，唯一的额外责任是**返回 seriesname 时切回原串**（'#' 不能进 title）。
   const text = maskCrc32(rawText)
   /** seriesname 必须取自原串——text 里的 CRC 已被 '#' 覆盖，直接返回会把 '#' 塞进 title。
    *  等长遮蔽让同一个 [start, end) 区间在两串上指向同一段内容，所以按长度切回即可。 */

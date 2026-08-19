@@ -142,9 +142,12 @@ export interface ParsedStructure {
  *  fs 分支在生产是死代码——toMediaFileRow 从不传 listDir，扁平目录永远 low/NULL，
  *  而识别队列只认 work_id IS NULL，已识别作品的 low 行无通路接手）。Overflow 实案：
  *  v2 修掉 s80e720 后落 NULL/low，v3 接住为 s1e1-8 high。
+ *  v4（2026-08-19 P6）：codec token 遮蔽（H.265 / x.264）——Chainsaw Reze 实案：电影
+ *  名尾 `.H.265-` 的 265 被 R8 吃成 abs，v3 的 listDir 又碰上电影目录里的 Season 01
+ *  子目录，组合出 S1E265 high（两个各自无害的修复合出有害行为）。遮蔽后电影回 none。
  *
  *  值取小整数（1→2）而非 commit 号/日期：它只需要**单调递增且可比较**，语义是序数不是时刻。 */
-export const PARSER_VERSION = 3
+export const PARSER_VERSION = 4
 
 /** 解析路径结构（照 Jellyfin 约定 + parse_confidence 判定）。 */
 export function parseStructure(
