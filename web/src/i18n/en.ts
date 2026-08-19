@@ -213,6 +213,16 @@ export const en = {
   // 行为区（BehaviorSection）——五项，逐项改动即时单键 PUT。
   settings_target_languages_label: 'Target subtitle language',
   settings_target_languages_description: 'The subtitle language to search for and download. Unset defaults to Chinese.',
+  settings_target_language_zh: 'Chinese',
+  settings_target_language_en: 'English',
+  settings_target_language_ja: 'Japanese',
+  settings_target_language_ko: 'Korean',
+  settings_target_language_es: 'Spanish',
+  settings_target_language_fr: 'French',
+  settings_target_language_de: 'German',
+  settings_target_language_pt: 'Portuguese',
+  settings_target_language_ru: 'Russian',
+  settings_target_language_it: 'Italian',
   // 债务D5：target_languages 已提供者化，每轮 ingest pass 起点新鲜读取。
   settings_target_languages_restart_note:
     'Takes effect on the next library scan.',
@@ -621,7 +631,7 @@ export const en = {
   //    **这不是故障**，措辞必须中性——说成"有问题"会让刚加完目录的用户以为自己加错了。
   //    绝不许把这一档折成绿的"一切正常"（后端 buildRootHealth 与 api/types.ts 两处
   //    头注释都点名了 `?? true` 这条禁令）。
-  root_health_failed: 'Cannot read these folders — what you see may be out of date',
+  root_health_failed: 'These folders may be unavailable or empty; the library may be out of date',
   root_health_unknown: 'Not checked recently',
 
   // ── 🔴 认不出来的目录（病 A 第 7 例的可见形态）──────────────────────────

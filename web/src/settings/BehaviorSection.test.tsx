@@ -53,7 +53,8 @@ describe('BehaviorSection：null 值默认占位', () => {
     renderSection(asyncOf(NULL_SETTINGS))
 
     const select = screen.getByRole('combobox', { name: 'Target subtitle language' })
-    expect(select.textContent).toContain('中文')
+    expect(select.textContent).toContain('Chinese')
+    expect(select.textContent).not.toContain('中文')
 
     const mode = screen.getByRole('combobox', { name: 'Hardsub assumption' })
     expect(mode.textContent).toContain('Off')
@@ -88,7 +89,7 @@ describe('BehaviorSection：null 值默认占位', () => {
         engineEnabled: false,
       }),
     )
-    expect(screen.getByRole('combobox', { name: 'Target subtitle language' }).textContent).toContain('英语')
+    expect(screen.getByRole('combobox', { name: 'Target subtitle language' }).textContent).toBe('English')
     expect(screen.getByRole('combobox', { name: 'Hardsub assumption' }).textContent).toContain('Aggressive')
     expect(screen.getByRole('spinbutton', { name: 'Trace retention (days)' })).toHaveValue(14)
     expect(screen.getByRole('spinbutton', { name: 'Scan interval (minutes)' })).toHaveValue(10)
@@ -107,7 +108,7 @@ describe('BehaviorSection：单键即时 PUT', () => {
     renderSection(asyncOf(NULL_SETTINGS))
 
     openRadixSelect(screen.getByRole('combobox', { name: 'Target subtitle language' }))
-    fireEvent.click(await screen.findByRole('option', { name: '英语 (English)', hidden: true }))
+    fireEvent.click(await screen.findByRole('option', { name: 'English', hidden: true }))
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
     const [, init] = fetchMock.mock.calls[0] as [RequestInfo, RequestInit]
@@ -175,7 +176,7 @@ describe('BehaviorSection：单键即时 PUT', () => {
     renderSection(asyncOf({ ...NULL_SETTINGS, target_languages: 'zh' }))
 
     await openRadixSelect(screen.getByRole('combobox', { name: 'Target subtitle language' }))
-    fireEvent.click(screen.getByRole('option', { name: '中文 (Chinese)' }))
+    fireEvent.click(screen.getByRole('option', { name: 'Chinese' }))
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
     const [, init] = fetchMock.mock.calls[0] as [RequestInfo, RequestInit]
@@ -188,7 +189,7 @@ describe('BehaviorSection：单键即时 PUT', () => {
     renderSection(asyncOf(NULL_SETTINGS))
 
     await openRadixSelect(screen.getByRole('combobox', { name: 'Target subtitle language' }))
-    fireEvent.click(screen.getByRole('option', { name: '英语 (English)' }))
+    fireEvent.click(screen.getByRole('option', { name: 'English' }))
 
     expect(
       await screen.findByText(/Couldn't save: .*invalid language code/),

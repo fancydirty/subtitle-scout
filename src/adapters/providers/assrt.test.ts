@@ -60,6 +60,25 @@ describe('AssrtClient', () => {
     await client.search('The.Matrix.1999')
     expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
+
+  it('quota probe never reuses a cached success for a different token', async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), 'assrt-'))
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 0, user: { quota: 10 } })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 20001, errmsg: 'invalid token' })))
+    const validClient = new AssrtClient({
+      token: 'valid-token', fetchImpl: fetchImpl as unknown as typeof fetch,
+      limiter: new MinIntervalLimiter(0), cacheDir,
+    })
+    const invalidClient = new AssrtClient({
+      token: 'invalid-token', fetchImpl: fetchImpl as unknown as typeof fetch,
+      limiter: new MinIntervalLimiter(0), cacheDir,
+    })
+
+    await expect(validClient.quota()).resolves.toMatchObject({ status: 0 })
+    await expect(invalidClient.quota()).rejects.toThrow(/20001/)
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
 })
 
 describe('MinIntervalLimiter', () => {

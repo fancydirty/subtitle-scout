@@ -203,7 +203,8 @@ export class AssrtClient {
     throw lastNetworkError
   }
 
-  quota() { return this.call('user/quota', {}, AssrtQuotaResponseSchema) }
+  // 配额是动态值，也是凭据探针；缓存会让换 token 后复用上一把 token 的成功结果。
+  quota() { return this.call('user/quota', {}, AssrtQuotaResponseSchema, false) }
   search(q: string) {
     return this.call('sub/search', { q, filelist: '1', no_muxer: '1' }, AssrtSearchResponseSchema)
   }

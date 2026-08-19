@@ -109,7 +109,7 @@ const renderShell = () => render(<I18nProvider initialLang="en"><Shell /></I18nP
 // 🔴 变异闸：`roots: []` 必须让下面这些红
 // ══════════════════════════════════════════════════════════════════════════════
 describe('🔴 /health 的 roots[] 真的被读了（变异 `roots: []` → 本组必红）', () => {
-  it('活动页：一个根 ok=false → 页面上出现那个路径与"读不到"那句', async () => {
+  it('活动页：一个根 ok=false → 页面上出现那个路径与"不可用或为空"那句', async () => {
     roots = [{ path: '/mnt/media', ok: false, lastError: 'boom', lastCheckedAt: Date.now() }]
     location.hash = '#/activity'
     renderShell()

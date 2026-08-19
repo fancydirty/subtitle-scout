@@ -13,6 +13,7 @@ describe('localizeError', () => {
     ['not a media root', '不是守备目录'],
     ['db locked', '数据库忙，请稍后重试。'],
     ['Failed to fetch', '无法连接服务器，请确认服务正在运行。'],
+    ['Test failed — check the credentials and try again.', '测试失败，请检查凭据后重试。'],
   ])('zh 映射 %s', (raw, expected) => {
     expect(localizeError(raw, 'zh')).toBe(expected)
   })

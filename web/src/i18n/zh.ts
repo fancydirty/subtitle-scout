@@ -164,6 +164,16 @@ export const zh = {
 
   settings_target_languages_label: '目标字幕语言',
   settings_target_languages_description: '要搜索和下载的字幕语言。未设置时默认为中文。',
+  settings_target_language_zh: '中文 (Chinese)',
+  settings_target_language_en: '英语 (English)',
+  settings_target_language_ja: '日语 (Japanese)',
+  settings_target_language_ko: '韩语 (Korean)',
+  settings_target_language_es: '西班牙语 (Spanish)',
+  settings_target_language_fr: '法语 (French)',
+  settings_target_language_de: '德语 (German)',
+  settings_target_language_pt: '葡萄牙语 (Portuguese)',
+  settings_target_language_ru: '俄语 (Russian)',
+  settings_target_language_it: '意大利语 (Italian)',
   // 债务D5：target_languages 已提供者化，每轮 ingest pass 起点新鲜读取。
   settings_target_languages_restart_note: '下一轮扫描生效。',
 
@@ -535,7 +545,7 @@ export const zh = {
   // 措辞纪律同 en 侧：不出现挂载 / errno / 重试次数这类词，不透传 lastError 原文。
   // 两句分开是因为它们是两件不同的事：failed 是坏消息且有东西可修；
   // unknown（从没扫过 / 判决陈旧）**不是故障**，措辞必须中性。
-  root_health_failed: '这些目录读不到，里面的东西可能不是最新的',
+  root_health_failed: '这些目录暂时不可用或为空，媒体库可能不是最新的',
   root_health_unknown: '最近没有检查过',
 
   // ── 🔴 认不出来的目录（病 A 第 7 例的可见形态）──────────────────────────

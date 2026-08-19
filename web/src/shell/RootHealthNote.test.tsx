@@ -56,10 +56,11 @@ describe('RootHealthNote · 沉默即好消息（R-F9/R-F10：不做排障面板
 })
 
 describe('RootHealthNote · 三态怎么画（`null` 绝不许画成绿/健康）', () => {
-  it('ok=false → failed 行，说"读不到 + 可能不是最新的"', () => {
+  it('ok=false → failed 行，说"不可用或为空 + 可能不是最新的"', () => {
     renderNote([root('/media', false, 'boom')])
     const line = screen.getByTestId('root-health-failed')
     expect(line.textContent).toContain(en.root_health_failed)
+    expect(line.textContent).toContain('These folders may be unavailable or empty')
     expect(line.textContent).toContain('/media')
   })
 

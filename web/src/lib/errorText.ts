@@ -47,6 +47,7 @@ const ZH_MAPPINGS: Mapping[] = [
   [/^unknown secret name$/, '未知的密钥名'],
   [/^unknown validate target$/, '未知的测试目标'],
   [/^value must be a string$/, '值必须是文本'],
+  [/^Test failed — check the credentials and try again\.$/, '测试失败，请检查凭据后重试。'],
   [/^Error: (.+)$/, (m) => localizeError(m[1], 'zh')],
 ]
 

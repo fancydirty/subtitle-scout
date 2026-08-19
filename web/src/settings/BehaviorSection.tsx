@@ -123,34 +123,34 @@ function TargetLanguagesRow({ settings, onUpdated }: RowProps) {
               Radix Select 的 onValueChange 对同值重选去重不发，鼠标提交走 item onClick 对齐
               Astryx 语义；改值时两条路径同拍各调一次 commit，第二次被 inFlightRef 同步闸挡掉）。 */}
           <SelectItem value="zh" onClick={() => void commit('target_languages', 'zh')}>
-            中文 (Chinese)
+            {t('settings_target_language_zh')}
           </SelectItem>
           <SelectItem value="en" onClick={() => void commit('target_languages', 'en')}>
-            英语 (English)
+            {t('settings_target_language_en')}
           </SelectItem>
           <SelectItem value="ja" onClick={() => void commit('target_languages', 'ja')}>
-            日语 (Japanese)
+            {t('settings_target_language_ja')}
           </SelectItem>
           <SelectItem value="ko" onClick={() => void commit('target_languages', 'ko')}>
-            韩语 (Korean)
+            {t('settings_target_language_ko')}
           </SelectItem>
           <SelectItem value="es" onClick={() => void commit('target_languages', 'es')}>
-            西班牙语 (Spanish)
+            {t('settings_target_language_es')}
           </SelectItem>
           <SelectItem value="fr" onClick={() => void commit('target_languages', 'fr')}>
-            法语 (French)
+            {t('settings_target_language_fr')}
           </SelectItem>
           <SelectItem value="de" onClick={() => void commit('target_languages', 'de')}>
-            德语 (German)
+            {t('settings_target_language_de')}
           </SelectItem>
           <SelectItem value="pt" onClick={() => void commit('target_languages', 'pt')}>
-            葡萄牙语 (Portuguese)
+            {t('settings_target_language_pt')}
           </SelectItem>
           <SelectItem value="ru" onClick={() => void commit('target_languages', 'ru')}>
-            俄语 (Russian)
+            {t('settings_target_language_ru')}
           </SelectItem>
           <SelectItem value="it" onClick={() => void commit('target_languages', 'it')}>
-            意大利语 (Italian)
+            {t('settings_target_language_it')}
           </SelectItem>
         </SelectContent>
       </Select>
