@@ -359,6 +359,24 @@ describe('parseFilename — 2026-08-18 en 巡检对抗语料（生产实案 + �
     expect(r.episode).toBeNull()
   })
 
+  it('🔴 H.265 编码 token 不被 R8 当绝对集号（Chainsaw Reze 实案，2026-08-19）', () => {
+    // 生产：电影文件名尾 `...DV.HDR10P.H.265-BYNDR.mkv`，R8 把 `.265` 吃成 abs=265；
+    // P5 接通 listDir 后又碰上目录里真有 `Season 01`（剧场版特典），推导成 S1E265
+    // high——一部电影被解析成"剧集第 265 集"。修法：codec token（H.265 / x.264）
+    // 与 CRC32 同法遮蔽。
+    const r = parseFilename('Chainsaw.Man.The.Movie.Reze.Arc.2025.REPACK.2160p.MA.WEB-DL.DUAL.DDP5.1.Atmos.DV.HDR10P.H.265-BYNDR.mkv')
+    expect(r.isTv).toBe(false)
+    expect(r.season).toBeNull()
+    expect(r.episode).toBeNull()
+    expect(r.absoluteEpisode).toBeNull()
+    expect(r.year).toBe(2025)
+  })
+  it('x/H 前缀 codec 变体同样不产集号；fansub 绝对编号不受遮蔽影响', () => {
+    expect(parseFilename('Some.Movie.2020.x.264.GROUP.mkv').isTv).toBe(false)
+    expect(parseFilename('Another.2019.h.265.mkv').isTv).toBe(false)
+    expect(parseFilename('[Moozzi2] Show - 26 [ 36 ] (BD 1920x1080 x265-10Bit Flac).mkv').absoluteEpisode).toBe(26)
+  })
+
   // ── 合成陷阱（每个病灶的最小复现 + 修法的反向闸）─────────────────────────
 
   it('🔴 Show.01.1280x720：R8 接住 01，R3 不再吃 720', () => {
