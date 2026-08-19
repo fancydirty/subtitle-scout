@@ -251,6 +251,50 @@ describe('runSubtitleWorkDir（死循环修复回写）', () => {
     expect((db.prepare('SELECT sub_recheck_at FROM files WHERE path = ?').get(fail) as any).sub_recheck_at).toBe(future)
   })
 
+  it('🔴🔴 季集 NULL 的多文件共享裸 itemId → 每次安装各自入账，不塌缩到第一个文件（2026-08-19 SPY 实案）', async () => {
+    // 生产实案（SPY x FAMILY / tmdb:120089）：11 个 `[Moozzi2] Spy x Family S2 - NN [ abs ]`
+    // BD 文件机械解析不出季集（Jellyfin 也认错的知名 hard case）→ buildSubtitleTask 给它们
+    // 全部拼出**同一个裸 itemId** `tmdb:120089`。agent 语义上认出了每一集、12 个 .en.srt 全部
+    // 落盘成功，但 resolvePath 的 itemId 循环对每次安装都返回**第一个**匹配文件 → 12 次安装
+    // 全记到 S2-01 一行 → 其余 11 行 sub_recheck_at 没被拉到立即 → B 档扫描 7 天内不看它们
+    // → 界面显示「等待重试」而字幕明明在盘上。修法：installedPath 主干精确匹配优先（每集
+    // 唯一），itemId 作兜底。
+    const spyFiles = [
+      { path: '/media/TV/SPY/S2 - 01 [ 26 ].mkv', filename: 'S2 - 01 [ 26 ].mkv', season: null, episode: null },
+      { path: '/media/TV/SPY/S2 - 02 [ 27 ].mkv', filename: 'S2 - 02 [ 27 ].mkv', season: null, episode: null },
+      { path: '/media/TV/SPY/S2 - 03 [ 28 ].mkv', filename: 'S2 - 03 [ 28 ].mkv', season: null, episode: null },
+    ]
+    for (const f of spyFiles) {
+      db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_dir, work_id, needs_subtitle, season, episode, updated_at)
+                  VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(f.path, '/media/TV/SPY', f.filename, 100, 1000, '/media/TV/SPY', 'tmdb:120089', 1, null, null, 1000)
+    }
+    const spyItem: SubtitleQueueItem = {
+      ...item, workId: 'tmdb:120089',
+      files: spyFiles.map(f => ({
+        path: f.path, filename: f.filename, season: null, episode: null,
+        dir: '/media/TV/SPY', durationSec: 1440, embeddedLangs: null, recheckAfter: null, subRecheckAt: null,
+      })),
+    }
+    const future = Date.now() + 7 * 24 * 60 * 60 * 1000
+    db.prepare('UPDATE files SET sub_recheck_at = ? WHERE work_id = ?').run(future, 'tmdb:120089')
+    // agent 回报三次安装——itemId 全是同一个裸 workId（它只能回显任务给的），
+    // 但 installedPath 各自不同（agent 按 videoFilename 落盘，stem 与视频一一对应）。
+    const report = {
+      installed: spyFiles.map(f => ({
+        itemId: 'tmdb:120089',
+        installedPath: f.path.replace(/\.mkv$/, '.en.srt'),
+        installedLanguage: 'en', candidateProvider: 'opensubtitles', candidateProviderId: 'x', reason: '',
+      })),
+      no_safe_match: [], retry_later: [], hardsub_assumed: [],
+    }
+    await runSubtitleWorkDir(db, (async () => report) as any, spyItem, 'en')
+    for (const f of spyFiles) {
+      const row = db.prepare('SELECT sub_recheck_at FROM files WHERE path = ?').get(f.path) as { sub_recheck_at: number }
+      expect(row.sub_recheck_at, `${f.filename} 必须各自入账`).toBeLessThanOrEqual(Date.now())
+    }
+  })
+
   it('🔴 已是 covered 的文件重复装盘 → 幂等：不写 covered、不吃额度、排期照样拉到立即到点', async () => {
     // 幂等性的三条不变量一起钉：重复装盘不许把 sub_status 从 covered 改成别的（R24：这一列
     // 只有扫描能动）、不许递增 sub_attempt（成功不是失败）、而排期仍该拉过去

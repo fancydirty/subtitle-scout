@@ -277,19 +277,26 @@ const PARK_RECHECK_MS = 7 * 24 * 60 * 60 * 1000
  *  按 workId+season+episode 拼出来喂给 agent 的**派生值**，拿它去反查数据库是绕远路且会丢信息。
  *  故这里先按 itemId 与本簇文件逐一比对（同一套拼法，字节一致），再回退 installedPath 前缀。 */
 function resolvePath(item: SubtitleQueueItem, itemId: string | null, installedPath?: string): string | null {
+  // 🔴 installedPath 主干匹配**优先**（2026-08-19 SPY 实案倒转的顺序）：季集 NULL 的多文件
+  // 共享同一个裸 itemId（buildSubtitleTask 的三元拼法对 season/episode 皆 NULL 的行全部
+  // 退化为裸 workId），itemId 循环对**每次**安装都返回第一个匹配文件——agent 给 12 集
+  // 各自落盘成功，12 次入账却全塌缩到 S2-01 一行，其余 11 行 sub_recheck_at 没被拉到
+  // 立即，B 档扫描 7 天内不看它们：界面显示「等待重试」而字幕明明在盘上。
+  // installedPath 是 agent 按 videoFilename 落盘的产物，去扩展名后的主干与视频一一对应
+  // （同名不同扩展），是三者里**最精确**的信号，故提为首选；itemId 降为兜底（installedPath
+  // 缺席的旧报告形状/未来形状仍能走通）。
+  if (installedPath) {
+    const base = installedPath.replace(/\.[^.]+$/, '')
+    for (const f of item.files) {
+      if (f.path.replace(/\.[^.]+$/, '') === base.replace(/\.[^.]+$/, '')) return f.path
+    }
+  }
   if (itemId != null) {
     // 用**与 buildSubtitleTask 完全相同**的拼法反推，而不是解析正则——两处共用一条规则，
     // 电影（无 season/episode）与剧集自然同轨，不需要为电影另开一个分支。
     for (const f of item.files) {
       const id = item.workId + (f.season != null && f.episode != null ? `/s${f.season}e${f.episode}` : '')
       if (id === itemId) return f.path
-    }
-  }
-  if (installedPath) {
-    // 回退：按"去掉扩展名后的主干"匹配（字幕与视频同名不同扩展）。
-    const base = installedPath.replace(/\.[^.]+$/, '')
-    for (const f of item.files) {
-      if (f.path.replace(/\.[^.]+$/, '') === base.replace(/\.[^.]+$/, '')) return f.path
     }
   }
   return null
