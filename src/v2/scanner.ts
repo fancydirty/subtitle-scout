@@ -137,8 +137,14 @@ export interface ParsedStructure {
  *  指纹不变（mtime/size 未动），只重算 work_dir/season/episode/parse_confidence，不碰字幕状态。
  *  Overflow / Nukitashi / 芬芳的错行全部自愈。
  *
+ *  v3（2026-08-19 P5）：唯一季推导的扁平规则 + listDir 接线——裸集号文件躺在**无任何
+ *  Season 子目录**的作品根下时机械归 S1（Jellyfin/Emby 惯例；此前 singleSeasonOf 的
+ *  fs 分支在生产是死代码——toMediaFileRow 从不传 listDir，扁平目录永远 low/NULL，
+ *  而识别队列只认 work_id IS NULL，已识别作品的 low 行无通路接手）。Overflow 实案：
+ *  v2 修掉 s80e720 后落 NULL/low，v3 接住为 s1e1-8 high。
+ *
  *  值取小整数（1→2）而非 commit 号/日期：它只需要**单调递增且可比较**，语义是序数不是时刻。 */
-export const PARSER_VERSION = 2
+export const PARSER_VERSION = 3
 
 /** 解析路径结构（照 Jellyfin 约定 + parse_confidence 判定）。 */
 export function parseStructure(
@@ -167,9 +173,15 @@ export function parseStructure(
 
 /** 唯一季推导：文件所在目录如果只有一个 Season 目录，返回该季号；否则 null。
  *  这是"从路径结构看，裸集号可以安全归到哪一季"的机械判据（spec-gap M5 的加强）。
- *  两种情况：
+ *  三种情况：
  *  ① 文件在 Season XX/ 子目录下 → 该目录本身就是季（无 fs 调用）
- *  ② 文件在作品根下（扁平）→ 数作品根下有几个 Season 目录（需 fs，listDir 注入） */
+ *  ② 文件在作品根下（扁平）→ 数作品根下有几个 Season 目录（需 fs，listDir 注入）
+ *  ③ 扁平且**零**季子目录 → S1（2026-08-19 P5，Jellyfin/Emby 惯例：作品目录扁平、
+ *     无任何 Season 子目录时默认就是 Season 1——本库 115 动漫目录全部单季扁平，正是
+ *     这个形态；Overflow 实案：解析器 v2 修掉 WxH 误拆后落 low/NULL，识别队列谓词
+ *     work_id IS NULL，已识别作品的 low 行无任何通路接手，只能在这里机械接住）。
+ *     ⚠️ 仅在 listDir 可用时应用——纯字符串场景看不到兄弟，「零季目录」与「未知」
+ *     不可区分，不臆断（防把真有 Season 目录的作品误归 S1）。 */
 export function singleSeasonOf(
   videoPath: string,
   listDir?: (dir: string) => string[],
@@ -185,6 +197,7 @@ export function singleSeasonOf(
       .map((e) => detectSeasonFolder(e))
       .filter((s): s is number => s !== null)
     if (seasons.length === 1) return seasons[0]
+    if (seasons.length === 0) return 1 // 扁平 = S1（见函数头 ③）
     return null
   } catch {
     return null
@@ -208,13 +221,16 @@ export interface MediaFileRow {
   parseConfidence: 'high' | 'low' | 'none'
 }
 
-/** 把一个文件解析成 MediaFileRow（不含探测——探测是异步的，调用方决定何时做）。 */
+/** 把一个文件解析成 MediaFileRow（不含探测——探测是异步的，调用方决定何时做）。
+ *  `listDir` 可选注入（P5）：供 parseStructure 的唯一季推导做兄弟目录枚举——
+ *  daemonV2 扫描通路传 memo 化 readdir（每目录一次），纯字符串/测试场景缺省不猜季。 */
 export function toMediaFileRow(
   videoPath: string,
   stat: { mtimeMs: number; size: number },
   roots: readonly string[],
+  listDir?: (dir: string) => string[],
 ): MediaFileRow {
-  const s = parseStructure(videoPath, roots)
+  const s = parseStructure(videoPath, roots, listDir)
   const dir = videoPath.slice(0, videoPath.lastIndexOf('/'))
   const filename = videoPath.slice(videoPath.lastIndexOf('/') + 1)
   return {

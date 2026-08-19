@@ -100,4 +100,37 @@ describe('singleSeasonOf（唯一季推导，Jellyfin 对 Gachiakuta 的做法�
     
     expect(singleSeasonOf('/media/TV/Show/E05.mkv')).toBeNull()
   })
+  it('🔴 扁平作品目录（无任何季子目录）→ S1（Jellyfin/Emby 惯例，2026-08-19 P5）', () => {
+    // Overflow 实案：`TV/Overflow/Overflow (TV ver.) - 01 (WebDL 1280x720 AAC).mkv`
+    // 解析器 v2 修掉 WxH 误拆后落 low/NULL——识别队列谓词 work_id IS NULL，已识别作品
+    // 的 low 行无任何通路接手。Jellyfin/Emby 对「作品目录扁平、无 Season 子目录」的
+    // 默认就是 Season 1（本库 115 动漫目录全部单季扁平，正是这个形态）。
+    const listDir = (dir: string) => dir.endsWith('Overflow') ? ['Overflow (TV ver.) - 01 (WebDL 1280x720 AAC).mkv'] : []
+    expect(singleSeasonOf('/media/TV/Overflow/Overflow (TV ver.) - 01 (WebDL 1280x720 AAC).mkv', listDir)).toBe(1)
+  })
+  it('🔴 扁平规则只在 listDir 可用时应用——纯字符串场景不臆断兄弟', () => {
+    // 「看不到的兄弟」可能是 Season 目录；无 fs 证据时 0 个季目录与未知不可区分。
+    expect(singleSeasonOf('/media/TV/Show/file - 01.mkv')).toBeNull()
+  })
+  it('🔴 Specials 子目录存在（seasons=[0]）→ 保持既有唯一季行为，不被扁平规则覆盖', () => {
+    const listDir = (dir: string) => dir.endsWith('Show') ? ['Specials', 'E05.mkv'] : []
+    expect(singleSeasonOf('/media/TV/Show/E05.mkv', listDir)).toBe(0)
+  })
+})
+
+describe('parseStructure：裸集号 + 扁平目录（P5，listDir 接通后）', () => {
+  it('🔴 扁平单季作品目录的裸集号文件 → season=1 high（不再永远 low/NULL）', () => {
+    const listDir = (dir: string) => dir.endsWith('Overflow')
+      ? ['Overflow (TV ver.) - 01 (WebDL 1280x720 AAC).mkv', 'Overflow (TV ver.) - 02 (WebDL 1280x720 AAC).mkv']
+      : []
+    const r = parseStructure('/media/TV/Overflow/Overflow (TV ver.) - 01 (WebDL 1280x720 AAC).mkv', ROOTS, listDir)
+    expect(r.season).toBe(1)
+    expect(r.episode).toBe(1)
+    expect(r.parseConfidence).toBe('high')
+  })
+  it('无 listDir（生产 reparse 前的旧行为锚）→ 仍 low，不猜季', () => {
+    const r = parseStructure('/media/TV/Overflow/Overflow (TV ver.) - 01 (WebDL 1280x720 AAC).mkv', ROOTS)
+    expect(r.season).toBeNull()
+    expect(r.parseConfidence).toBe('low')
+  })
 })

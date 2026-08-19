@@ -1772,6 +1772,23 @@ export class ScoutDaemonV2 {
         const rootDetect: string[] = []
         scanned += files.length
         skipped += files.length - entries.length
+        // P5（2026-08-19）：唯一季推导的 fs 腿——memo 化 readdir，每目录至多一次。
+        // 惰性触发：只有「裸集号 + 路径无季段」的文件才会走到 singleSeasonOf 的 listDir
+        // 分支（如 `TV/Overflow/... - 01 (1280x720).mkv`），high 置信度的 SxxExx 文件
+        // 一次都不会发。readdir 与 walk 本身同量级（walk 就靠它），不是 stat 的 46 倍。
+        const dirEntriesCache = new Map<string, string[]>()
+        const listDirFor = (dir: string): string[] => {
+          let names = dirEntriesCache.get(dir)
+          if (names === undefined) {
+            try {
+              names = readdirSync(dir, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => e.name)
+            } catch {
+              names = []
+            }
+            dirEntriesCache.set(dir, names)
+          }
+          return names
+        }
         // 复用探空阶段已经取到的 st，**不重新 stat**：stat 在 115 FUSE 上代价放大约 46 倍，
         // 几千文件重取一遍就是把本该秒级的机械扫描又拖长一截（同 R24 那条性能红线的理由）。
         for (const { path: f, st } of entries) {
@@ -1790,7 +1807,8 @@ export class ScoutDaemonV2 {
               // toMediaFileRow 额外要一个 st，我们把探空阶段那份原样传进去——**零新增
               // 文件系统调用**。这是 1647 行那条性能红线（115 FUSE 上 stat 放大约 46 倍，
               // 所以扫描刻意复用 st 不重新 stat）在本通路上的兑现，不是顺带的优化。
-              const r = toMediaFileRow(f, st, scanRoots)
+              // （P5 例外：裸集号文件的季推导需要一次 memo 化 readdir，见上方 listDirFor。）
+              const r = toMediaFileRow(f, st, scanRoots, listDirFor)
               reparse.run(r.workDir, r.season, r.episode, r.parseConfidence,
                 PARSER_VERSION, Date.now(), f)
               reparsed++
@@ -1800,7 +1818,7 @@ export class ScoutDaemonV2 {
             // 与"这个文件的内嵌轨是什么"「磁盘上有没有字幕」两件事都无关。
             continue
           }
-          const row = toMediaFileRow(f, st, scanRoots)
+          const row = toMediaFileRow(f, st, scanRoots, listDirFor)
           const args: unknown[] = [row.path, row.dir, row.filename, row.size, row.mtime,
             row.workDir, row.season, row.episode, row.parseConfidence,
             now + SUB_RECHECK_INTERVAL_MS, Date.now()]
