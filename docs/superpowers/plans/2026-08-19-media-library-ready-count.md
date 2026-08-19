@@ -92,7 +92,7 @@ Expected: all focused backend tests pass, including the existing AHS, target-lan
 **Files:**
 - Modify: `web/src/media/MediaLibraryPage.test.tsx`
 - Modify: `web/src/media/mediaTitle.i18n.test.tsx`
-- Modify: `web/src/api/contracts.test.ts`
+- Modify: `web/src/api/contract.test.ts`
 
 - [ ] **Step 1: Add new fields to frontend test fixtures**
 
@@ -113,7 +113,7 @@ Extend the shape-contract test's required numeric-field list with `readyEpisodeC
 Run:
 
 ```bash
-cd web && npx vitest run src/media/MediaLibraryPage.test.tsx src/media/mediaTitle.i18n.test.tsx src/api/contracts.test.ts
+cd web && npx vitest run src/media/MediaLibraryPage.test.tsx src/media/mediaTitle.i18n.test.tsx src/api/contract.test.ts
 ```
 
 Expected: the new rendering and shape assertions fail because the frontend DTO and card still use the old numerator.
@@ -153,7 +153,7 @@ Change the coverage label to `就绪` / `Ready` and add `原生` / `Native`. Do 
 Run:
 
 ```bash
-cd web && npx vitest run src/media/MediaLibraryPage.test.tsx src/media/mediaTitle.i18n.test.tsx src/api/contracts.test.ts
+cd web && npx vitest run src/media/MediaLibraryPage.test.tsx src/media/mediaTitle.i18n.test.tsx src/api/contract.test.ts
 ```
 
 Expected: all focused web tests pass.
@@ -182,8 +182,8 @@ Create branch `fix/media-library-ready-count`, inspect `git diff` and `git statu
 
 ```bash
 git status --short
-git diff -- src/dashboard/mediaLibraryApi.ts src/dashboard/mediaLibraryApi.test.ts src/dashboard/router.test.ts web/src/api/types.ts web/src/api/contracts.ts web/src/media/MediaLibraryPage.tsx web/src/media/MediaLibraryPage.test.tsx web/src/media/mediaTitle.i18n.test.tsx web/src/api/contracts.test.ts web/src/i18n/zh.ts web/src/i18n/en.ts web/src/styles.css
-git add src/dashboard/mediaLibraryApi.ts src/dashboard/mediaLibraryApi.test.ts src/dashboard/router.test.ts web/src/api/types.ts web/src/api/contracts.ts web/src/media/MediaLibraryPage.tsx web/src/media/MediaLibraryPage.test.tsx web/src/media/mediaTitle.i18n.test.tsx web/src/api/contracts.test.ts web/src/i18n/zh.ts web/src/i18n/en.ts web/src/styles.css
+git diff -- src/dashboard/mediaLibraryApi.ts src/dashboard/mediaLibraryApi.test.ts src/dashboard/router.test.ts web/src/api/types.ts web/src/api/contracts.ts web/src/media/MediaLibraryPage.tsx web/src/media/MediaLibraryPage.test.tsx web/src/media/mediaTitle.i18n.test.tsx web/src/api/contract.test.ts web/src/i18n/zh.ts web/src/i18n/en.ts web/src/styles.css
+git add src/dashboard/mediaLibraryApi.ts src/dashboard/mediaLibraryApi.test.ts src/dashboard/router.test.ts web/src/api/types.ts web/src/api/contracts.ts web/src/media/MediaLibraryPage.tsx web/src/media/MediaLibraryPage.test.tsx web/src/media/mediaTitle.i18n.test.tsx web/src/api/contract.test.ts web/src/i18n/zh.ts web/src/i18n/en.ts web/src/styles.css
 git commit -m "fix(dashboard): expose native-language episodes in media coverage counts"
 ```
 
