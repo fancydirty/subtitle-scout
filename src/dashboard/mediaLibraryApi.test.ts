@@ -262,6 +262,85 @@ describe('buildMediaLibrary（列表：海报墙）', () => {
     })
   })
 
+  describe('🔴 ready/native 分区守恒（2026-08-19 Young Sheldon/Derry/Peacemaker 实案）', () => {
+    it('16 个 origin-skip 且没有内嵌轨 → ready=16、native=16、uncovered=0', () => {
+      addWork('tmdb:ys-ready', { title: 'Young Sheldon' })
+      for (let e = 1; e <= 16; e++) {
+        addFile({
+          path: `/ys/s4e${e}.mkv`, workId: 'tmdb:ys-ready', season: 4, episode: e,
+          embeddedLangs: [], needsSubtitle: 0, skipReason: 'origin-skip',
+        })
+      }
+
+      const [item] = buildMediaLibrary(db, 'en')
+      expect(item).toMatchObject({
+        onDiskEpisodeCount: 16,
+        subtitledEpisodeCount: 0,
+        embeddedEpisodeCount: 0,
+        originLanguageEpisodeCount: 16,
+        readyEpisodeCount: 16,
+        uncoveredEpisodeCount: 0,
+      })
+      expect(item.readyEpisodeCount + item.uncoveredEpisodeCount).toBe(item.onDiskEpisodeCount)
+    })
+
+    it('7 个内嵌 + 1 个 origin-skip → ready=8、embedded=7、native=1', () => {
+      addWork('tmdb:derry-ready', { title: 'IT: Welcome to Derry' })
+      for (let e = 1; e <= 8; e++) {
+        addFile({
+          path: `/derry/s1e${e}.mkv`, workId: 'tmdb:derry-ready', season: 1, episode: e,
+          embeddedLangs: e <= 7 ? ['eng'] : [], needsSubtitle: 0, skipReason: 'origin-skip',
+        })
+      }
+
+      const [item] = buildMediaLibrary(db, 'en')
+      expect(item).toMatchObject({
+        onDiskEpisodeCount: 8,
+        embeddedEpisodeCount: 7,
+        originLanguageEpisodeCount: 1,
+        readyEpisodeCount: 8,
+        uncoveredEpisodeCount: 0,
+      })
+    })
+
+    it('8 个内嵌 + 8 个 origin-skip → ready=16、两个原因各自保留', () => {
+      addWork('tmdb:peace-ready', { title: 'Peacemaker' })
+      for (let e = 1; e <= 16; e++) {
+        addFile({
+          path: `/peace/s${e <= 8 ? 1 : 2}e${e <= 8 ? e : e - 8}.mkv`,
+          workId: 'tmdb:peace-ready', season: e <= 8 ? 1 : 2, episode: e <= 8 ? e : e - 8,
+          embeddedLangs: e <= 8 ? [] : ['eng'], needsSubtitle: 0, skipReason: 'origin-skip',
+        })
+      }
+
+      const [item] = buildMediaLibrary(db, 'en')
+      expect(item).toMatchObject({
+        onDiskEpisodeCount: 16,
+        embeddedEpisodeCount: 8,
+        originLanguageEpisodeCount: 8,
+        readyEpisodeCount: 16,
+        uncoveredEpisodeCount: 0,
+      })
+    })
+
+    it('sidecar 优先于内嵌和 origin-skip，ready 仍只计一次', () => {
+      addWork('tmdb:covered-ready', { title: 'Covered' })
+      addFile({
+        path: '/covered/s1e1.mkv', workId: 'tmdb:covered-ready', season: 1, episode: 1,
+        subStatus: 'covered', embeddedLangs: ['eng'], needsSubtitle: 0, skipReason: 'origin-skip',
+      })
+
+      const [item] = buildMediaLibrary(db, 'en')
+      expect(item).toMatchObject({
+        subtitledEpisodeCount: 1,
+        embeddedEpisodeCount: 0,
+        originLanguageEpisodeCount: 0,
+        readyEpisodeCount: 1,
+        uncoveredEpisodeCount: 0,
+      })
+    })
+  })
+
   it('🔴 R-F2 列表概览也按 work_id 合并：同一集两份文件只算一集，任一份有字幕就算已获取', () => {
     // 防回归：概览数字若按 files 行数直接 COUNT(*)，两个目录各一份的库会把"实有 1 集"
     // 报成 2 集，进而算出负的缺集数。

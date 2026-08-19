@@ -33,7 +33,8 @@ function libItem(o: Partial<MediaLibraryItemDTO> = {}): MediaLibraryItemDTO {
     workId: 'tmdb:1', title: 'Dark Matter', chineseTitle: '黑暗智宅', year: 2024,
     posterPath: null, mediaType: 'tv',
     expectedEpisodeCount: 9, onDiskEpisodeCount: 9, missingEpisodeCount: 0,
-    subtitledEpisodeCount: 6, embeddedEpisodeCount: 0, uncoveredEpisodeCount: 3,
+    subtitledEpisodeCount: 6, embeddedEpisodeCount: 0, originLanguageEpisodeCount: 0,
+    readyEpisodeCount: 6, uncoveredEpisodeCount: 3,
     unplacedFileCount: 0,
     ...o,
   }

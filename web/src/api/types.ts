@@ -502,10 +502,14 @@ export interface MediaLibraryItemDTO {
   /** **内嵌**中文轨（片源自带）的格数 —— 卡片上的「自带」。
    *
    *  与 subtitledEpisodeCount **互斥不重叠**：来自 dot 三态（green/blue/none 三选一，
-   *  且 green 优先于 blue），故两者之和恒 === 旧实现那个 `!== 'none'` 的合计
-   *  ——旧值没有丢，只是被拆开了。0 时前端整段不渲染（沉默即好消息）。 */
+   *  且 green 优先于 blue）。两者只表达外挂和内嵌轨；完整就绪数还会由后端加入原生语言格。
+   *  0 时前端整段不渲染（沉默即好消息）。 */
   embeddedEpisodeCount: number
-  /** 本地格里既无外挂也无自带中字的格数。海报卡黄字只读这个。 */
+  /** 原生语言就是目标语言、且没有外挂或内嵌目标语言轨的格数。 */
+  originLanguageEpisodeCount: number
+  /** 本地格里已就绪的格数 = 已下载 + 自带 + 原生。后端直接返回，前端不重算。 */
+  readyEpisodeCount: number
+  /** 本地格里既无外挂、无自带、也非原生目标语言的格数。海报卡黄字只读这个。 */
   uncoveredEpisodeCount: number
   /** 属于这部作品、但季集解析不出因而**进不了季集网格**的文件数。电影恒 0。
    *

@@ -560,14 +560,23 @@ export interface MediaLibraryItemDTO {
    *  互斥是这两个数**可加**的前提：不互斥的话，一格同时有外挂与内嵌就会被数两次，
    *  卡片上出现 `已配 3 · 自带 3 · 磁盘 3`，用户当场看出至少有一个数是假的。
    *
-   *  故恒有 `subtitledEpisodeCount + embeddedEpisodeCount ≤ onDiskEpisodeCount`，
-   *  且这两个数之和 === 旧实现那个 `dot !== 'none'` 的合计（旧值没有丢，只是被拆成了
-   *  它本来就该是的两半 —— 这正是用户选③而不是"只数外挂"的理由：不丢信息）。
+   *  故恒有 `subtitledEpisodeCount + embeddedEpisodeCount ≤ onDiskEpisodeCount`。
+   *  完整的就绪分子由 `readyEpisodeCount` 返回；它额外包含没有字幕轨也不需要处理的
+   *  `originLanguageEpisodeCount`，因此前端不许再用前两个数自行相加。
    *
    *  ⚠️ 它**不是**待办：内嵌轨意味着这一集不需要人操心（judge 会给 needs_subtitle=0），
    *  前端据此在 `> 0` 时才渲染（沉默即好消息），绝不恒挂一个"自带 0"。 */
   embeddedEpisodeCount: number
-  /** 本地格里既无外挂也无自带中字的格数 = max(0, onDisk − subtitled − embedded)。
+  /** 原生语言就是目标语言、且没有外挂或内嵌目标语言轨的格数 —— 「原生」。
+   *
+   *  与 `embeddedEpisodeCount` 刻意互斥：生产里 judge 的 `origin-skip` 可能同时存在
+   *  `embedded_langs=['eng']`（例如德里镇 7 集、和平使者 S2 8 集），但列表的展示分区
+   *  必须优先呈现更具体的"确有内嵌轨"事实；只有 dot='none' 的 origin-skip 格才进这里。
+   *  这样「自带」仍然只表示真实的内嵌字幕轨，「原生」表示不需要字幕这个独立事实。 */
+  originLanguageEpisodeCount: number
+  /** 本地格里已就绪的格数 = 已下载 + 自带 + 原生。**后端直接返回**，前端不重算。 */
+  readyEpisodeCount: number
+  /** 本地格里既无外挂、无自带、也非原生目标语言的格数 = max(0, onDisk − ready)。
    *  海报卡黄字只读这个，不读 missingEpisodeCount。 */
   uncoveredEpisodeCount: number
   /** 属于本作品、但 `season/episode` 解析不出因而**进不了季集网格**的文件数，
@@ -681,18 +690,19 @@ export function buildMediaLibrary(db: ScoutDb, targetLanguage: string = 'zh'): M
     //   · subtitled = dot 'green'（外挂 sidecar 就位）→ 等价于详情页 `subtitledFileCount > 0`，
     //     这条等价就是跨页一致性的凭据（同名用例钉住）。
     //   · embedded  = dot 'blue'（内嵌轨，片源自带；green 优先于 blue，故两者互斥不重叠）。
-    // 互斥来自 aggregateDot 的三态本身：green/blue/none 三选一，所以两个计数之和恒
-    // === 旧实现那个 `!== 'none'` 的合计——旧值没丢，只是被拆开了。
-    const dots = [...cells.values()].map((rows) => aggregateDot(rows, targetLanguage).dot)
-    const states = [...cells.values()].map((rows) => aggregateDot(rows, targetLanguage).episodeState)
-    const subtitled = dots.filter((d) => d === 'green').length
-    const embedded = dots.filter((d) => d === 'blue').length
-    // 🔴 2026-08-19（Young Sheldon 实案）：uncovered 此前只减 subtitled + embedded，
-    // 漏掉了 origin-skip / extra —— 它们也是"不用管"（needs_subtitle=0），不是"没字幕"。
-    // 生产形态：小谢尔顿 origin=en + target=en → judge 判 origin-skip → embedded_langs=[]（无
-    // 内嵌轨）→ dot 'none' → 旧公式不减 → 16/16 全显示「没字幕」，而详情页显示「原生就是目标
-    // 语言」。修法：额外减 originSkip（episodeState === 'origin-skip' 或 'extra' 的格数）。
-    const originSkip = states.filter((s) => s === 'origin-skip' || s === 'extra').length
+    // 互斥来自 aggregateDot 的三态本身：green/blue/none 三选一，所以外挂与内嵌两个计数
+    // 不会重复；ready 再把 dot='none' 且 origin-skip 的原生语言格纳入完整分子。
+    const aggregates = [...cells.values()].map((rows) => aggregateDot(rows, targetLanguage))
+    const subtitled = aggregates.filter((a) => a.dot === 'green').length
+    const embedded = aggregates.filter((a) => a.dot === 'blue').length
+    // 🔴 2026-08-19（Young Sheldon / Derry / Peacemaker 实案）：origin-skip 不能只从
+    // uncovered 中扣掉，还必须成为列表分子，否则会出现「0/16」或「7/8」这种看似缺字幕的卡片。
+    // 但 origin-skip 与 embedded_langs 在生产中可以同时存在：列表按更具体的 dot 事实分桶，
+    // 只有 dot='none' 的 origin-skip 才算「原生」，保证 downloaded/built-in/native 三者互斥。
+    const originLanguage = aggregates.filter(
+      (a) => a.dot === 'none' && a.episodeState === 'origin-skip',
+    ).length
+    const ready = subtitled + embedded + originLanguage
     return {
       workId: w.id,
       title: w.title,
@@ -705,7 +715,9 @@ export function buildMediaLibrary(db: ScoutDb, targetLanguage: string = 'zh'): M
       missingEpisodeCount: Math.max(0, expected - onDisk),
       subtitledEpisodeCount: subtitled,
       embeddedEpisodeCount: embedded,
-      uncoveredEpisodeCount: Math.max(0, onDisk - subtitled - embedded - originSkip),
+      originLanguageEpisodeCount: originLanguage,
+      readyEpisodeCount: ready,
+      uncoveredEpisodeCount: Math.max(0, onDisk - ready),
       unplacedFileCount: unplacedByWork.get(w.id) ?? 0,
     }
   })

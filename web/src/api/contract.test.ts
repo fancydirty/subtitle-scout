@@ -171,13 +171,23 @@ describe('HEALTH_SHAPE（判据①②：全局壳的判决源）', () => {
   })
 })
 
-describe('MEDIA_LIBRARY_ITEM_SHAPE（判据③：四个计数字段参与算术）', () => {
+describe('MEDIA_LIBRARY_ITEM_SHAPE（判据③：计数字段参与算术）', () => {
   const ROW = {
     workId: 'tmdb:1', title: 'BB', expectedEpisodeCount: 62,
     onDiskEpisodeCount: 50, missingEpisodeCount: 12, subtitledEpisodeCount: 40, embeddedEpisodeCount: 0,
-    uncoveredEpisodeCount: 10,
+    originLanguageEpisodeCount: 0, readyEpisodeCount: 40, uncoveredEpisodeCount: 10,
   }
   it('完整行放行', () => expect(checkShape(ROW, MEDIA_LIBRARY_ITEM_SHAPE)).toBeNull())
+
+  it('🔴 readyEpisodeCount 缺席 → 拦。缺席会把覆盖分子变成未知', () => {
+    const { readyEpisodeCount: _drop, ...broken } = ROW
+    expect(checkShape(broken, MEDIA_LIBRARY_ITEM_SHAPE)?.path).toBe('readyEpisodeCount')
+  })
+
+  it('🔴 originLanguageEpisodeCount 缺席 → 拦。缺席会吞掉原生语言原因', () => {
+    const { originLanguageEpisodeCount: _drop, ...broken } = ROW
+    expect(checkShape(broken, MEDIA_LIBRARY_ITEM_SHAPE)?.path).toBe('originLanguageEpisodeCount')
+  })
 
   it('🔴 uncoveredEpisodeCount 缺席 → 拦。缺席会把缺口卡画成全齐', () => {
     const { uncoveredEpisodeCount: _drop, ...broken } = ROW
@@ -194,9 +204,9 @@ describe('MEDIA_LIBRARY_ITEM_SHAPE（判据③：四个计数字段参与算术�
     expect(checkShape({ ...ROW, onDiskEpisodeCount: '50' }, MEDIA_LIBRARY_ITEM_SHAPE)?.got).toBe('string')
   })
 
-  it('🔴 四个计数字段一个都不许是 null（同 health 那条，堵变异 c1 的缺口）。'
+  it('🔴 计数字段一个都不许是 null（同 health 那条，堵变异 c1 的缺口）。'
     + 'null 参与算术出 0 而不是 NaN——比 undefined 更隐蔽：缺 12 集会显示成"不缺"', () => {
-    for (const key of ['expectedEpisodeCount', 'onDiskEpisodeCount', 'missingEpisodeCount', 'subtitledEpisodeCount', 'uncoveredEpisodeCount'] as const) {
+    for (const key of ['expectedEpisodeCount', 'onDiskEpisodeCount', 'missingEpisodeCount', 'subtitledEpisodeCount', 'embeddedEpisodeCount', 'originLanguageEpisodeCount', 'readyEpisodeCount', 'uncoveredEpisodeCount'] as const) {
       const v = checkShape({ ...ROW, [key]: null }, MEDIA_LIBRARY_ITEM_SHAPE)
       expect(v, `${key} 被写成了可选`).toEqual({ path: key, expected: 'number', got: 'null' })
     }
