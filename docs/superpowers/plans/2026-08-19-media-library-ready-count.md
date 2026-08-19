@@ -142,7 +142,7 @@ Use `ready` for the fraction. Keep the downloaded and built-in spans, add a cond
 
 - [ ] **Step 4: Add the third bar segment**
 
-Render a native segment only when `originLanguage !== null`; add `.media-card-bar-n` using `var(--color-fn-muted, var(--color-weak))` or the exact neutral token already used for `origin-skip` in the detail styles. Keep widths based on the backend counters and guard the entire bar with `onDisk > 0`.
+Render a native segment only when `originLanguage !== null`; add `.media-card-bar-n` using `var(--color-muted-foreground)`, the exact neutral token already used for `origin-skip` in the detail styles. Keep widths based on the backend counters and guard the entire bar with `onDisk > 0`.
 
 - [ ] **Step 5: Update labels**
 
@@ -181,6 +181,10 @@ Expected: root tests and checks pass; web tests and web TypeScript check pass.
 Create branch `fix/media-library-ready-count`, inspect `git diff` and `git status`, then commit only the listed source and test files with:
 
 ```bash
+git status --short
+git diff -- src/dashboard/mediaLibraryApi.ts src/dashboard/mediaLibraryApi.test.ts src/dashboard/router.test.ts web/src/api/types.ts web/src/api/contracts.ts web/src/media/MediaLibraryPage.tsx web/src/media/MediaLibraryPage.test.tsx web/src/media/mediaTitle.i18n.test.tsx web/src/api/contracts.test.ts web/src/i18n/zh.ts web/src/i18n/en.ts web/src/styles.css
+git add src/dashboard/mediaLibraryApi.ts src/dashboard/mediaLibraryApi.test.ts src/dashboard/router.test.ts web/src/api/types.ts web/src/api/contracts.ts web/src/media/MediaLibraryPage.tsx web/src/media/MediaLibraryPage.test.tsx web/src/media/mediaTitle.i18n.test.tsx web/src/api/contracts.test.ts web/src/i18n/zh.ts web/src/i18n/en.ts web/src/styles.css
+git commit -m "fix(dashboard): expose native-language episodes in media coverage counts"
 ```
 
 - [ ] **Step 3: Merge and deploy**
