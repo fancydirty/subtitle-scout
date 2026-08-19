@@ -184,6 +184,65 @@ describe('buildMediaLibrary（列表：海报墙）', () => {
       addFile({ path: '/m/done.mkv', workId: 'tmdb:m1', season: null, episode: null, subStatus: 'covered' })
       expect(buildMediaLibrary(db).find((w) => w.workId === 'tmdb:m1')!.uncoveredEpisodeCount).toBe(0)
     })
+   })
+
+  describe('🔴 target_language 切换后内嵌轨按目标语言计数（2026-08-19 AHS/DxD 实案）', () => {
+    // 生产事故：目标切 en 后，媒体库 index 的「自带 N」与蓝点硬编码中文——内嵌英文轨
+    // 的文件不计入自带、显示成「没字幕」，而详情页因走 judge 按目标语言写的 skip_reason
+    // 反而是对的（同一张页两个口径）。根因：fileHasEmbeddedChinese 硬编码 zh。
+    it('en 目标 + 内嵌 eng 轨 → 自带计入、uncovered=0（不再显示「没字幕」）', () => {
+      addWork('tmdb:ahs', { title: 'AHS' })
+      addFile({
+        path: '/a/s1e1.mkv', workId: 'tmdb:ahs', season: 1, episode: 1,
+        embeddedLangs: ['eng'], needsSubtitle: 0, skipReason: 'embedded',
+      })
+      const [item] = buildMediaLibrary(db, 'en')
+      expect(item.embeddedEpisodeCount).toBe(1)
+      expect(item.uncoveredEpisodeCount).toBe(0)
+      expect(item.subtitledEpisodeCount).toBe(0)
+    })
+
+    it('en 目标 + 内嵌三字母码 eng → 同样计入（isLang 三字母映射，同 judge 规则 2 修法）', () => {
+      addWork('tmdb:tri', { title: 'Tri' })
+      addFile({
+        path: '/t/s1e1.mkv', workId: 'tmdb:tri', season: 1, episode: 1,
+        embeddedLangs: ['jpn', 'eng'], needsSubtitle: 0, skipReason: 'embedded',
+      })
+      const [item] = buildMediaLibrary(db, 'en')
+      expect(item.embeddedEpisodeCount).toBe(1)
+    })
+
+    it('en 目标 + 只有中文轨（不是目标语言）→ 不计入自带', () => {
+      addWork('tmdb:zhonly', { title: 'ZhOnly' })
+      addFile({
+        path: '/z/s1e1.mkv', workId: 'tmdb:zhonly', season: 1, episode: 1,
+        embeddedLangs: ['chi'], needsSubtitle: 1, skipReason: null,
+      })
+      const [item] = buildMediaLibrary(db, 'en')
+      expect(item.embeddedEpisodeCount).toBe(0)
+      expect(item.uncoveredEpisodeCount).toBe(1)
+    })
+
+    it('zh 目标（默认）+ 内嵌 chi 轨 → 自带计入（回归锁：旧默认行为不许破）', () => {
+      addWork('tmdb:zh', { title: 'ZhShow' })
+      addFile({
+        path: '/c/s1e1.mkv', workId: 'tmdb:zh', season: 1, episode: 1,
+        embeddedLangs: ['chi'], needsSubtitle: 0, skipReason: 'embedded',
+      })
+      const [item] = buildMediaLibrary(db) // 默认 zh
+      expect(item.embeddedEpisodeCount).toBe(1)
+      expect(item.uncoveredEpisodeCount).toBe(0)
+    })
+
+    it('详情页电影格同样按目标语言计 dot（en 目标 + eng 内嵌 → blue，不是 none）', () => {
+      addWork('tmdb:dxe', { title: 'DxEn', mediaType: 'movie' })
+      addFile({
+        path: '/d/movie.mkv', workId: 'tmdb:dxe', season: null, episode: null,
+        embeddedLangs: ['eng'], needsSubtitle: 0, skipReason: 'embedded',
+      })
+      const detail = buildMediaLibraryDetail(db, 'tmdb:dxe', 'en')
+      expect(detail?.movie?.dot).toBe('blue')
+    })
   })
 
   it('🔴 R-F2 列表概览也按 work_id 合并：同一集两份文件只算一集，任一份有字幕就算已获取', () => {

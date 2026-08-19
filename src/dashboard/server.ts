@@ -8,6 +8,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { ScoutDb } from '../v2/db.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
+import { resolveTargetLanguages } from '../cli/targetLanguages.js'
 import { toContainerPath, toHostPath } from '../files/hostrootPath.js'
 import type { JobsRepo } from '../v2/jobsRepo.js'
 import type { TmdbClient } from '../adapters/providers/tmdb.js'
@@ -502,8 +503,8 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
     // 应有集（tmdb_seasons）的回填由 daemonV2 的 boot pass 负责（R-F5 已落地，生产 2144 行），
     // 不在读路径上再挂一次网络触发（海报墙是全量列表，逐个作品踢 TMDB 会在一次页面加载里
     // 打爆配额）。旧 librarySeriesDetail 那条 G2 遗留的 fire-and-forget 已随该端点一并删除。
-    mediaLibrary: () => buildMediaLibrary(db),
-    mediaLibraryDetail: (workId) => buildMediaLibraryDetail(db, workId),
+    mediaLibrary: () => buildMediaLibrary(db, resolveTargetLanguages({}, settingsRepo.get('target_languages')).targetLanguages[0] ?? 'zh'),
+    mediaLibraryDetail: (workId) => buildMediaLibraryDetail(db, workId, resolveTargetLanguages({}, settingsRepo.get('target_languages')).targetLanguages[0] ?? 'zh'),
     // R-F13：活动页排队段。**纯同步只读**（同上两条的口径）。
     //
     // roots 传的是 `settingsRepo.listRoots()` 的全部路径，而 daemon 侧传的是

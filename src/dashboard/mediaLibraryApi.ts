@@ -72,27 +72,17 @@ export type EpisodeState =
   /** ? 第 8 态：系统**答不上来**。两种来源，见 classifyFileState 的终态分支。 */
   | 'unjudged'
 
-/** 一个语言标签是否算中文。
+/** 一个语言标签是否算**目标语言**（R-F15 目标语言可切换后的统一判据）。
  *
- *  🔴 C30（本仓栽过"两套字幕标签集漂移"）：**必须**复用 agent/languages.ts 的现成表，
- *  不许在这里写第二份中文标签集。
- *
- *  🔴 为什么不能只用 `langOf(tag) === 'zh'`（实测定罪）：`langOf` 只折叠
- *  ZH_ORIGIN_CODES = {zh, cn, chi, zho, cmn}，对 'chs' / 'cht' 是纯透传 ——
- *  实测 `langOf('chs') === 'chs'`，不等于 'zh'。ffprobe 的 MediaStream Language 字段
- *  在生产里 chs/cht 都出现过（db.ts 的 CHINESE_LANG_TAGS 历史注释记的就是这五种形态），
- *  只认 langOf 会让一批带简繁内嵌轨的片子丢掉蓝点。
- *
- *  🔴 也不能只用 `tagsForLanguage('zh').includes(tag)`：那张表是"sidecar 文件名 tag"集合，
- *  未来若有人往里加/减一项，单臂判据会静默改变含义。
- *
- *  两臂并列（与 v2/subtitleJudge.ts 的私有 isLang 同构——那份没导出，且它服务的是
- *  "需不需要找字幕"的判定语义，这里服务的是"呈现哪种圆点"，刻意不去 export 一个跨语义
- *  的共享函数，但**判据的两条腿完全一致**，两边任一侧扩表都能覆盖到）。 */
-function isChineseTag(tag: string | null | undefined): boolean {
+ *  与旧 isChineseTag 同构（两臂：tagsForLanguage 精确表 + langOf 折叠），但按 target 参数化。
+ *  🔴 2026-08-19 实案（AHS / DxD）：媒体库 index 的「自带 N」与蓝点此前硬编码中文
+ *  （isChineseTag），目标切到 en 后，内嵌英文轨的文件不计入自带、显示成「没字幕」，
+ *  而详情页因走 judge 按目标语言写的 skip_reason 反而是对的——同一张页两个口径。
+ *  isChineseTag 已由 isTargetLangTag 取代删除。 */
+function isTargetLangTag(tag: string | null | undefined, target: string): boolean {
   if (!tag) return false
   const t = tag.toLowerCase()
-  return tagsForLanguage('zh').some((x) => x.toLowerCase() === t) || langOf(tag) === 'zh'
+  return tagsForLanguage(target).some((x) => x.toLowerCase() === t) || langOf(tag) === langOf(target)
 }
 
 /** `files.embedded_langs`（JSON 数组串）解析。
@@ -127,13 +117,18 @@ function parseEmbeddedLangs(raw: string | null): string[] | null {
  *   ③ notifications 只有一周窗（NOTIFICATION_RETENTION_MS），拿它当颜色判据会让
  *      八天前配上的字幕**自己变回无点**——一个纯粹由保留期造出的假状态变化。
  *  「我们配的成果」这条叙事归通知页（R-F3），不该挤进媒体库页的圆点。 */
+/** 一个**文件**是否有外挂目标语言 sidecar（sub_status='covered'，R24 扫描独占）。
+ *  覆盖判据与目标语言无关——covered 这一列由扫描按 `tagsForLanguage(target)` 找 sidecar 写入，
+ *  写入侧已经是目标语言驱动的（daemonV2:2056）。故此处不参数化。 */
 function fileHasSidecar(subStatus: string | null): boolean {
   return subStatus === 'covered'
 }
 
-/** 一个**文件**是否有内嵌中文轨。没探过（NULL）→ false（没有证据就没有蓝点）。 */
-function fileHasEmbeddedChinese(embeddedLangs: string[] | null): boolean {
-  return embeddedLangs != null && embeddedLangs.some(isChineseTag)
+/** 一个**文件**是否有内嵌**目标语言**轨。没探过（NULL）→ false（没有证据就没有蓝点）。
+ *  🔴 2026-08-19（AHS/DxD 实案）：此前叫 fileHasEmbeddedChinese、硬编码中文——目标切到 en
+ *  后内嵌英文轨不计入「自带」，index 与详情页两个口径。参数化为目标语言。 */
+function fileHasEmbeddedTarget(embeddedLangs: string[] | null, target: string): boolean {
+  return embeddedLangs != null && embeddedLangs.some((t) => isTargetLangTag(t, target))
 }
 
 // ---- 八态判定（R-F12）----
@@ -178,7 +173,7 @@ function fileHasEmbeddedChinese(embeddedLangs: string[] | null): boolean {
  *  必须听 reason，不许拿 langs 重算（换语言后 origin-skip 与 embedded 命运相反）。
  *  needs 仍是 NULL 时 judge 还没写过这一行——列表页蓝点用的已经是 langs，
  *  详情若仍报 unjudged，同一份 chi 轨会一边「自带」一边「还没判定」。
- *  故 NULL 这一支与 aggregateDot 共用 fileHasEmbeddedChinese，不是第二套语言表。
+ *  故 NULL 这一支与 aggregateDot 共用 fileHasEmbeddedTarget，不是第二套语言表。
  *
  *  【第三段 unjudged 兜底在最后】
  *  它是"系统答不上来"，只有在前面所有判据都不成立时才成立——这正是兜底的定义。
@@ -201,7 +196,7 @@ function fileHasEmbeddedChinese(embeddedLangs: string[] | null): boolean {
  *  故本函数**不为 'missing'/'embedded'/'unavailable' 写分支**：给一个生产永不出现的值
  *  安排一个态，就是在测试里造一份只有测试会走的代码路径。未知值一律落到最后的 unjudged
  *  兜底（见下）。 */
-function classifyFileState(f: FileRow): Exclude<EpisodeState, 'absent'> {
+function classifyFileState(f: FileRow, target: string): Exclude<EpisodeState, 'absent'> {
   // 第一段：sub_status —— 这一行当前在流水线的哪个位置。
   if (f.sub_status === 'covered') return 'covered'
   if (f.sub_status === 'handoff_translate') return 'translating'
@@ -244,7 +239,7 @@ function classifyFileState(f: FileRow): Exclude<EpisodeState, 'absent'> {
 
   // 第 8 态。sub_status IS NULL 且 needs_subtitle IS NULL：judge 还没写 skip_reason。
   // langs 已经证明有中文内嵌轨时，与列表页蓝点用同一份证据，不再把已知说成「还没判」。
-  if (fileHasEmbeddedChinese(parseEmbeddedLangs(f.embedded_langs))) return 'embedded'
+  if (fileHasEmbeddedTarget(parseEmbeddedLangs(f.embedded_langs), target)) return 'embedded'
   return 'unjudged'
 }
 
@@ -329,7 +324,7 @@ export type StateRankOrder = typeof STATE_RANK
  *  ⚠️ 前端**不许** import 它（运行时依赖 + Docker 阶段无 ../src），前端那侧走上面的 type。 */
 export const STATE_RANK_FOR_CONTRACT: StateRankOrder = STATE_RANK
 
-function aggregateState(files: readonly FileRow[]): EpisodeState {
+function aggregateState(files: readonly FileRow[], target: string): EpisodeState {
   // 零文件 → 'absent'（审计 A-6）。这一格磁盘上什么都没有，不是"系统还没判它"。
   // 走得到这里的真实路径：buildMediaLibraryDetail 的电影分支是 `FROM works WHERE id = ?`，
   // **没有列表页那个 INNER JOIN files**，所以按 workId 直接打详情端点就能拿到空壳 works。
@@ -345,7 +340,7 @@ function aggregateState(files: readonly FileRow[]): EpisodeState {
   const RANK: readonly Exclude<EpisodeState, 'absent'>[] = STATE_RANK
   let best = RANK.length
   for (const f of files) {
-    const rank = RANK.indexOf(classifyFileState(f))
+    const rank = RANK.indexOf(classifyFileState(f, target))
     if (rank < best) best = rank
   }
   // files 非空 + classifyFileState 的返回类型被 STATE_RANK 穷尽覆盖 ⇒ best 必然已被赋值。
@@ -419,11 +414,11 @@ interface DotAggregate {
  *  要先想清楚 fileCount 到底该回答哪个问题——"这一格有几份文件"（如实报数，
  *  用户点开能看到那份 Commentary）还是"这一格有几份要管的"（过滤，但用户会
  *  发现数字与展开后的列表对不上）。两个都自洽，别在没有真实用户困惑时先选一个。 */
-function aggregateDot(files: readonly FileRow[]): DotAggregate {
+function aggregateDot(files: readonly FileRow[], target: string): DotAggregate {
   const subtitledFileCount = files.filter((f) => fileHasSidecar(f.sub_status)).length
-  const anyEmbedded = files.some((f) => fileHasEmbeddedChinese(parseEmbeddedLangs(f.embedded_langs)))
+  const anyEmbedded = files.some((f) => fileHasEmbeddedTarget(parseEmbeddedLangs(f.embedded_langs), target))
   const dot: SubtitleDot = subtitledFileCount > 0 ? 'green' : anyEmbedded ? 'blue' : 'none'
-  return { fileCount: files.length, subtitledFileCount, dot, episodeState: aggregateState(files) }
+  return { fileCount: files.length, subtitledFileCount, dot, episodeState: aggregateState(files, target) }
 }
 
 // ---- 行形状 ----
@@ -618,7 +613,7 @@ export interface MediaLibraryItemDTO {
  *
  *  🔴 用 INNER JOIN 而非 LEFT JOIN：一个文件都没有的 works 行（用户移除了守备目录后
  *  残留的空壳）不该在海报墙上冒出一张空卡片 —— 媒体库页描述的是"磁盘上有什么"。 */
-export function buildMediaLibrary(db: ScoutDb): MediaLibraryItemDTO[] {
+export function buildMediaLibrary(db: ScoutDb, targetLanguage: string = 'zh'): MediaLibraryItemDTO[] {
   const works = db
     .prepare(
       `SELECT DISTINCT w.id, w.title, w.year, w.media_type, w.poster_path, w.chinese_titles
@@ -688,7 +683,7 @@ export function buildMediaLibrary(db: ScoutDb): MediaLibraryItemDTO[] {
     //   · embedded  = dot 'blue'（内嵌轨，片源自带；green 优先于 blue，故两者互斥不重叠）。
     // 互斥来自 aggregateDot 的三态本身：green/blue/none 三选一，所以两个计数之和恒
     // === 旧实现那个 `!== 'none'` 的合计——旧值没丢，只是被拆开了。
-    const dots = [...cells.values()].map((rows) => aggregateDot(rows).dot)
+    const dots = [...cells.values()].map((rows) => aggregateDot(rows, targetLanguage).dot)
     const subtitled = dots.filter((d) => d === 'green').length
     const embedded = dots.filter((d) => d === 'blue').length
     return {
@@ -795,7 +790,7 @@ export interface MediaLibraryDetailDTO {
  *
  *  季号取**应有 ∪ 实有**的并集：磁盘上有第 3 季而 TMDB 只缓存了第 1 季时（或反之），
  *  两边都不许丢。 */
-export function buildMediaLibraryDetail(db: ScoutDb, workId: string): MediaLibraryDetailDTO | null {
+export function buildMediaLibraryDetail(db: ScoutDb, workId: string, targetLanguage: string = 'zh'): MediaLibraryDetailDTO | null {
   const w = db
     .prepare(
       `SELECT id, title, year, media_type, poster_path, chinese_titles FROM works WHERE id = ?`,
@@ -821,7 +816,7 @@ export function buildMediaLibraryDetail(db: ScoutDb, workId: string): MediaLibra
 
   // 电影：没有季集网格，只有"有没有字幕"这一格（R-F2 同样按任一份算）。
   if (work.mediaType === 'movie') {
-    const agg = aggregateDot(files)
+    const agg = aggregateDot(files, targetLanguage)
     return {
       work, seasons: [],
       movie: { ...agg, filename: files.length === 1 ? (files[0]!.filename ?? null) : null },
@@ -883,7 +878,7 @@ export function buildMediaLibraryDetail(db: ScoutDb, workId: string): MediaLibra
               subtitledFileCount: 0,
             }
           }
-          const agg = aggregateDot(rows)
+          const agg = aggregateDot(rows, targetLanguage)
           return {
             episode,
             title: canonicalTitles.get(key) ?? null,
