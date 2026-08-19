@@ -95,7 +95,7 @@ const run = makeTranslateWorker({
     return sidecarOut
   },
   videoDurationSec: async () => durationSec,
-  readExistingChineseSidecar: (v) =>
+  readExistingSidecar: (v) =>
     findExternalSidecar(v, ['zh-Hans', 'zh-Hant', 'zh', 'zh-CN', 'zh-TW', 'chs', 'cht'], existsSync)?.path ?? null,
   glossaryStore: {
     load: (k) => glossaryRepo.load(k),
@@ -119,6 +119,7 @@ try {
     videoPath,
     itemId: values['item-id'] ?? 'fixture:s1e1',
     originLang: origin,
+    targetLanguage: 'zh',
     title: values.title ?? 'Fixture',
     mediaRoot: sampleDir,
     stagingRoot: sampleDir,
