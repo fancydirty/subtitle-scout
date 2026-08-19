@@ -67,6 +67,7 @@ sidecar 对 en 目标永远确认不了**。于是：翻译队列每日重领 �
 | P2 | R1/R5 | 粘连版本后缀 `S01E04v2`：`\b` 在 `4|v` 之间不成立 → R1/R5 双双失配。点分隔 `.v2` 因 `1|.` 有边界而正常 | 三种形态：episode=0（Nukitashi ×8，R8 兜底吃掉 `AAC2.0` 的 `0`）、季集全 NULL（芬芳 Flowers ×7）、正常（Hi10 `.v2` 系列 ×11） |
 | P3 | R8 兜底 | 小数声道：`DDP5.1.Atmos` 的 `1`（前置分隔符 `.`、后随 `.Atmos` 非数字）通过全部闸 → abs=1，电影变剧集；`AAC2.0` 的 `0` → episode=0 | 语料证实；`episode=0` 形态已在生产（Nukitashi） |
 | P4 | R4 等 | 中文数字季「第一季」、ordinal「Second Season」、单位数「E7」不识别 | 低优先，agent 语义层可兜住，**本 spec 明确不修**，记录为已知边界 |
+| P5 | 季推导 | `singleSeasonOf` 的 fs 分支生产死代码（`toMediaFileRow` 从不传 listDir）——裸集号文件在**扁平作品目录**（无 Season 子目录）永远 low/NULL；且识别队列只认 `work_id IS NULL`，已识别作品的 low 行无任何通路接手 | Overflow 实案：v2 修掉 s80e720 后落 NULL/low，字幕目标从此没有季集 |
 
 「episode=0」额外暴露一个全局缺口：**任何规则都不该产出 0**——集号从 1 起。
 
@@ -132,6 +133,11 @@ DxD ep01 needs=0 → 凭 a 出队；有内嵌 eng 轨的 149 行同批退出找�
 5. **PARSER_VERSION 常量 1→2**：既有 C48 机制自动重解析全库存量（指纹不变只重算
    work_dir/season/episode/parse_confidence，不碰字幕状态）。Overflow/Nukitashi/
    芬芳的错行全部自愈。
+6. **P5（部署后追加，2026-08-19）**：`singleSeasonOf` 扁平规则——listDir 可用且作品
+   目录**零** Season 子目录 → S1（Jellyfin/Emby 惯例；纯字符串场景不应用，防对看不见
+   的兄弟臆断）；`toMediaFileRow` 加可选 listDir 参数透传；daemonV2 扫描通路接 memo 化
+   readdir（每目录至多一次、惰性触发——只有裸集号文件走到）；PARSER_VERSION 2→3。
+   Overflow 八行 low/NULL → s1e1-8 high。
 
 测试语料：把本次对抗语料（生产实案 5 条 + 合成陷阱 20+ 条）固化进
 parseFilename.test.ts 作回归锁。
