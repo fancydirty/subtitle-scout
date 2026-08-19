@@ -51,7 +51,8 @@ function mockFetch() {
       : /\/api\/v2\/mediaLibrary$/.test(path) ? [
           { workId: 'tmdb:1396', title: 'Breaking Bad', chineseTitle: null, year: 2008,
             posterPath: null, mediaType: 'tv', expectedEpisodeCount: 62,
-            onDiskEpisodeCount: 30, missingEpisodeCount: 32, subtitledEpisodeCount: 12, embeddedEpisodeCount: 0, uncoveredEpisodeCount: 18 },
+            onDiskEpisodeCount: 30, missingEpisodeCount: 32, subtitledEpisodeCount: 12, embeddedEpisodeCount: 0,
+            originLanguageEpisodeCount: 0, readyEpisodeCount: 12, uncoveredEpisodeCount: 18 },
         ]
       : url.includes('/api/v2/notifications') ? []
       // 设置页那条用例会渲染 SettingsTabsPage，它无条件解引用

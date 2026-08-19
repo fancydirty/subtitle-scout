@@ -75,7 +75,8 @@ describe('契约违例的用户可见结果：诚实报错，不是"没有数据
       '/api/v2/mediaLibrary': [{
         workId: 'tmdb:1', title: 'Breaking Bad', chineseTitle: null, year: 2008,
         posterPath: null, mediaType: 'tv', expectedEpisodeCount: 62,
-        onDiskEpisodeCount: 62, missingEpisodeCount: 0, subtitledEpisodeCount: 62, embeddedEpisodeCount: 0, uncoveredEpisodeCount: 0,
+        onDiskEpisodeCount: 62, missingEpisodeCount: 0, subtitledEpisodeCount: 62, embeddedEpisodeCount: 0,
+        originLanguageEpisodeCount: 0, readyEpisodeCount: 62, uncoveredEpisodeCount: 0,
       }],
       '/api/v2/health': HEALTH_OK,
     })

@@ -43,7 +43,7 @@ import type { MediaLibraryItemDTO } from '../api/types.js'
  *
  *  三种形状，对应三种**不同的事实**（不是三种排版偏好）：
  *   · 电影（mediaType==='movie'）：没有季集，说"有字幕 / 没字幕"就够了。
- *   · 剧集且 expected>0：`已配 3 / 磁盘 12 / 应有 24` —— R-F5 的实有 vs 应有在这里露出。
+ *   · 剧集且 expected>0：`就绪 3 / 本地 12 / 应有 24` —— R-F5 的实有 vs 应有在这里露出。
  *   · 剧集但 expected===0：应有集缓存还没回填。**只说磁盘上有多少**，绝口不提应有集
  *     ——显示 "12/0" 是在报一个我们并不知道的数字。
  *
@@ -93,10 +93,14 @@ export function coverageParts(item: MediaLibraryItemDTO): {
    *
    *  ⚠️ 同 missing 的既有纪律：**原样取 DTO，不在浏览器里算**。 */
   unplaced: number | null
+  originLanguage: number | null
+  ready: number
 } {
   return {
     subtitled: item.subtitledEpisodeCount,
     embedded: item.embeddedEpisodeCount > 0 ? item.embeddedEpisodeCount : null,
+    originLanguage: item.originLanguageEpisodeCount > 0 ? item.originLanguageEpisodeCount : null,
+    ready: item.readyEpisodeCount,
     onDisk: item.onDiskEpisodeCount,
     expected: item.expectedEpisodeCount > 0 ? item.expectedEpisodeCount : null,
     uncovered: item.uncoveredEpisodeCount > 0 ? item.uncoveredEpisodeCount : null,
@@ -112,8 +116,7 @@ function MediaCard({ item }: { item: MediaLibraryItemDTO }) {
   // 作品名跟随 UI 语言：zh 用 chineseTitle ?? title，en 用 title（2026-08-18 裁决）。
   // displayTitle 已封装这条判据，与活动页 / 通知页同源。
   const title = displayTitle(lang, item.title, item.chineseTitle ?? null)
-  const { subtitled, embedded, onDisk, uncovered, unplaced } = coverageParts(item)
-  const covered = subtitled + (embedded ?? 0)
+  const { subtitled, embedded, originLanguage, ready, onDisk, uncovered, unplaced } = coverageParts(item)
 
   return (
     <a className="media-card" href={mediaItemHref(item.workId)} aria-label={title}>
@@ -128,7 +131,7 @@ function MediaCard({ item }: { item: MediaLibraryItemDTO }) {
           className={uncovered === null ? 'media-card-frac media-card-frac-done' : 'media-card-frac'}
           data-testid="media-card-coverage"
         >
-          {t('media_card_coverage')} {covered}/{onDisk}
+          {t('media_card_coverage')} {ready}/{onDisk}
         </span>
         {onDisk > 0 ? (
           <span className="media-card-bar" aria-hidden="true">
@@ -136,12 +139,18 @@ function MediaCard({ item }: { item: MediaLibraryItemDTO }) {
             {embedded !== null ? (
               <i className="media-card-bar-b" style={{ width: `${(embedded / onDisk) * 100}%` }} />
             ) : null}
+            {originLanguage !== null ? (
+              <i className="media-card-bar-n" data-testid="media-card-bar-native" style={{ width: `${(originLanguage / onDisk) * 100}%` }} />
+            ) : null}
           </span>
         ) : null}
         <span className="media-card-stats" data-testid="media-card-stats">
           <span className="media-card-stat">{t('media_card_subtitled')} {subtitled}</span>
           {embedded !== null ? (
             <span className="media-card-stat">· {t('media_card_embedded')} {embedded}</span>
+          ) : null}
+          {originLanguage !== null ? (
+            <span className="media-card-stat">· {t('media_card_origin')} {originLanguage}</span>
           ) : null}
         </span>
         {uncovered !== null && (

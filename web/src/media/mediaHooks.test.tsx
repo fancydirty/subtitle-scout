@@ -53,8 +53,9 @@ describe('useMediaLibrary', () => {
     const rows = [{
       workId: 'tmdb:1', title: 'Breaking Bad', chineseTitle: null, year: 2008,
       posterPath: null, mediaType: 'tv',
-      expectedEpisodeCount: 62, onDiskEpisodeCount: 62,
-      missingEpisodeCount: 0, subtitledEpisodeCount: 62, embeddedEpisodeCount: 0, uncoveredEpisodeCount: 0,
+       expectedEpisodeCount: 62, onDiskEpisodeCount: 62,
+       missingEpisodeCount: 0, subtitledEpisodeCount: 62, embeddedEpisodeCount: 0,
+       originLanguageEpisodeCount: 0, readyEpisodeCount: 62, uncoveredEpisodeCount: 0,
     }]
     probe(rows)
     const { result } = renderHook(() => useMediaLibrary())
@@ -94,7 +95,6 @@ describe('useMediaLibrary', () => {
     expect(urls.length, '出现了轮询——全库聚合每 15s 打一次是纯负载').toBe(after)
   })
 })
-
 describe('useMediaLibraryDetail', () => {
   it('workId=null → **一个请求都不发**，loading 立刻为 false', async () => {
     const { urls } = probe()
@@ -430,4 +430,3 @@ describe('SSE 恢复后 id 从 1 重数仍能重拉（bootId 换 epoch）', () =
     )
   })
 })
-

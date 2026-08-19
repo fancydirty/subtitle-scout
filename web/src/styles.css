@@ -2337,12 +2337,15 @@
   margin: 2px 0 2px;
 }
 .media-card-bar-g,
-.media-card-bar-b {
+.media-card-bar-b,
+.media-card-bar-n {
   display: block;
   height: 100%;
 }
 .media-card-bar-g { background: var(--color-fn-green); }
 .media-card-bar-b { background: var(--color-fn-blue); }
+/* 原生就是目标语言——中性灰，与详情页 origin-skip 同源。 */
+.media-card-bar-n { background: var(--color-muted-foreground); }
 
 .media-card-missing {
   display: block;

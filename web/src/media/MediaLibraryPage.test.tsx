@@ -24,7 +24,8 @@ function item(o: Partial<MediaLibraryItemDTO> = {}): MediaLibraryItemDTO {
     workId: 'tmdb:1396', title: 'Breaking Bad', chineseTitle: null, year: 2008,
     posterPath: null, mediaType: 'tv',
     expectedEpisodeCount: 62, onDiskEpisodeCount: 30, missingEpisodeCount: 32,
-    subtitledEpisodeCount: 12, embeddedEpisodeCount: 0, uncoveredEpisodeCount: 18, unplacedFileCount: 0,
+    subtitledEpisodeCount: 12, embeddedEpisodeCount: 0, originLanguageEpisodeCount: 0,
+    readyEpisodeCount: 12, uncoveredEpisodeCount: 18, unplacedFileCount: 0,
     ...o,
   }
 }
@@ -80,7 +81,8 @@ describe('R-F2「不管来源，按 work_id 合并」在 UI 上是什么', () =>
       missingEpisodeCount: 15, uncoveredEpisodeCount: 2,
     }))
     expect(p).toEqual({
-      subtitled: 7, embedded: null, onDisk: 9, expected: 24, uncovered: 2, missing: 15, unplaced: null,
+      subtitled: 7, embedded: null, originLanguage: null, ready: 12,
+      onDisk: 9, expected: 24, uncovered: 2, missing: 15, unplaced: null,
     })
   })
 })
@@ -89,10 +91,40 @@ describe('R-F2「不管来源，按 work_id 合并」在 UI 上是什么', () =>
 // `missingEpisodeCount` 后端算了、DTO 声明了，而在本次改动之前**只在测试 fixture 里
 // 出现过**——终局审计变异 `missingEpisodeCount: 0` → 前端 0 红。下面这组是它的守卫。
 describe('字幕覆盖（uncoveredEpisodeCount，本地分母）', () => {
+  it('🔴 origin-language cells use backend ready count and render as Native, not Built-in', async () => {
+    vi.stubGlobal('fetch', mockFetch([item({
+      onDiskEpisodeCount: 16, subtitledEpisodeCount: 0, embeddedEpisodeCount: 0,
+      originLanguageEpisodeCount: 16, readyEpisodeCount: 16, uncoveredEpisodeCount: 0,
+    })]))
+    renderPage()
+    const link = await screen.findByRole('link')
+    expect(within(link).getByTestId('media-card-coverage').textContent).toContain(`${en.media_card_coverage} 16/16`)
+    const stats = within(link).getByTestId('media-card-stats')
+    expect(stats.textContent).toContain(`${en.media_card_subtitled} 0`)
+    expect(stats.textContent).toContain(`${en.media_card_origin} 16`)
+    expect(stats.textContent).not.toContain(en.media_card_embedded)
+    expect(within(link).queryByTestId('media-card-uncovered')).toBeNull()
+    expect(within(link).getByTestId('media-card-bar-native')).toBeInTheDocument()
+  })
+
+  it('🔴 mixed embedded + origin-language cells preserve both reasons and use ready from DTO', async () => {
+    vi.stubGlobal('fetch', mockFetch([item({
+      onDiskEpisodeCount: 8, subtitledEpisodeCount: 0, embeddedEpisodeCount: 7,
+      originLanguageEpisodeCount: 1, readyEpisodeCount: 8, uncoveredEpisodeCount: 0,
+    })]))
+    renderPage()
+    const link = await screen.findByRole('link')
+    expect(within(link).getByTestId('media-card-coverage').textContent).toContain(`${en.media_card_coverage} 8/8`)
+    const stats = within(link).getByTestId('media-card-stats')
+    expect(stats.textContent).toContain(`${en.media_card_embedded} 7`)
+    expect(stats.textContent).toContain(`${en.media_card_origin} 1`)
+    expect(within(link).getByTestId('media-card-bar-native')).toBeInTheDocument()
+  })
+
   it('全齐 → 分数 20/20，不出现 TMDB 缺集黄字', async () => {
     vi.stubGlobal('fetch', mockFetch([item({
       subtitledEpisodeCount: 9, embeddedEpisodeCount: 11, onDiskEpisodeCount: 20,
-      missingEpisodeCount: 125, uncoveredEpisodeCount: 0,
+      originLanguageEpisodeCount: 0, readyEpisodeCount: 20, missingEpisodeCount: 125, uncoveredEpisodeCount: 0,
     })]))
     renderPage()
     const link = await screen.findByRole('link')
@@ -255,11 +287,13 @@ describe('🔴 「已配」与「自带」在卡片上分列', () => {
     //   onDisk - subtitled = 24-2 = 22 ；expected - onDisk = 24-24 = 0 ；都不是 5。
     const p = coverageParts(item({
       subtitledEpisodeCount: 2, embeddedEpisodeCount: 5,
+      originLanguageEpisodeCount: 0, readyEpisodeCount: 7,
       onDiskEpisodeCount: 24, expectedEpisodeCount: 24, missingEpisodeCount: 0,
       uncoveredEpisodeCount: 3,
     }))
     expect(p).toEqual({
-      subtitled: 2, embedded: 5, onDisk: 24, expected: 24, uncovered: 3, missing: null, unplaced: null,
+      subtitled: 2, embedded: 5, originLanguage: null, ready: 7,
+      onDisk: 24, expected: 24, uncovered: 3, missing: null, unplaced: null,
     })
   })
 

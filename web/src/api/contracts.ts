@@ -100,7 +100,7 @@ export const HEALTH_SHAPE: Shape = obj({
 })
 
 /** `/api/v2/mediaLibrary` 的**一行**（client 那边包成数组）。
- *  四个计数字段全在：它们参与 `coverageParts` 的算术，缺一个就出 NaN/错误的缺集数。 */
+ *  计数字段全在：它们参与 `coverageParts` 的算术，缺一个就会得到未知或错误的覆盖数。 */
 export const MEDIA_LIBRARY_ITEM_SHAPE: Shape = obj({
   workId: str(),
   title: str(),
@@ -109,11 +109,13 @@ export const MEDIA_LIBRARY_ITEM_SHAPE: Shape = obj({
   missingEpisodeCount: num(),
   subtitledEpisodeCount: num(),
   embeddedEpisodeCount: num(),
+  originLanguageEpisodeCount: num(),
+  readyEpisodeCount: num(),
   uncoveredEpisodeCount: num(),
-  // 🔴 2026-08-13。**刻意不声明**：老后端（还没有这个字段的部署）返回的行在这里
-  // 会整页被拦，而这一段的违约表现只是"少显示一行"——判据③不占。coverageParts 已按
+  // 🔴 2026-08-13。**刻意不声明**：`unplacedFileCount` 缺席时，老后端响应在这里
+  // 不会整页被拦，而只会少显示一条附加信息——判据③不占。coverageParts 已按
   // `> 0` 写（undefined > 0 为 false → 整段不渲染），那是正确的降级。
-  // 上面四个不同：它们参与算术，缺席出 NaN。
+  // 上面的计数字段不同：它们参与算术或直接决定覆盖分子，缺席必须拦截。
 })
 
 /** `/api/v2/mediaLibrary/:workId`。

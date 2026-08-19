@@ -398,7 +398,8 @@ export const zh = {
   /** 🔴 2026-08-14 用户裁决③：内嵌轨与外挂字幕分列。「自带」而不是「内嵌」。 */
   media_card_embedded: '自带',
   media_card_ondisk: '本地视频',
-  media_card_coverage: '字幕',
+  media_card_coverage: '就绪',
+  media_card_origin: '原生',
   media_card_uncovered: '还有',
   media_card_uncovered_unit: '集没字幕',
   media_card_uncovered_movie: '还没字幕',
