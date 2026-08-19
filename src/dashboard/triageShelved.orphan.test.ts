@@ -6,7 +6,7 @@
 //
 // 背景（完整论证在 `web/src/triage/TriagePage.tsx` 头注释，本文件只承载判据）：
 // TriagePage 于 2026-08-07 雪藏。此前两份材料给了相反处置——
-//   · `docs/design/2026-08-11-FRONTEND-IMPL-DESIGN.md` 的清点表判「删」；
+//   · the old triage inventory marked this path for removal;
 //   · `src/v2/subtitleVerifyRepo.ts` 头注释（2026-08-12，更新）把「把 TriagePage
 //     挂回 AppShell」写成 verify 族的**恢复路径**——即判「留」。
 // 用户裁决：留。本文件是那次裁决的机器载体。
@@ -121,7 +121,7 @@ describe('TriagePage 的雪藏保留（2026-08-13 裁决的机器可查载体）
       '这不一定是错，但下面几处「雪藏」的陈述前提已变，必须一并更新：\n' +
       '  · web/src/triage/TriagePage.tsx 头注释（本裁决的正本）\n' +
       '  · web/src/shell/{tabs,route,AppShell,Sidebar}.ts(x) 的雪藏段\n' +
-      '  · docs/design/2026-08-11-FRONTEND-IMPL-DESIGN.md 的 triage 行\n' +
+      '  · the old triage inventory marked this path for removal\n' +
       '  ⚠️ 挂回导航还要补：route.ts 的 Tab 联合 + TAB_IDS、tabs.ts 的 TABS 项、\n' +
       '     Sidebar 的 TAB_ICONS.triage、i18n 两侧的 nav_triage 键。\n' +
       '     其中 AppShell 分支与 i18n 键**漏了都不报错**（静默空白 / 显示 key 原文）。',

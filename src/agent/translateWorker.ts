@@ -112,7 +112,7 @@ export function makeTranslateWorker(deps: TranslateWorkerDeps) {
       })
       console.error(`[translate-worker] job ${task.jobId} finished in ${result.steps.length} step(s)`)
       const report = { ...readFinalized(), llmCalls: result.steps.length }
-      // ── 工作台回收（2026-08-08 live test 实测残留 312KB / CURRENT-STATE §八「GC 炸弹」）──
+      // ── Reclaim the translation workspace after the task completes. ──
       //
       // 两侧刻意**不对称**（这是与字幕流唯一的差异，故必须论证而不是照抄 stagingSandbox 的
       // "无论成败都删"）：

@@ -208,12 +208,10 @@ export interface UnidentifiedFindSubtitleTaskDeps {
  *  spec 2026-08-07 §3.3.1 与下方 bumpUnit 的注释。（历史注释曾写"重试节奏由 ingest 的退避
  *  阶梯决定，不在这层另建一套"——那是本层零推进导致坏单元恒排队首的根因，已作废。）
  *
- *  🔴 逐单元派活（spec 2026-08-07 §2 + §3.2.1，2026-08-06 夜生产事故的修复）：
- *  事故形状——干净库 + 全绿 doctor + 492 个真媒体文件，本 job 连续 10 次以同一错误失败、
- *  agent 一次都没跑起来：`拒绝在媒体根目录之外写入: /hostroot/mnt/nvme0n1-4/nas_media`。
- *  根因是本函数曾对**全批**目标求 commonDir（全局公共祖先）再校验该祖先在配置根内：目标散落
- *  Movies/TV/anime 三个配置根时，公共祖先必是它们的父目录 nas_media，而 MEDIA_ROOTS 里只有
- *  那三个子目录 → 必抛。"全局公共祖先在配置根内"这个约束与多根部署**逻辑上不可同时满足**，
+ *  🔴 逐单元派活：
+ *  Regression shape: a clean library with multiple configured roots caused this job to fail before
+ *  the agent ran because one common directory was checked against every configured root. The runner
+ *  now groups targets by work unit and checks each target against its own configured root.
  *  所以那对"求祖先 + 校验祖先"是设计缺陷，不是安全网（spec §2 的定罪）——已删除。
  *
  *  现在一个 job = N 个作品单元（buildUnidentifiedWorkUnits），**逐单元串行派 worker**，每个

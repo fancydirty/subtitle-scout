@@ -4,7 +4,7 @@ import { detectSeasonFolder, CATEGORY_DIR_NAMES } from '../recognition/identifyF
 
 /**
  * 作品单元（work unit）——未识别队列的粒度单位。
- * spec: docs/design/2026-08-07-work-unit-pipeline-spec.md §3
+ * Work-unit boundaries for batch processing.
  *
  * 为什么存在：此前 buildUnidentifiedTargets 扁平取 60 个文件，导致
  *  ① 同一部剧的集数可能跨批次被切散 → 裸集号 absolute/seasonal 歧义失去唯一判据

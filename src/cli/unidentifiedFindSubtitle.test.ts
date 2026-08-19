@@ -912,12 +912,9 @@ describe('runUnidentifiedFindSubtitleWorkerTask', () => {
   })
 
   // ---- 逐单元派活（spec 2026-08-07 §2 / §3.2.1，改动 A）----
-  // 事故（2026-08-06 夜，生产实测）：干净库 + 全绿 doctor + 492 个真媒体文件，
-  // unidentified-backlog job 连续 10 次以同一错误失败、agent 一次都没跑起来：
-  //   拒绝在媒体根目录之外写入: /hostroot/mnt/nvme0n1-4/nas_media
-  // 根因：runner 曾对**全批**目标求 commonDir 再校验该祖先在配置根内。目标散落
-  // Movies/TV/anime 三个配置根时，公共祖先必是它们的父目录（nas_media），而 MEDIA_ROOTS 里
-  // 只有那三个子目录 → 必抛。多根部署下"全局公共祖先在配置根内"逻辑上不可满足（spec §2）。
+    // Regression: a clean library with multiple configured roots once failed every run before the
+    // agent started. The runner calculated one common directory for the whole batch, but that
+    // ancestor was outside every configured root.
   describe('🔴 逐单元派活（修 commonDir 越界事故）', () => {
     const mkParked = (abs: string, firstSeen: number) => {
       mkdirSync(dirname(abs), { recursive: true })

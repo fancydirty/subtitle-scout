@@ -278,7 +278,7 @@ export function makeDaemonTranslateRunItem(opts: {
     )
     const videoDir = dirname(videoPath)
     const report = await runner({
-      // 🔴 GC 炸弹修复（2026-08-08 live test 实测：工作台残留 312KB / CURRENT-STATE §八）。
+      // Reclaim the workspace even when the command exits through an error path.
       // 旧值 `daemon-${Date.now()}` 让循环层无法预知目录名 → 没法登记进 gcStaging 的 in-flight
       // 集合（字幕流靠 subtitleJobId 做到了，C34），且每次重试堆一个新目录、成功后没人回收。
       // 这里与 daemonV2 的 in-flight 登记必须调**同一个** translateJobId（两处手写必漂移，

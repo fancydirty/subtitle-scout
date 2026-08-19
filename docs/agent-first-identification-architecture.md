@@ -110,10 +110,10 @@ Subtitle agent (findSubtitleWorker)
 
 ## Testing
 
-- **1984 tests pass** (backend), **301 tests pass** (frontend)
-- **Type check**: 0 errors (`tsc --noEmit`)
-- **Production build**: passes
-- Integration test: `src/agent/integration/agentIdentification.test.ts` verifies end-to-end flow (parked → identify → write DB → clear parked)
+- The default test suite covers the backend and frontend identification flow.
+- **Type check**: `npm run check`
+- **Production build**: `npm run build`
+- Integration tests verify the end-to-end flow (parked → identify → write DB → clear parked)
 
 ## Migration Notes
 
@@ -130,12 +130,4 @@ Subtitle agent (findSubtitleWorker)
 
 ## Lessons Learned
 
-This implementation followed the superpowers workflow (plan → independent review → subagent-driven implementation with two-stage review per task). Key lessons:
-
-1. **Independent review caught 11 critical issues in the plan** (hallucinated APIs, wrong episodeId format, missing deps) that self-review missed. Never skip independent review.
-
-2. **Subagents caught plan defects during implementation** (6+ per task on average). The plan's code snippets were often wrong against the real codebase. Two-stage review (spec compliance → code quality) caught safety issues (hallucination vectors, missing transactions) that spec compliance alone would have missed.
-
-3. **Batch test updates require parallel subagents**. Task 13 (58 failing tests) failed twice with a single subagent; succeeded when split into 3 parallel groups.
-
-4. **Type errors must be fixed incrementally**. Deferring typecheck fixes until the end left 58 errors; fixing them incrementally per task would have been cheaper.
+The implementation was validated through independent design review, incremental implementation checks, and focused regression tests. The main lessons were to verify APIs against the codebase, test database writes transactionally, and fix type errors incrementally rather than deferring them.

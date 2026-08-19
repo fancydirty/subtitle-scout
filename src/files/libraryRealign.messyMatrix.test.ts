@@ -12,7 +12,7 @@ function mkDir(...parts: string[]): string {
 }
 
 // 乱排布矩阵：验收记录（真实 tmp 目录，离线，无 docker）——诊断 + 计划构建两层的验收断言。
-// 5 种形态对照设计文档 docs/design/2026-07-12-library-realign-design.md 的验收场景：
+// Five naming shapes cover the realignment regression scenarios:
 //   1. 绝对编号平铺（真实 bug 形状）——必须成功建出整理计划
 //   2. 错位（已用 SxxEyy 记法但集号整体偏移）——不是本次 realign 的目标，必须整剧放弃
 //   3. 合集文件（E01-02 合并）——合集文件隔离，其余单集正常整理

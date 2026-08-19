@@ -86,8 +86,8 @@ describe('buildDaemonV2Deps · D5 四个运维器官全部接上', () => {
   it('🔴 C34 收口：in-flight 集合原样透传，两条工作台的 jobId 都能进（翻译流已接入）', () => {
     // 这条用例的**前身**是"翻译流未接入 daemonV2，故集合里不会有 .subtitle-translate 的 jobId"
     // ——那条留痕的末句写着"第 4 步把翻译接进 daemonV2 时，必须把它的 jobId 也登记进同一个
-    // 集合——那时这条注释是入口"。2026-08-08 live test 实测到工作台残留 312KB（CURRENT-STATE
-    // §八「翻译工作台 GC 炸弹」），修复正是走这个入口：translateJobId 让循环层能预知目录名，
+    // 集合——那时这条注释是入口"。A live run once exposed stale workspace data; the fix uses this
+    // entry: translateJobId lets the loop know the directory name,
     // daemonV2.advanceTranslateOnce 于是像字幕流一样登记/摘除。留着旧断言会把一个**已经不成立
     // 的世界观**钉死在测试里（"翻译 jobId 永远不该出现"），故连同论证一起改写。
     //

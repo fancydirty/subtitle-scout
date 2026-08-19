@@ -2,9 +2,7 @@ import { z } from 'zod'
 import { nullableTolerant, nullableJsonTolerantCaught, tolerantArray } from './coerce.js'
 import type { SubtitleCandidate } from '../core/schemas.js'
 
-/** Batch task/report shapes for the find-subtitle worker (phase ③) — see
- *  docs/design/2026-07-16-glue-layer-repair-and-semantic-audit-design.md, 第一部分第 1/3 条
- *  (glue-layer repair + batch harvest campaign). Superseded here: the old single-episode
+/** Batch task/report shapes for the find-subtitle worker. Superseded here: the old single-episode
  *  `FindSubtitleTask` (videoPath/videoFilename/season/episode/absoluteEpisode at the task's top
  *  level) and the old single-decision `FindSubtitleDecisionSchema`/`FindSubtitleDecision`
  *  (the finalize tool's old inputSchema, one decision per worker run). A worker run now takes a

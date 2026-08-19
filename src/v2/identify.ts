@@ -1,5 +1,5 @@
 // src/v2/identify.ts：识别 agent 的核心纯函数（新架构阶段 2）。
-// spec: docs/design/2026-08-08-new-architecture-design.md §5
+// Identify scheduler and worker boundary.
 //
 // 识别 agent 的职责（用户裁决）：
 //  - 确认"这个 work_dir 是什么影视"（TMDB 身份）

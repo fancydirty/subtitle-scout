@@ -13,10 +13,10 @@ import {
 const REAL = [
   '1018 73 0:28 / / rw,relatime master:30 - overlay overlay rw,lowerdir=/a:/b,upperdir=/c,workdir=/d',
   '1019 1018 0:31 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw',
-  '1034 1018 0:32 /TV /media/tv rw,relatime - cifs //192.168.100.241/share rw,vers=3.1.1,cache=strict',
-  '1035 1018 0:32 /anime /media/anime rw,relatime - cifs //192.168.100.241/share rw,vers=3.1.1',
+  '1034 1018 0:32 /TV /media/tv rw,relatime - cifs //test-nas/share rw,vers=3.1.1,cache=strict',
+  '1035 1018 0:32 /anime /media/anime rw,relatime - cifs //test-nas/share rw,vers=3.1.1',
   '1036 1018 0:429 / /media/aliyun rw,nosuid,nodev,relatime - fuse.rclone aliyun-dav:subtitle-scout-test rw,user_id=0',
-  '1037 1018 0:32 /Movies /media/movies rw,relatime - cifs //192.168.100.241/share rw,vers=3.1.1',
+  '1037 1018 0:32 /Movies /media/movies rw,relatime - cifs //test-nas/share rw,vers=3.1.1',
 ].join('\n')
 
 const realEntries = () => parseMountInfo(REAL)

@@ -1,4 +1,4 @@
-// 去 Jellyfin 化战役 P2（design: docs/design/2026-07-16-de-jellyfin-design.md §P2）：
+// Stable identifiers for the media-server-independent pipeline:
 // 自有 id 空间的唯一构造/解析入口。series/movies.id = 'tmdb:<TMDB id>'；
 // episodes.id = 'tmdb:<TMDB id>/s<N>e<M>'（无零填充——s1e2，非 s01e02）。
 // id 即身份：库行 id 本身就能换回 TMDB id，不再需要 jf.getItem 这类"拿 id 换身份"的缝。

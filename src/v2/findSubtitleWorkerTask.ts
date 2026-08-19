@@ -407,7 +407,7 @@ export interface FindSubtitleWorkerTaskDeps extends FindSubtitleTaskMapperDeps {
  *  report (installed/no_safe_match/retry_later) itself so the caller (cmdWatch's claim-dispatch
  *  switch, phase ⑦) is a thin routing switch, not business logic.
  *
- *  批量收割入账重写（2026-07-16，R-3 裁决——docs/design/2026-07-16-old-world-lineage-registry.md）：
+ *  Batch accounting for subtitle-worker results:
  *  这个函数曾经按旧单决定契约把 mapper 的返回值解构成 `{ task, targetItemId }`（mapper 早在
  *  Task 4 就已经改造成纯信使、返回整批 FindSubtitleTask 本身，那次解构从那时起就在拿
  *  undefined），installed/no_safe_match 分支各自只认一个 itemId、且 no_safe_match 走的是已被

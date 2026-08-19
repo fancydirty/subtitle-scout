@@ -311,7 +311,7 @@ function runsLabelOf(f: SubtitleQueueItem['files'][number]): string {
  *  worker = makeFindSubtitleWorker({ model, adapters, cacheRoot, tmdb }) 的返回值
  *  （runFindSubtitleTask），直接调用，返回 batch report。
  *
- *  🔴 死循环修复（spec docs/design/2026-08-08-deadloop-fix-v2.md）：
+ *  Retry-loop hardening:
  *  - B-1：run 前 snapshot 清缓冲（traceBus 的 buf push 追加不重置，第二次跑同一
  *    workId 时 peek 会看到第一次的 search_source，编造被误判"有证据"）
  *  - B-2：无结局文件（不在任何桶）回写 recheck_after，不能残留 needs=1
@@ -687,4 +687,3 @@ export async function runSubtitleWorkDir(
   }
   return report
 }
-

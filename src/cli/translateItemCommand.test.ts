@@ -208,7 +208,7 @@ describe('makeDaemonTranslateRunItem — P3 daemon runItem', () => {
     db.close()
   })
 
-  // ── 翻译工作台 GC 炸弹（2026-08-08 live test 实测残留 312KB / CURRENT-STATE §八）──
+  // ── Translation workspace cleanup regression. ──
   // 旧实现是 `jobId: \`daemon-${Date.now()}\``。它同时坏了两件事：
   //  ① 循环层无法预知 → 没法登记进 gcStaging 的 in-flight 集合（字幕流有）→ 保护只剩 mtime 窗口
   //  ② 每次调用都是新值 → 同一集每次重试堆一个新工作台目录，且成功后没人按名字回收

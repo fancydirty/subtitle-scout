@@ -32,7 +32,7 @@ describe('translate workspace paths', () => {
     expect(readFileSync(ignore, 'utf8')).toMatch(/subtitle-translate/)
   })
 
-  // ── GC 炸弹（2026-08-08 live test 实测残留 312KB / CURRENT-STATE §八）──
+  // ── Translation workspace cleanup regression. ──
   it('🔴 resetWorkspace 清掉上一次的残留后重建（稳定 jobId 的串味防线）', () => {
     const base = mkdtempSync(join(tmpdir(), 'tw-paths-reset-'))
     const p1 = ensureWorkspaceLayout(base, 'job-r')

@@ -5,7 +5,7 @@ import type { LibraryRepo } from './libraryRepo.js'
 import type { RealignLibraryPort } from './realignExecutor.js'
 
 /**
- * 去 Jellyfin 化 P5 / Task 7（design: docs/design/2026-07-16-de-jellyfin-design.md §P5，D4）：
+ * Port for realigning media-library paths without a media-server dependency:
  * RealignLibraryPort（C-B3 改名前旧名 RealignJellyfinPort）的库原生实现——realign 不再打
  * Jellyfin API，改读自有库行 + 直接走盘。
  *

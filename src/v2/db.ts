@@ -2,7 +2,7 @@ import Database from 'better-sqlite3'
 
 export type ScoutDb = Database.Database
 
-// 去 Jellyfin 化战役 P2（design: docs/design/2026-07-16-de-jellyfin-design.md §P2，D7 裁决）：
+// Schema for the media-server-independent pipeline:
 // 本文件历史上是一条 v1→v8 的逐步 ALTER 迁移链（8 条 entry，服务运行中用户库的原地升级）。
 // v9 起该链被整体折叠成下面唯一一条终态 entry——不再是"从 v1 逐步迁移到 v9"，而是"任何空库
 // （meta.schema_version 起始 0）直接落地 v9 终态 schema"。原因：用户拍板"一切开发期产生的
@@ -246,7 +246,7 @@ CREATE TABLE media_roots (         -- spec §7 守备目录（Jellyfin 分界）
 );
 ALTER TABLE runs ADD COLUMN trace_json TEXT;   -- 痕迹通道 C 收官快照
   `.trim(),
-  // v13（验收修复轮一 Task V1，design: docs/design/2026-07-17-acceptance-round-1-design.md §A，
+  // v13 (acceptance hardening):
   // 用户裁决：媒体库分区与守备目录解耦，改由 TMDB 元数据派生）：纯增量一列。genres=TMDB genre id
   // 的 JSON 数组（如 '[16,35]'，16=Animation）；NULL=尚未富化（含存量 36 部剧与"空名 ? 卡"）。
   // 富化重试机制（ingest.ts pass 收尾）逐步回填，sectionOf 新规读它判"动漫 vs 剧集"。
@@ -362,7 +362,7 @@ UPDATE subtitles SET provider_ref = substr(provider_ref, instr(provider_ref, ':'
 UPDATE episodes SET status_reason = NULL WHERE sub_status IN ('covered','embedded') AND status_reason IS NOT NULL;
 UPDATE movies SET status_reason = NULL WHERE sub_status IN ('covered','embedded') AND status_reason IS NOT NULL;
   `.trim(),
-  // v16（详情页重设计 item B，design: docs/design/2026-07-20-detail-page-redesign-design.md）：
+  // v16 (detail-page data support):
   // TMDB 元数据富化——series 剧集简介/背景图 + tmdb_seasons 逐集简介/首播日/剧照。纯 ADD COLUMN，
   // 不触发建新表。加列后现有 tmdb_seasons 行新字段为 NULL；UPDATE fetched_at=0 强制下轮
   // refreshSeriesCatalog 重富化回填（不干等 7 天 TTL）。series 层靠既有富化重试 pass 连带补齐。
@@ -528,7 +528,7 @@ CREATE INDEX IF NOT EXISTS subtitle_verify_verdict ON subtitle_verify(verdict)`,
       db.exec('ALTER TABLE jobs ADD COLUMN lease_started_at INTEGER')
     }
   },
-  // v30（2026-08-08 新架构，spec docs/design/2026-08-08-new-architecture-design.md）：
+  // v30 (2026-08-08 pipeline rebuild):
   // 新增 files/works 两张表，承载"机械扫描 → 识别 agent → 传送带 → 字幕 agent"的新管线。
   //
   // 为什么新表而非改旧表：旧表（series/episodes/movies）是"按集建行"模型，新架构是
@@ -602,7 +602,7 @@ CREATE TABLE IF NOT EXISTS works (
       db.exec("ALTER TABLE media_roots ADD COLUMN content_type TEXT DEFAULT 'mixed'")
     }
   },
-  // v31（2026-08-08 死循环修复，spec docs/design/2026-08-08-deadloop-fix-v2.md §2.1）：
+  // v31 (2026-08-08 retry-loop hardening):
   // files 表加 recheck_after——字幕"找不到"的退避标记。
   //
   // 死循环根因：no_safe_match 的文件保持 needs_subtitle=1、sub_status=null，
@@ -624,7 +624,7 @@ CREATE TABLE IF NOT EXISTS works (
       db.exec('ALTER TABLE files ADD COLUMN recheck_after INTEGER')
     }
   },
-  // v32（2026-08-08 流水线 spec，docs/design/2026-08-08-PIPELINE-SPEC.md §5 + 裁决 D12/D16/D18）：
+  // v32 (2026-08-08 subtitle pipeline contract):
   // files 表加 sub_recheck_at——语义="下次该复核字幕存在性的时刻"（毫秒）。
   //
   // 为什么需要这一列：R24 把 sub_status='covered' 的唯一写入者收归扫描（"磁盘上真有同名中字"
@@ -796,7 +796,7 @@ CREATE TABLE IF NOT EXISTS works (
   //   ② 因此也是这个 pass 的**收敛条件**：采过就非 NULL，谓词自然选不中，不需要额外的
   //      "回填完成"标记位（那种标记位本身又是一个"谁来写/谁来重读"的新洞）
   // 若照 sub_attempt 的样子建成 `NOT NULL DEFAULT '{}'`，存量行升级上来全是 '{}' → 回填一行
-  // 都选不中 → CURRENT-STATE 里那 83 个已识别作品的 imdb 永远补不上，而这正是 C21 要修的
+  // Otherwise previously identified works could keep missing their external IDs.
   // 那件事本身。这与 D18（sub_recheck_at 留 NULL）/ D22（sub_attempt 必须 NOT NULL）是
   // **同一族权衡的相反解**：那两列的 NULL 会让谓词求值成 unknown 从而静默失效，
   // 这一列的 NULL 恰恰是谓词赖以工作的信号。判据是"NULL 对这一列意味着什么"，不是"照抄上一条"。
@@ -1487,8 +1487,7 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
       db.exec("DELETE FROM settings WHERE key LIKE 'session:%'")
     }
   },
-  // v46（2026-08-18，spec: docs/superpowers/specs/2026-08-18-en-target-judgechain-and-match-
-  // philosophy-design.md §4.2b / F1+F3）：判需规则修正后的**全量重判触发器**——
+  // v46 (2026-08-18, English-target judge-chain behavior):
   // `UPDATE files SET needs_subtitle = NULL, skip_reason = NULL`（全行）。
   //
   // ── 为什么必须有这条（没有它，规则修正对存量库一行都不生效）─────────────────────

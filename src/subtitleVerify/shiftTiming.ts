@@ -64,8 +64,7 @@
  * 原子写照抄 src/files/subtitleWriter.ts:117-149 的既有纪律（同一套模式，不另发明）：
  *   tmpPath = `${path}.tmp` → 清孤儿 tmp（best-effort，吞异常：NAS/SMB 上 unlink 可能 EPERM）
  *   → openSync('w') → writeAll → fsyncSync → closeSync（finally）→ renameSync
- * rename 原子性已在真实目标文件系统实测：CIFS（//192.168.100.241/share）与 rclone WebDAV
- * （阿里云盘）上 rename-over-existing 都成功、内容正确、无残留。
+ * Callers should verify atomic rename behavior for their own local or network storage provider.
  *
  * **备份 + 幂等（关键设计，别改语义）**：`${path}.scout-backup` 保存**原始文件**的字节。
  *   - 备份不存在 → 先原子写出备份，再基于当前文件字节平移。

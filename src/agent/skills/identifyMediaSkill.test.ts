@@ -100,7 +100,7 @@ describe('identify-media skill', () => {
     expect(skill.content).toMatch(/158/)
   })
 
-  // 调研结论（docs/superpowers/research/2026-07-27-vague-naming-cases.md，Group G / M10a–M10e）：
+  // Naming cases covered by the identification regression corpus:
   // "runtime agreement is meaningful positive evidence; runtime disagreement is weak negative
   // evidence and must never alone defeat a strong title match — because M10a/M10b make it fail
   // precisely on correct answers." runtime 是唯一一条会**在正确答案上失败**的第二证据线

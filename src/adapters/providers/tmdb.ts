@@ -38,9 +38,8 @@ export interface SeasonTableEntry { seasonNumber: number; episodeCount: number; 
  *  originalTitle = tv original_name / movie original_title (the title in the work's own language,
  *  e.g. a CJK name) — C3's clean-title tiebreak matches queries against it too, so a CJK query
  *  can hit a work whose display title is localized. Missing/blank → null.
- *  posterPath = TMDB image path (e.g. '/dqZEN...jpg', web 端自拼 CDN URL 前缀) — 去 Jellyfin 化
- *  P3（design: docs/design/2026-07-16-de-jellyfin-design.md §P3）新增字段，供 ingest 层落
- *  series/movies.poster_path。Missing/blank → null，同其余字段口径。 */
+ *  posterPath = TMDB image path (e.g. '/dqZEN...jpg', web 端自拼 CDN URL 前缀)。The field is
+ *  stored with the normalized work metadata. Missing/blank → null，同其余字段口径。 */
 export interface TmdbSearchHit {
   id: number
   title: string

@@ -1,5 +1,5 @@
 // src/v2/subtitleJudge.ts：需字幕判定（新架构阶段 3，纯机械无 LLM）。
-// spec: docs/design/2026-08-08-PIPELINE-SPEC.md 裁决 D8 / 缺口 C27
+// Subtitle coverage judge.
 //
 // 规则（身份确定后自动跑）：
 //  0. 文件名命中机械特典标记（NCOP/NCED/menu/PV/…）→ needs_subtitle=0（特典不算字幕范围）

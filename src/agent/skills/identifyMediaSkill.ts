@@ -11,7 +11,7 @@
 //     存在理由——"需要靠强调才可靠的步骤，本身就该是代码约束"。这一版按此原则重写：
 //     只讲模型无法自己推出的约束（证据门槛、陷阱形态、边界判定），删掉所有劝导性散文。
 //
-// 2026-07-27 调研加固（docs/superpowers/research/2026-07-27-vague-naming-cases.md）：
+// Hardened against ambiguous naming patterns observed in production-like fixtures:
 //  ③ runtime 不对称（Group G / M10a–M10e）：runtime 一致是强正证据，runtime 不合是**弱负
 //     证据**，单独绝不能否掉 title+year 双强的候选——TMDB 每部电影只存一个 runtime，导演
 //     剪辑/加长/分卷 CD1/PAL 提速都让文件时长偏离正确答案。改掉了原"runtime roughly

@@ -479,10 +479,9 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
         prompt,
         abortSignal: AbortSignal.timeout(deps.timeoutMs ?? timeoutFor(task.targets.length)),
       })
-      // Diagnostic only (stderr, not part of the return contract): the live-acceptance
-      // checklist (docs/design/2026-07-13-v3-live-acceptance-checklist.md, Step 6) asks a human
+      // Diagnostic only (stderr, not part of the return contract): a human can use the step count
       // to record the step count of each real run — this is the only place that number
-      // (result.steps.length, per the stepCountIs(500) test-phase ceiling) is ever observable,
+      // (result.steps.length) to inspect a real run,
       // since runFindSubtitleTask's return type is deliberately just the batch report.
       console.error(`[find-subtitle-worker] job ${task.jobId} finished in ${result.steps.length} step(s)`)
       const report = readFinalized()

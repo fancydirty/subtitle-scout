@@ -1,8 +1,8 @@
 import { dirname, basename } from 'node:path'
 
 /**
- * 外挂字幕 sidecar 探测——从 v2/scanner.ts 的 classifyItemDetailed rule 3 抽出的共享模块
- * （去 Jellyfin 化 P3，design: docs/design/2026-07-16-de-jellyfin-design.md §P3）。抽出当时
+ * 外挂字幕 sidecar 探测——从 scanner 的 classifyItemDetailed rule 3 抽出的共享模块。
+ * 抽出后 scanner 与 ingest 共用同一份
  * scanner.ts 与新的 v2/ingest.ts 都要用同一份"给定 tag 集合，逐 tag×ext 探测磁盘上是否存在
  * `<videoBase>.<tag><ext>` sidecar 文件"的逻辑与语言换算表——搬到这里做单一事实来源，
  * scanner.ts 当时改为从此处导入（纯机械的 import 替换，不改它自己的行为/调用方式）。

@@ -12,7 +12,7 @@
  *
  * ── 0. 为什么需要这一段 ────────────────────────────────────────────────────
  * 此前两份材料给了**相反**的处置，谁也没引用谁：
- *   · `docs/design/2026-08-11-FRONTEND-IMPL-DESIGN.md` 的旧前端清点表判「删」
+ *   · the previous UI inventory marked this area for removal
  *     （依据：「已被雪藏」——但那张表把整页当成一块死肉，见下面第 2 条，那是**错的**）；
  *   · `src/v2/subtitleVerifyRepo.ts` 头注释（2026-08-12，更新）把「再把 TriagePage
  *     挂回 AppShell」写成 verify 族的**恢复路径**——即判「留」。

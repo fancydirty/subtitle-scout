@@ -1,5 +1,5 @@
 // src/v2/daemonV2.ts：新架构 daemon（巡检模型）。
-// spec: docs/design/2026-08-08-daemon-inspection-model.md
+// Daemon inspection and scheduling loop.
 //
 // 用户裁决：工作台语义是"有活就一直跑，跑完歇，明天再巡检"（对齐 Jellyfin 库扫描频率），
 // **不是 30s tick 轮询**（旧架构 orchestrator 残留思维）。
@@ -336,7 +336,7 @@ export interface DaemonV2Deps {
   workPermitted?: () => boolean
 
   /** R-F10：SSE 推送通道的事件出口。**只发"对用户有必要"的 4 类**——发布点清单与逐条判据
-   *  见 docs/design/2026-08-11-FRONTEND-SPEC.md §六·六，接线在 cli/watchWiring.ts。
+   *  The dashboard wiring lives in cli/watchWiring.ts.
    *
    *  ── 为什么是显式 emit，而不是在 cli 的 log 函数里做模式匹配（设计选择 A）──
    *  旁路 log 等于**解析自己刚打印出来的字符串**：日志文案一改事件就静默失效，而本仓今天
@@ -1328,7 +1328,7 @@ export class ScoutDaemonV2 {
       workbench: 'translate',
       data: { done: 0, total: 1, ...face },
     })
-    // 🔴 GC 炸弹修复（2026-08-08 live test 实测残留 312KB / CURRENT-STATE §八 + C34 的翻译那一半）。
+    // Reclaim stale translation workspace state before starting another run.
     //
     // 把这个活的翻译工作台目录名登记为"在飞行"，跑完（含抛错）必须摘掉——与阶段 3 字幕流的
     // 那段登记完全同构，理由也同：gcOrphans 的两条保留条件之一就是"这个工作台正在被使用"，
@@ -2343,7 +2343,7 @@ export class ScoutDaemonV2 {
    *  为什么必须有这条**独立于识别队列**的通路（这就是 C21 的全部内容）：识别成功后
    *  `files.work_id` 非 NULL，而 identifyScheduler 的队列谓词是 `work_id IS NULL`
    *  → 那个作品目录**永不再进识别队列**。于是"识别时顺手采 imdb"（C5）只覆盖**今后**新识别的
-   *  作品；CURRENT-STATE 记录的 83 个已识别作品的 provider_ids 会永远是 NULL，抓源腿对它们
+   *  作品；without this backfill, previously identified works can keep missing provider IDs,
    *  退化成纯文本 query（假阴性多），而第 6 步的 e2e 恰好就在这批存量上跑——会量出一个偏低的
    *  命中率并被当成"真实命中率"。这是本仓栽过四次的同型缺陷（C12 → C35 → D17 → D18：
    *  写了某列却没定谁来写/谁来重读），手法照 3-1 已落地的 embedded_langs 回填 pass。

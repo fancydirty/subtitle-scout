@@ -1,5 +1,5 @@
 // src/v2/scanner.ts：新架构阶段 1——机械扫描器。
-// spec: docs/design/2026-08-08-new-architecture-design.md §4
+// Filesystem scanner for the current pipeline.
 // 行为照 Jellyfin：遍历守备目录 → 按扩展名过滤 → ffprobe 探测 → 按约定解析结构 → 落 files 表。
 // 零身份判断（work_id 恒 NULL，识别 agent 的事）。不符合约定的静默跳过（非媒体文件）。
 //

@@ -241,7 +241,7 @@ describe('makeTranslateWorker (end-to-end, scripted model)', () => {
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 翻译工作台的生命周期（2026-08-08 live test 实测缺陷 / CURRENT-STATE §八「翻译工作台 GC 炸弹」）
+// Translation workspace lifecycle and cleanup regression coverage.
 //
 // 实测证据：翻译成功、sub_status 已闭环到 covered，而
 // `_scout_live_test/TV/.subtitle-translate/daemon-1786390499859/`（312KB，canonical/ + agent_view/

@@ -15,20 +15,12 @@ scratchpad/
 .superpowers/
 dist/
 
-# 作者私有（不随公开仓；本地保留）
+# 本地部署资料（不随公开仓；本地保留）
 deploy/
-!deploy/
-deploy/*
-!deploy/deploy.sh
-# router.env.example 是纯模板（不含真值），应入库：否则对它的修复只存在于本机
-!deploy/router.env.example
 worker/
-# 内部设计/战役/事故记录整目录不随公开仓（开源时不带内部过程文档）
-docs/
-# 例外：docs/design/ 是重构的唯一依据（spec + 审计报告），丢了无法复原，必须入库。
-# 开源时如需剥离，删这两行即可（用户裁决 2026-08-08）
-!docs/
-!docs/design/
+# 内部设计、运维、战役和研究记录不随公开仓，本地仍保留。
+docs/*
+!docs/agent-first-identification-architecture.md
 jellyfin-config/
 cache/
 
@@ -43,3 +35,23 @@ sandbox-scratch/
 .claude/
 .omo/
 .opencode/
+
+# 本地审计、截图和监控脚本（不随公开仓；本地保留）
+.cursor/
+PROJECT_AUDIT_2026.md
+monitor-loop.sh
+monitor-iteration-*.png
+final.png
+/*.png
+pnpm-lock.yaml
+pnpm-workspace.yaml
+DESIGN.md
+web/DESIGN.md
+DIRBROWSER_IMPROVEMENTS.md
+DIRBROWSER_RESEARCH.md
+SETTINGS_REDESIGN.md
+SETTINGS_TAB_REDESIGN_SPEC.md
+SETTINGS_VISUAL_MOCKUP.md
+TODO.md
+ZIMUKU_VISION_UI_PLAN.md
+src/deployContract.test.ts

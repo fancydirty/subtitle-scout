@@ -32,7 +32,7 @@ export function injectExtraBody(init: RequestInit | undefined, extra: Record<str
  *  Connect Timeout Error", UND_ERR_CONNECT_TIMEOUT, ECONNREFUSED, …). Deliberately checks
  *  error `code`/`cause.code`/`cause.message` — NOT arbitrary message text — so a model output or
  *  a 4xx that merely mentions "connection timeout" is never misclassified as retryable.
- *  See docs/design/2026-07-14-provider-proxy-hijack-root-cause.md (软路由复核). */
+  *  Provider-specific proxy behavior is intentionally kept outside this adapter. */
 export function isConnectError(e: unknown): boolean {
   const err = e as { code?: unknown; message?: unknown; cause?: { code?: unknown; message?: unknown } }
   const codes = [err?.code, err?.cause?.code].map(String).join(' ')

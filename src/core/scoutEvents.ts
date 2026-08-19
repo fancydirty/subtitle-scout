@@ -3,7 +3,7 @@
 // ── 为什么存在（R-F10 用户裁决）────────────────────────────────────────────────
 // 用户原话：「对用户而言有必要推的事件才推，而非事无巨细」。据此从现有 30 条 daemon 日志里
 // 筛出 4 类进 SSE：activity / found / health / progress（清单与逐条判据见
-// docs/design/2026-08-11-FRONTEND-SPEC.md §六·六）。
+// The event names are consumed by the dashboard and workflow trace views.
 //
 // **把系统的辛苦展示给用户看是反效果**——用户要的是"找到了什么"，不是"我跑了多少次
 // ffprobe"。故 probe wrote=N 统计、`回填: xxx ok=N`、`judge: 判定 N 个文件`、trace 修剪、

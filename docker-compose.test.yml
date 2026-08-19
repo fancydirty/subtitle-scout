@@ -1,6 +1,6 @@
 # Portable live-test runner — deploy on the SOFT ROUTER (or any host whose network reaches
 # assrt/mimo WITHOUT this dev Mac's fake-ip transparent proxy, which destroys sessions/sockets
-# under sustained load). See docs/design/2026-07-14-provider-proxy-hijack-root-cause.md.
+# under sustained load). Keep test traffic isolated from production credentials.
 #
 # node_modules lives in a NAMED VOLUME (NOT bind-mounted) so native modules (better-sqlite3) are
 # built for the CONTAINER's arch — never carry a different-arch host's node_modules onto the router.

@@ -3,7 +3,7 @@
  * 解耦:验证码识别通过注入的 solve 回调完成(生产接线用 solveNumericCaptcha,测试注入假实现),
  * 网络请求通过注入的 fetchImpl 完成,全部离线可测。
  *
- * 挑战页特征(实测证据,见 docs/design/2026-07-13-zimuku-provider-design.md):
+ * 挑战页特征（基于 provider fixtures 与观测到的响应）：
  * body 含 "YunsuoAutoJump"(JS 跳转函数名)或 "security_verify_img"(验证码图片标记)。
  *
  * 挑战页有两种实测形状(见 fixtures/zimuku/challenge.html 与 fixtures/zimuku/real-challenge.html):
@@ -296,4 +296,3 @@ export async function solveYunsuoChallenge(
   }
   throw new ZimukuChallengeError(`yunsuo captcha solve exhausted after ${maxAttempts} attempts: ${lastError}`)
 }
-

@@ -1,5 +1,5 @@
 // jimaku.cc 日文字幕源 client(F2)。Auth=裸 Authorization header;files 直链下载无需 key。
-// 契约见 docs/design/2026-07-21-f2-jimaku-ja-source-design.md。
+// The adapter contract is kept local to the provider interfaces and tests.
 import { z } from 'zod'
 
 export const JIMAKU_BASE = 'https://jimaku.cc/api'

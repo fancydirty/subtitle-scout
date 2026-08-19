@@ -4009,7 +4009,7 @@ describe('ScoutDaemonV2 · D17 embedded_langs 存量回填 pass（C38 + C43）',
 // 为什么必须有一条**独立于识别队列**的回填通路（这是 C21 的全部内容）：识别成功后
 // `files.work_id` 非 NULL，而 identifyScheduler 的队列谓词是 `work_id IS NULL`
 // → 那个作品目录**永不再进识别队列**。于是"识别时顺手采 imdb"这条改动只覆盖**今后**新识别的
-// 作品；CURRENT-STATE 记录的 83 个已识别作品的 provider_ids 会永远是 NULL，
+// 作品；without this backfill, previously identified works could keep missing provider IDs,
 // 翻译抓源腿对它们退化成纯文本 query（假阴性多），而第 6 步的 e2e 恰好就在这批存量上跑
 // → 会在退化状态下量出一个偏低的命中率，并被当成"真实命中率"。
 //
@@ -5582,7 +5582,7 @@ describe('翻译工作流 · 主进程内独立循环（第 4 步 / R19 + R12 + 
   })
 
   // ───────────────────────────────────────────────────────────────────────────
-  // 翻译工作台的 in-flight 登记（CURRENT-STATE §八「翻译工作台 GC 炸弹」/ C34 的另一半）
+  // Translation workspace in-flight registration.
   //
   // 字幕流早有这条（阶段 3 里 `inFlightStagingJobIds.add(subtitleJobId(item.workId))`），
   // 翻译流一直没有——文档记的根因是"翻译 jobId 是 `daemon-${Date.now()}`，每次不同、循环层

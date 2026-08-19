@@ -586,7 +586,7 @@ describe('db 基座', () => {
       .toEqual({ duration_verdict: 'mismatch', verdict_fingerprint: fp })
   })
 
-  // 详情页重设计 item B（design: docs/design/2026-07-20-detail-page-redesign-design.md）：
+  // Detail-page data regression:
   // 末条迁移给 series 加 overview/backdrop_path、tmdb_seasons 加 overview/air_date/still_path，纯 ADD COLUMN。
   it('详情页富化迁移：series 加 overview/backdrop_path，tmdb_seasons 加 overview/air_date/still_path', () => {
     const db = openDb(':memory:')
@@ -2007,8 +2007,8 @@ describe('v44 迁移：特典重判触发器 + DROP extras_exemptions', () => {
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// v46 迁移（2026-08-18，spec: docs/superpowers/specs/2026-08-18-en-target-judgechain
-// -and-match-philosophy-design.md §4.2b）：判需规则修正（规则 2 改 isLang 认三字母码）
+// v46 migration (2026-08-18, English-target judge-chain behavior): rule 2 now uses
+// the three-letter language code from ffprobe.
 // 后的全量重判触发器——`UPDATE files SET needs_subtitle = NULL, skip_reason = NULL`。
 //
 // 为什么必须有这条（没有它，规则修正对存量库**一行都不生效**）：judge 的取件谓词是

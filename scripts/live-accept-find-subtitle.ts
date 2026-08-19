@@ -5,8 +5,7 @@
 //   npx tsx scripts/live-accept-find-subtitle.ts --video <path> --title <title> \
 //     [--year N --season N --episode N --root <mediaRoot>]
 //
-// See docs/design/2026-07-13-v3-live-acceptance-checklist.md for the full manual procedure this
-// script implements one step of.
+// This script is intentionally kept as a focused live-acceptance helper.
 import { parseArgs } from 'node:util'
 import { dirname, basename, join } from 'node:path'
 import { homedir } from 'node:os'

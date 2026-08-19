@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { openDb, MIGRATIONS } from './db.js'
 import type { ScoutDb } from './db.js'
 
-// spec: docs/design/2026-08-08-PIPELINE-SPEC.md §5「字幕存在性检测的两档机制」/ 裁决 D12·D16·D18
+// Two-tier subtitle existence recheck behavior.
 //
 // 本文件只守 schema 层（列存在 + 迁移打散），检测逻辑本身是后续 task 的事。
 // 为什么这几条断言值得单独立一个文件：D18 是一条**反缺陷裁决**——它存在的唯一理由是

@@ -77,8 +77,8 @@ describe('buildUnidentifiedHealth', () => {
   // lastError/attempt/nextRetryAt/path，这里当场红，并在失败信息里指回那条裁决。
   it('🔴 只出 dirName + fileCount：不出绝对路径 / last_error / attempt / next_retry_at', () => {
     addFile({
-      path: '/hostroot/mnt/nvme0n1-4/115-test/Mediary Scout/TV/Mystery/e1.mkv',
-      workDir: '/hostroot/mnt/nvme0n1-4/115-test/Mediary Scout/TV/Mystery',
+      path: '/hostroot/media/test-library/TV/Mystery/e1.mkv',
+      workDir: '/hostroot/media/test-library/TV/Mystery',
       lastError: 'evidence-fail: title mismatch', attempt: 7, nextRetryAt: NOW + 1,
     })
 
@@ -91,7 +91,7 @@ describe('buildUnidentifiedHealth', () => {
     const json = JSON.stringify(out)
     expect(json).not.toContain('hostroot')
     expect(json).not.toContain('evidence-fail')
-    expect(json).not.toContain('nvme0n1-4')
+    expect(json).not.toContain('test-library')
   })
 
   it('文件多的目录排前面（用户先看到最值得改名的那个）', () => {

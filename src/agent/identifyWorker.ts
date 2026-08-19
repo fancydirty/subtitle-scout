@@ -1,5 +1,5 @@
 // src/agent/identifyWorker.ts：识别 agent（新架构阶段 2）。
-// spec: docs/design/2026-08-08-new-architecture-design.md §5
+// Agent-first identification worker.
 //
 // 职责（用户裁决）：确认"这个 work_dir 是什么影视"（TMDB 身份）+ 批量绑定文件季集号。
 // 输入：一个 work_dir + 它的文件列表（含 parse_confidence）。
