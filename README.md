@@ -30,14 +30,16 @@ docker compose up -d
 
 ## 配置凭据
 
-subtitle-scout 需要三组凭据：ASSRT 字幕库、大模型、TMDB（识别文件用，硬性必填）。新部署推荐在设置向导中填写；无头部署也可以把对应变量写入 `.env`。凭据只保存在你自己的部署中，不要提交 `.env`。
+subtitle-scout 需要三组凭据：ASSRT 字幕库、大模型、TMDB（识别文件用，硬性必填）。
+
+**全部在首次设置向导里填写**：容器起来后打开 `http://<主机>:8099`，向导会逐项引导；之后随时可在设置页修改。凭据落库存储在你自己的部署里——**`.env` 里塞凭证不生效**（daemon 只读数据库，2026-08-20 起这是唯一入口）。
 
 ### 1. ASSRT Token
 
 **获取步骤**：
 1. 注册 [assrt.net](https://assrt.net)
 2. 登录后进入"用户中心"
-3. 复制 API token，填入 `.env` 的 `ASSRT_TOKEN`
+3. 复制 API token，在设置向导（或设置页）的 ASSRT 卡片里粘贴
 
 **预期管理**：
 - **配额约 5 次/分钟**，程序已自动限速，无需操心
@@ -45,13 +47,13 @@ subtitle-scout 需要三组凭据：ASSRT 字幕库、大模型、TMDB（识别�
 
 ### 2. 大模型 API Key
 
-**任意 OpenAI-compatible 端点均可**（DeepSeek、OpenAI、硅基流动等）。需要配置三件套：
+**任意 OpenAI-compatible 端点均可**（DeepSeek、OpenAI、硅基流动等）。在设置向导的 LLM 卡片里填三件套：
 
-| 变量 | 说明 |
+| 字段 | 说明 |
 |------|------|
-| `LLM_BASE_URL` | 如 `https://api.deepseek.com/v1` |
-| `LLM_API_KEY` | 对应端点的 API key |
-| `LLM_MODEL` | 模型名，如 `deepseek-chat` |
+| Base URL | 如 `https://api.deepseek.com/v1` |
+| API Key | 对应端点的 API key |
+| 模型 | 模型名，如 `deepseek-chat` |
 
 **关键**：三项必须来自**同一个服务商**。模型能力影响匹配质量。
 
@@ -74,7 +76,7 @@ subtitle-scout 直接扫描媒体根目录发现文件，靠 TMDB 识别标题/�
 3. 左侧 **API** → 申请一个 **Developer** key
 4. 复制 key（v3 的 32 位 key 或 v4 的 Read Access Token 都支持，程序自动识别认证方式）
 
-**填哪**：`.env` 的 `TMDB_API_KEY`。填完重启 scout 即生效。
+**填哪**：设置向导（或设置页）的 TMDB 卡片。填完即生效（向导落库同进程点火，不用重启容器）。
 
 ### OpenSubtitles（可选）：第二字幕源
 
@@ -84,7 +86,7 @@ ASSRT 主打国产字幕站，欧美剧集/电影覆盖有限；OpenSubtitles �
 
 1. 注册 [opensubtitles.com](https://www.opensubtitles.com) 账号
 2. 进入 [API Consumers](https://www.opensubtitles.com/en/consumers) 建一个 API consumer（名字仅限字母数字）
-3. 复制生成的 key，填入 `.env` 的 `OPENSUBTITLES_API_KEY`
+3. 复制生成的 key，在设置页的 OpenSubtitles 卡片里粘贴
 
 **可选加成**：额外填 `OPENSUBTITLES_USERNAME` / `OPENSUBTITLES_PASSWORD`——登录后免费档 20 次下载/天；不填则走匿名档，5 次/天。创建 consumer 时勾选 "Under development" 可拿到 100 次下载/天，开发期很够用。
 
@@ -100,7 +102,7 @@ ASSRT 主打国产字幕站，欧美剧集/电影覆盖有限；OpenSubtitles �
 docker compose exec subtitle-scout node dist/cli/index.js doctor
 ```
 
-**⚠️ 容器起不来时**（缺 TMDB_API_KEY/LLM key 导致崩溃循环，exec 会报 "container is not running"）：
+**⚠️ 容器没跑起来时**（exec 会报 "container is not running"——比如启动期体检想看接线）：
 
 ```bash
 docker compose run --rm --no-deps subtitle-scout node dist/cli/index.js doctor
@@ -111,8 +113,8 @@ docker compose run --rm --no-deps subtitle-scout node dist/cli/index.js doctor
 ```
 ✓ tmdb  TMDB API key 有效
 ✓ assrt  ASSRT token 有效，当前配额余量 180
-⊘ opensubtitles  未配置(可选 provider)——设 OPENSUBTITLES_API_KEY 启用
-⊘ zimuku  未配置(可选 provider,灰色站点条款风险自担)——设 ZIMUKU_ENABLED=true 启用
+⊘ opensubtitles  未配置(可选 provider)——在 dashboard 设置页配置 OPENSUBTITLES_API_KEY 启用
+⊘ zimuku  未配置(可选 provider,灰色站点条款风险自担)——设置页开启 zimuku 开关启用
 ✓ llm  LLM 端点可用，最小对话成功
 ✓ media-roots  2 个媒体根目录全部可写
 ✓ mount-capabilities  挂载能力画像 — /hostroot/mnt/media/Movies（硬链接: 支持, 大小写敏感: 是, 可写: 是）...
@@ -231,35 +233,23 @@ docker compose exec subtitle-scout node dist/cli/index.js translate-item "/hostr
 
 ## 环境变量参考
 
-完整列表见 `.env.example`，主要配置项：
+完整列表见 `.env.example`。
 
-### 必填
+### 凭证不走环境变量（2026-08-20 起）
 
-| 变量 | 说明 |
-|------|------|
-| `LLM_BASE_URL` | OpenAI-compatible 端点，如 `https://api.deepseek.com/v1` |
-| `LLM_API_KEY` | 对应端点的 API key |
-| `LLM_MODEL` | 模型名 |
-| `ASSRT_TOKEN` | [assrt.net](https://assrt.net) 用户中心获取 |
-| `TMDB_API_KEY` | 识别文件/判定季集排布/取全部中文译名变体都靠它；缺失 `watch`/`reconcile-all` 直接报错退出；见「第三把钥匙」 |
+所有凭证与字幕源开关——TMDB / LLM 三件套 / AI 翻译三件套 / ASSRT / OpenSubtitles / jimaku / zimuku / subhd——**只能在首次设置向导（或设置页）里配置**，落库存储。daemon 运行态只读数据库：往 `.env` 或 compose `environment` 里塞这些变量不会生效。向导落库后同进程点火，改完即生效，不用重启容器。
 
-### 可选
+### 环境变量（部署基建）
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| `OPENSUBTITLES_API_KEY` | OpenSubtitles key（可选）——ASSRT 之外的第二字幕源，欧美剧集补盲；见「OpenSubtitles」 | 空 |
-| `OPENSUBTITLES_USERNAME` / `OPENSUBTITLES_PASSWORD` | OpenSubtitles 登录（可选）——免费档下载配额 5→20 次/天 | 空 |
-| `ZIMUKU_ENABLED` | zimuku 字幕站开关（灰色地带，条款风险自担）——需要 LLM 支持多模态识图 | `false` |
-| `SUBHD_ENABLED` | subhd 字幕源开关（通用型中文字幕站，强源）——无验证码/无云锁，不需 LLM | `false` |
-| `TMDB_BASE_URL` / `TMDB_PROXY_URL` | TMDB 反代/代理（墙内直连常被墙时用） | 空 |
-| `MEDIA_ROOTS` | 允许写入的根目录白名单（逗号分隔，**容器内**路径 = `/hostroot` + 宿主机绝对路径，如 `/hostroot/mnt/media/Movies`；**首启种子**，之后以 dashboard 设置页为准）。留空即推荐做法——在设置页用目录浏览器点选 | 空 |
+| `MEDIA_ROOTS` | 媒体根目录首启种子（逗号分隔，**容器内**路径 = `/hostroot` + 宿主机绝对路径，如 `/hostroot/mnt/media/Movies`；**首启播种一次**，之后以 dashboard 设置页为准）。留空即推荐做法——在设置页用目录浏览器点选 | 空 |
 | `TARGET_LANGUAGES` | 目标字幕语言（逗号分隔 BCP-47；设置页 target_languages 优先于此） | `zh` |
+| `TMDB_BASE_URL` / `TMDB_PROXY_URL` | TMDB 反代/代理（墙内直连常被墙时用；网络层基建，key 本身在向导里配） | 空 |
 | `TZ` | 容器时区（影响日志与"今天"统计） | `Asia/Shanghai` |
 | `SKIP_CHINESE_ORIGIN` | 国产内容跳过处理 | `true` |
-| `JIMAKU_API_KEY` | jimaku.cc 日文字幕源 API key（F2 日→中直译日源；空则该源休眠） | 空 |
-| `TRANSLATE_BASE_URL` / `TRANSLATE_API_KEY` / `TRANSLATE_MODEL` | **AI 翻译部署门三件套**——缺一 daemon 自动翻译整体休眠（绝不回退 `LLM_*`，太弱）；三件套配齐后还需在设置页打开"AI 翻译"开关。手动 `translate-item` 命令不受限：未配 `TRANSLATE_MODEL` 时回退 `LLM_*`。compose 部署还需确认 compose 的 environment 透传了它们 | 空 |
 | `TRANSLATE_CRITIC` | 语义判官开关（关闭后仅靠确定性质量闸，仍 fail-closed） | `on` |
-| `TRANSLATE_CRITIC_MODEL` | 判官单指定模型 | 同 `TRANSLATE_MODEL` |
+| `TRANSLATE_CRITIC_MODEL` | 判官单指定模型 | 同翻译主模型 |
 | `TRANSLATE_TIMEOUT_MS` | 单批翻译超时（毫秒） | `300000` |
 | `SCAN_INTERVAL_MS` | 自扫描间隔（毫秒；设置页 scan_interval_ms 优先） | `900000` |
 | `DASHBOARD_PORT` | 监控页端口 | `8099` |
@@ -268,7 +258,7 @@ docker compose exec subtitle-scout node dist/cli/index.js translate-item "/hostr
 | `SUBTITLE_SCOUT_CACHE_DIR` | 缓存目录 | `~/.subtitle-scout/cache` |
 | `LOG_RETAIN_DAYS` | daemon 日志文件保留天数 | `30` |
 | `REALIGN_ARCHIVE_ROOT` | 整理（realign）归档根——旧目录搬到这里可回滚。默认库根上一级。`/hostroot` 挂载形态下通常无需配（库根上一级与库同属一个 bind mount，rename 合法）；想集中存放时配一个 `/hostroot` 下、与媒体库同一文件系统的路径 | 空（=库根上一级） |
-| `LLM_EXTRA_BODY` | （高级）强制注入请求体的 JSON，通常无需配置 | 空 |
+| `LLM_EXTRA_BODY` | （高级）强制注入 LLM 请求体的 JSON（provider 专属参数逃生舱），通常无需配置 | 空 |
 | `FFPROBE_PATH` | 内嵌字幕探针用的 ffprobe 二进制路径；官方镜像已内置（apt 装的 ffmpeg），无需配置——只有源码直装且 PATH 上没有 ffmpeg 时才需要手动指定，探测退化为仅靠 sidecar 字幕文件判定 | 空（回退到 `ffprobe-static`） |
 
 ---

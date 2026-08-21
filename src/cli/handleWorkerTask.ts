@@ -249,7 +249,7 @@ export const makeHandleWorkerTask = (deps: HandleWorkerTaskDeps) => {
       if (!fsDeps) { jobs.completeError(job.id, 'setup incomplete — engine is gated', Date.now()); return }
       const runTask = makeFindSubtitleWorker({
         model: c.reasoningModel,
-        adapters: await buildAdapters(emitProviderEvent, cfg, warn),
+        adapters: await buildAdapters(cfg, emitProviderEvent, warn),
         cacheRoot,
         // 路 A：Step 0 识别验证的证据源（同 realignRunEpisode 处的注释——holder 代际内 tmdb 非空）。
         tmdb: c.tmdb,
@@ -304,7 +304,10 @@ export const makeHandleWorkerTask = (deps: HandleWorkerTaskDeps) => {
         // adapters 每次 claim 现建(同 find_subtitle 分支口径),fetchSourceSub 防漂移共用。
         // translateCfg 是 tryAutoTranslateCfg(cfg) 的返回值（专用翻译三凭证），与外层
         // AdapterConfigResolver 同名 cfg 不再遮蔽——重命名为 translateCfg 消除歧义。
-        const adapters = await buildAdapters(emitProviderEvent)
+        // 2026-08-20 修复（env 凭证删除战役）：这里曾漏传 cfg——旧默认值 envOnlyAdapterConfig
+        // 让翻译抓源腿的凭证面恒空（daemon 运行态 env 从来不生效）。buildAdapters 现在必传
+        // cfg，漏接在编译期就红；此处与 find_subtitle 分支用同一个 resolver。
+        const adapters = await buildAdapters(cfg, emitProviderEvent)
         const fetchSourceSub = makeRealFetchSourceSub(db, adapters, emitProviderEvent)
         const runItem = makeDaemonTranslateRunItem({
           db, cfg: translateCfg, fetchSourceSub, tmdb: c.tmdb, roots: currentRoots,

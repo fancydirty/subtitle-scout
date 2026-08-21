@@ -30,25 +30,12 @@ export interface ResolvedSecret {
 }
 
 /** 设置页唯一来源：只读 settings 表，不再看 env。
- *  （2026-08-15 用户裁决：能设置页里配置的就不能走环境变量。）
- *  保留 `resolveSecret` 仅供一次性 CLI 命令与旧测试使用。 */
+ *  （2026-08-15 用户裁决：能设置页里配置的就不能走环境变量；2026-08-20 二次收口——
+ *  `resolveSecret`（env > db）整函数删除，一次性 CLI 命令也一律走库：env 凭证路径全灭。） */
 export function resolveSecretFromSettings(
   name: SecretName,
   dbGet: (name: SecretName) => string | null,
 ): ResolvedSecret {
-  const dbValue = dbGet(name)
-  if (dbValue !== null && dbValue !== '') return { value: dbValue, source: 'db' }
-  return { value: null, source: 'none' }
-}
-
-/** env（非空）> db > none。仅无库的一次性命令使用；产品运行态见 resolveSecretFromSettings。 */
-export function resolveSecret(
-  name: SecretName,
-  env: NodeJS.ProcessEnv,
-  dbGet: (name: SecretName) => string | null,
-): ResolvedSecret {
-  const envValue = env[name]
-  if (typeof envValue === 'string' && envValue !== '') return { value: envValue, source: 'env' }
   const dbValue = dbGet(name)
   if (dbValue !== null && dbValue !== '') return { value: dbValue, source: 'db' }
   return { value: null, source: 'none' }
@@ -112,7 +99,12 @@ export function makeAdapterConfigResolver(
   }
 }
 
-/** 无库场景（一次性命令的 env-only 退化）：永远不看库，语义与今天逐字一致。 */
+/** 无库场景的 env-only 退化。
+ *
+ *  ⚠️ 2026-08-20 用户裁决（env 凭证删除）后，这只剩**产品外**的合法用户：sandbox-library
+ *  诊断工具与 scripts/ 下的开发验收脚本（它们在合成沙盒上跑，天然没有生产库）。
+ *  产品运行态（watch/daemon/dashboard/doctor/translate-item）一律用 makeAdapterConfigResolver
+ *  读库——绝不允许哪个调用点悄悄回落到这里（buildAdapters 的 cfg 已改为必传，编译期把门）。 */
 export function envOnlyAdapterConfig(env: NodeJS.ProcessEnv): AdapterConfigResolver {
   return {
     secret: (name) => {

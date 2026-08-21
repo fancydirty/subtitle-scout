@@ -54,6 +54,13 @@ import {
 
 export const INSPECT_INTERVAL_MS = 24 * 60 * 60 * 1000
 
+/** 翻译车道的空闲节拍（2026-08-20 用户裁决：翻译改为独立车道持续排干，见 translateLoop）。
+ *
+ *  只在**空闲**（无候选 / 全在退避 / 开关关闭）时睡这一拍；有活时背靠背连续领。
+ *  与 MAINTENANCE_TICK_MS 同量级但刻意是独立常量：翻译的轮询代价是一条索引化的
+ *  SQLite 查询，将来要单独调节奏（比如队列大时加快）不必动维护拍的语义。 */
+export const TRANSLATE_TICK_MS = 5 * 60 * 1000
+
 /** 维护循环的节拍——也就是 run() 的 idle sleep 周期。
  *
  *  为什么运维必须挂在这一层而不是巡检里面（D5 的关键取舍）：巡检是**每日一次**，而
@@ -193,6 +200,9 @@ export interface DaemonV2Deps {
    *  维护"就完事——必须能在一个 run() 内驱动出**多拍**，才能证明 gcStaging 只在 boot 跑一次
    *  而 dbMaintenance 每拍都跑（前者若漏进维护循环，就会周期性 rm 掉正在跑的工作台）。 */
   maintenanceTickMs?: number
+
+  /** 翻译车道空闲节拍（测试注入）。默认 TRANSLATE_TICK_MS(5min)——见该常量的论证。 */
+  translateTickMs?: number
 
   /** 测试注入：等待。默认下面那个真实的 `sleep`（setTimeout + AbortSignal 中断）。
    *
@@ -654,6 +664,19 @@ export class ScoutDaemonV2 {
       this.deps.log(`warn: boot judge 失败（隔离，不阻塞巡检，下次启动或巡检阶段 2.5 重试）: ${String(e)}`)
     }
 
+    // ── 双车道（2026-08-20 用户裁决）─────────────────────────────────────────
+    // 主循环（巡检闸 / 维护拍 / 带外扫描）与翻译车道（translateLoop，队列持续排干）并行。
+    // 此前翻译挂在巡检尾部（C32 节流：一轮一个作品），一个 2h 的翻译活会把维护拍一起
+    // 卡住、且一天自然只翻一集；拆成并行车道后两边互不阻塞（互斥性论证见 translateLoop）。
+    await Promise.all([
+      this.mainLoop(signal),
+      this.translateLoop(signal),
+    ])
+  }
+
+  /** 主车道：维护拍 + 24h 巡检闸 + 带外扫描取件。run() 的 boot 段结束后进入，与
+   *  translateLoop 并行（2026-08-20 前这里就是 run() 的 while 主体，逐字提出）。 */
+  private async mainLoop(signal: AbortSignal): Promise<void> {
     while (!this.stopping) {
       // 维护循环跑在时间闸**之外**（旧 daemon 的既有分界：产工作循环受闸、维护循环不受）。
       // 巡检一天一次，WAL checkpoint 若跟着变成一天一次，等于把一整天的写入押在"今天不掉电"上。
@@ -1040,27 +1063,11 @@ export class ScoutDaemonV2 {
         unsub()
       }
     }
-    // 字幕工作台**收工**（同上，审计 🔴-2）。翻译流（阶段 4）每轮只推进一个作品，
-    // 且可能整轮不推进（无活时直接返回）——那种情况下若没有这一条，current 会一直停在
-    // 最后一个字幕作品上，直到明天巡检开始才被清掉。
+    // 字幕工作台**收工**（同上，审计 🔴-2）。翻译流已不再挂在巡检尾部（2026-08-20 用户
+    // 裁决：C32 节流废弃，翻译改为 run() 里的独立 translateLoop 车道持续排干）——这里若
+    // 不清 current，它会一直停在最后一个字幕作品上，直到明天巡检开始才被清掉。
     if (subtitleQueue.length > 0) {
       this.emit({ type: 'activity', message: `字幕工作台跑完，处理了 ${subtitleQueue.length} 个作品` })
-    }
-
-    // 阶段 4：翻译流推进一个作品（R19 + C32 / 第 4 步把 C3 接回来）。
-    //
-    // 位置在**最末尾**是形态的一部分，不是随手放的（完整论证见 advanceTranslateOnce）：
-    // 翻译是这条流水线里唯一"单个活可能跑几小时"的阶段，放在前面会把删除清理与两条工作台
-    // 全堵在它后面；放最后则它再慢也只是让"歇到明天"晚开始。
-    //
-    // 整支 try/catch 隔离，口径与 gcStaging / 回填 pass / 阶段 2.6 一致：翻译挂了不许连带
-    // 掀翻整轮巡检——否则 D4 的失败退避不推进时间闸，扫描与识别跟着一起停摆（一次 LLM 偶发
-    // 超时就能停掉整条流水线）。advanceTranslateOnce 内部已把 runItem 的抛错收成失败轨记账，
-    // 这里兜的是它 try 之外那条缝（取候选的 SQL、守卫回写、日志）。
-    try {
-      await this.advanceTranslateOnce()
-    } catch (e) {
-      this.deps.log(`warn: 翻译流推进失败（隔离，不阻塞本轮巡检，下轮重试）: ${String(e)}`)
     }
   }
 
@@ -1280,25 +1287,30 @@ export class ScoutDaemonV2 {
    *  复用 `deps.fileExists`（1b-4 的注入点，默认 existsSync），不写第二份探针。
    *  文件没了不是"一次失败尝试"：让幽灵吃掉失败额度会污染"满 3 次转 unsolvable"的判据——
    *  一个已删除的文件 3 轮后被写成 unsolvable，而它压根不该再有任何状态（R7 规定下一轮扫描
-   *  把这行整个删掉）。故这一支连退避都不写：给一个即将被删的行安排未来是没有意义的。 */
-  private async advanceTranslateOnce(): Promise<void> {
+   *  把这行整个删掉）。故这一支连退避都不写：给一个即将被删的行安排未来是没有意义的。
+   *
+   *  ── 返回值（2026-08-20 独立车道改造）──
+   *  返回"这一圈是否真的干了活"。translateLoop 据此决定立即续跑（true）还是睡一拍（false）。
+   *  2026-08-20 用户裁决随同一并移除了 skipBackoffThisInspect 的 includeBackoff 联动：
+   *  翻译取件**恒走默认退避过滤**（D6 红线的本来面目——"daemon 侧绝不许传 true"），
+   *  手动点火不再给翻译开后门。 */
+  private async advanceTranslateOnce(): Promise<boolean> {
     const runItem = this.deps.translateRunItem
-    if (!runItem) return                                   // 未接线 → 整支休眠（零成本）
+    if (!runItem) return false                                  // 未接线 → 整支休眠（零成本）
     // 惰性求值（见 translateEnabled 的论证）：dashboard 里关掉翻译，下一轮就不再领新活。
-    if (!(this.deps.translateEnabled?.() ?? false)) return
+    if (!(this.deps.translateEnabled?.() ?? false)) return false
 
     const db = this.deps.db
     const now = this.deps.now?.() ?? Date.now()
     const fileExists = this.deps.fileExists ?? existsSync
 
-    const candidates = listNewTranslateCandidates(
-      db, now, this.skipBackoffThisInspect ? { includeBackoff: true } : {},
-    )
-    if (candidates.length === 0) return
+    const candidates = listNewTranslateCandidates(db, now)
+    if (candidates.length === 0) return false
 
-    // 单次只处理一个**作品**（C32）：取队首那个 work_id 的第一个文件。
-    // 为什么按文件而不是按整簇：翻译是逐文件的付费 LLM（每集一个 session），一簇 24 集就是
-    // 24 个 session 串行几小时。字幕流可以整簇一次（一个 agent session 处理一批），翻译不行。
+    // 单次只处理**一个文件**（C32 的节流形态已于 2026-08-20 用户裁决废弃——见 translateLoop
+    // 的论证；保留下来的只有"单飞"这一半：翻译是逐文件的付费 LLM（每集一个 session），
+    // 一簇 24 集就是 24 个 session，串行排干由循环的背靠背续跑承担，不在单次调用里并发）。
+    // 为什么按文件而不是按整簇：字幕流可以整簇一次（一个 agent session 处理一批），翻译不行。
     const c = candidates[0]
 
     // R12：跑到时资源文件仍存在。stat 抛错时**当它还在**（同 dropVanishedFiles 的既有口径）：
@@ -1307,7 +1319,7 @@ export class ScoutDaemonV2 {
     try { present = fileExists(c.videoPath) } catch { present = true }
     if (!present) {
       this.deps.log(`翻译跳过（文件已消失，不计 tr_attempt / R12）: ${c.videoPath}`)
-      return
+      return false
     }
 
     this.deps.log(`翻译 ${c.title} (${c.videoPath})`)
@@ -1384,7 +1396,9 @@ export class ScoutDaemonV2 {
       this.deps.log(
         `warn: 翻译回写守卫未命中（sub_status 已被扫描改成 ${write.status}，本次 ${status} 回写作废 / D10）: ${c.videoPath}`,
       )
-      return
+      // 干了活（付费 LLM 已花出去），返回 true 让循环立刻复查队列——那行大概率已被扫描
+      // 写成 covered，下一圈查无候选自然落到睡拍，不在这里猜。
+      return true
     }
     this.deps.log(`翻译结果 ${status} → sub_status=${write.status}: ${c.videoPath}`)
     // R-F10 found ②：翻译装盘成功同样是"找到了字幕"——对用户而言"从哪来的"是实现细节，
@@ -1419,6 +1433,52 @@ export class ScoutDaemonV2 {
     // 漏接是静默的——本仓栽过 6 次的那个形状）。
     if (status === 'installed') {
       this.requestScan()
+    }
+    return true
+  }
+
+  /** 翻译车道（2026-08-20 用户裁决：废弃 C32 的"每轮巡检只推进一个作品"节流）。
+   *
+   *  形态：与主循环**并行**的独立 while——队列有活就背靠背领（advanceTranslateOnce 返回
+   *  true 时立即续跑），空了/全在退避/开关关闭才睡一拍（TRANSLATE_TICK_MS，默认 5min）。
+   *
+   *  这才是 R19「翻译流独立，不与识别/字幕互相阻塞」的完整形态：旧接线把翻译挂在巡检
+   *  尾部，一个 2h 的翻译活会让"歇到明天"晚 2h 开始、且一天自然只推进一集（C32 的节流
+   *  本意是防翻译拖垮巡检，代价是吞吐被钉死在 1 集/天——用户裁决废弃）。独立车道后：
+   *   · 翻译不再阻塞主循环：维护拍（checkpoint/备份）、24h 巡检、带外扫描照常走；
+   *   · 巡检不再阻塞翻译：翻译有自己的取件谓词（handoff_translate）与退避列（D3/D6），
+   *     与字幕流谓词（sub_status IS NULL）严格互斥（C14），两条车道按状态瓜分 files 表，
+   *     巡检明天再跑也不会碰到翻译中的行——这正是"队列一天排不干、字幕队列又跑了一轮"
+   *     场景的答案：谓词互斥保证无双重处理，回写守卫（D10）保证扫描中途改状态不互踩。
+   *
+   *  用裸 sleep 而不是 idleSleep：idleSleep 的提前唤醒把手（this.wakeIdle）是单槽的，
+   *  两条循环共用会让后睡的那一觉叫不醒（wakeIdle 被覆盖）。翻译空闲一拍最多 5min，
+   *  不需要被 requestScan 提前唤醒——它醒来要查的队列与扫描是否完成无关。 */
+  private async translateLoop(signal: AbortSignal): Promise<void> {
+    // 未接线 → 车道不启动（升级原有"未注入 → 恒 false → 休眠"的口径：连循环都不进，
+    // 零成本。也避免注入了瞬时 sleep 桩的调用方——测试——在恒空转里饿死宏任务）。
+    if (!this.deps.translateRunItem) return
+    // 自行接线 signal → stopping（照 inspectOnce 的模式）：run() 也会挂自己的监听，双注册
+    // 无害；而缺了这一条，直接驱动本方法的测试（与未来任何非 run() 调用方）abort 之后
+    // stopping 永远为 false → 循环变成不响应退出的空转。
+    const onAbort = () => { this.stopping = true }
+    signal.addEventListener('abort', onAbort, { once: true })
+    const sleepFn = this.deps.sleep ?? sleep
+    try {
+      while (!this.stopping) {
+        let did = false
+        try {
+          did = await this.advanceTranslateOnce()
+        } catch (e) {
+          // 隔离口径照抄旧阶段 4：翻译挂了不许掀翻车道——退避与失败额度在
+          // advanceTranslateOnce 内部已收口，这里兜的是取件 SQL/守卫回写那些 try 之外的缝。
+          this.deps.log(`warn: 翻译流推进失败（隔离，本车道继续，下拍重试）: ${String(e)}`)
+        }
+        if (this.stopping) break
+        if (!did) await sleepFn(this.deps.translateTickMs ?? TRANSLATE_TICK_MS, signal)
+      }
+    } finally {
+      signal.removeEventListener('abort', onAbort)
     }
   }
 

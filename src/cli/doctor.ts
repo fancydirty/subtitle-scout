@@ -29,7 +29,7 @@ export async function checkOpenSubtitles(os: { search(): Promise<{ data: unknown
   if (!os) {
     return {
       name: 'opensubtitles', ok: true, skip: true,
-      detail: '未配置(可选 provider)——设 OPENSUBTITLES_API_KEY 启用',
+      detail: '未配置(可选 provider)——在 dashboard 设置页配置 OPENSUBTITLES_API_KEY 启用',
     }
   }
   try {
@@ -43,8 +43,8 @@ export async function checkOpenSubtitles(os: { search(): Promise<{ data: unknown
   }
 }
 
-/** zimuku 是可选 provider(默认关闭——灰色站点,条款风险自担,见 .env.example)。
- *  probe=null(ZIMUKU_ENABLED 未开)→ skip,非失败,规则同 checkOpenSubtitles。已启用时只探测
+/** zimuku 是可选 provider(默认关闭——灰色站点,条款风险自担,开关在 dashboard 设置页)。
+ *  probe=null(设置页里未开启)→ skip,非失败,规则同 checkOpenSubtitles。已启用时只探测
  *  首页可达性:命中云锁"网站防火墙"中间页是预期健康状态而非失败——运行时自动破解,doctor 不
  *  重复验证码破解链路(那是集成测试/实跑的职责)。 */
 export async function checkZimuku(

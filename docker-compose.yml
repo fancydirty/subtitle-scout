@@ -35,31 +35,16 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      LLM_BASE_URL: ${LLM_BASE_URL}
-      LLM_API_KEY: ${LLM_API_KEY}
-      LLM_MODEL: ${LLM_MODEL}
-      LLM_EXTRA_BODY: ${LLM_EXTRA_BODY:-}
-      ASSRT_TOKEN: ${ASSRT_TOKEN}
-      TMDB_API_KEY: ${TMDB_API_KEY}
-      OPENSUBTITLES_API_KEY: ${OPENSUBTITLES_API_KEY:-}
-      OPENSUBTITLES_USERNAME: ${OPENSUBTITLES_USERNAME:-}
-      OPENSUBTITLES_PASSWORD: ${OPENSUBTITLES_PASSWORD:-}
-      # 字幕源开关：默认关（各自需额外配置）。docker compose 只注入本块显式列出的变量，
-      # 缺列时 .env 里的 SUBHD_ENABLED/ZIMUKU_ENABLED=true 到不了容器 → 源静默不生效。
-      ZIMUKU_ENABLED: ${ZIMUKU_ENABLED:-false}
-      SUBHD_ENABLED: ${SUBHD_ENABLED:-false}
-      # TMDB 反代/代理（墙内直连常被墙时用;不配则默认直连官方 API）
+      # ── 2026-08-20 用户裁决：env 凭证路径全删 ──────────────────────────────
+      # TMDB/LLM/翻译三件套/各字幕源凭证一律在 dashboard 首次设置向导（或设置页）里配置，
+      # 落 settings 表的 secret:* 行。compose 不再透传任何凭证——旧写法在 daemon 运行态
+      # 本来就不生效（resolver 只读库），留着只会误导部署者以为"塞了 env 就配好了"。
+      # 下面只保留**部署基建**：容器起来之前就该定的事（端口/缓存路径/时区/探针路径）。
+      # TMDB 反代/代理（墙内直连常被墙时用;不配则默认直连官方 API）——网络层基建，非凭证
       TMDB_BASE_URL: ${TMDB_BASE_URL:-}
       TMDB_PROXY_URL: ${TMDB_PROXY_URL:-}
-      # jimaku 日字源(F2);不填则该 adapter 休眠
-      JIMAKU_API_KEY: ${JIMAKU_API_KEY:-}
-      # AI 翻译部署门:三件套缺一,daemon 自动翻译整体休眠(手动 translate-item 不受影响)
-      TRANSLATE_BASE_URL: ${TRANSLATE_BASE_URL:-}
-      TRANSLATE_API_KEY: ${TRANSLATE_API_KEY:-}
-      TRANSLATE_MODEL: ${TRANSLATE_MODEL:-}
-      TRANSLATE_CRITIC: ${TRANSLATE_CRITIC:-}
-      TRANSLATE_CRITIC_MODEL: ${TRANSLATE_CRITIC_MODEL:-}
-      TRANSLATE_TIMEOUT_MS: ${TRANSLATE_TIMEOUT_MS:-}
+      # LLM_EXTRA_BODY：env-only 高级项（spec §12，向导不收）——畸形 JSON 会在启动时显式报错
+      LLM_EXTRA_BODY: ${LLM_EXTRA_BODY:-}
       # 目标字幕语言与扫描节奏(dashboard 设置页的行为级配置优先于这两个种子值)
       TARGET_LANGUAGES: ${TARGET_LANGUAGES:-}
       SCAN_INTERVAL_MS: ${SCAN_INTERVAL_MS:-}

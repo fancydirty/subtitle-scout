@@ -14,17 +14,22 @@ import { makeSubhdAdapter } from './fetch/subhdAdapter.js'
 import { makeJimakuAdapter } from './fetch/jimakuAdapter.js'
 import { makeModel } from '../agent/llm.js'
 import { makeCaptchaSolver } from './captchaSolver.js'
-import { envOnlyAdapterConfig, type AdapterConfigResolver } from '../v2/secrets.js'
+import type { AdapterConfigResolver } from '../v2/secrets.js'
 
-/** 从 env 变量组装真实 FetchAdapter[]（Assrt/OpenSubtitles/Zimuku，各自按其 env 是否配置决定
+/** 从配置组装真实 FetchAdapter[]（Assrt/OpenSubtitles/Zimuku，各自按其配置是否齐全决定
  *  是否入列）。v3 phase ⑦ 从 subtitle-fetch.ts 提取出来——那个文件顶层的 `main().catch()`
  *  在 import 时就会触发副作用（见 subtitle-fetch.test.ts 头部注释：只能 spawnSync 测，不能直接
  *  import 单测），没法被新增的 in-process find-subtitle worker（cli/index.ts 的 cmdWatch）安全
  *  地 import——先把这个纯组装函数搬到这里，subtitle-fetch.ts 反过来 import 回去，两边共用同一份
- *  实现（"reuse, don't reinvent"），不再各写一份。 */
+ *  实现（"reuse, don't reinvent"），不再各写一份。
+ *
+ *  2026-08-20 用户裁决：删除 env 凭证路径——cfg 从带默认值改为**必传**。曾经的默认值
+ *  `envOnlyAdapterConfig(process.env)` 让漏传 cfg 的调用点静默退回 env（而 daemon 运行态的
+ *  env 凭证从来不生效），实测就漏了一处：handleWorkerTask 翻译分支的 buildAdapters(emit)
+ *  没传 cfg，翻译抓源腿的凭证面一直是空的。改成必传后这类漏接在编译期就红。 */
 export async function buildAdapters(
+  cfg: AdapterConfigResolver,
   emit: (e: FetchEvent) => void = () => {},
-  cfg: AdapterConfigResolver = envOnlyAdapterConfig(process.env),
   warn: (msg: string) => void = () => {},
 ): Promise<FetchAdapter[]> {
   const cacheRoot = process.env.SUBTITLE_SCOUT_CACHE_DIR || join(homedir(), '.subtitle-scout', 'cache')

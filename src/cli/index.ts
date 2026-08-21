@@ -28,7 +28,7 @@ import { detectChallenge } from '../adapters/providers/yunsuo.js'
 import { ZIMUKU_BASE } from '../adapters/providers/zimuku.js'
 import { JimakuClient } from '../adapters/providers/jimaku.js'
 import { curlFetch, SUBHD_BASE } from '../adapters/providers/subhd.js'
-import { makeAdapterConfigResolver, envOnlyAdapterConfig, SECRET_NAMES, type AdapterConfigResolver } from '../v2/secrets.js'
+import { makeAdapterConfigResolver, SECRET_NAMES, type AdapterConfigResolver } from '../v2/secrets.js'
 import { setupSatisfied, workPermitted, makeSecretsWatcher, makeSatisfactionTracker, type ClientsHolder } from './watchClients.js'
 import { openDb } from '../v2/db.js'
 import { JobsRepo } from '../v2/jobsRepo.js'
@@ -125,12 +125,12 @@ async function assemble(cfg: AdapterConfigResolver, warn: (msg: string) => void)
   const reasoningModel = (llmBaseUrl && llmApiKey && llmModelName)
     ? makeModel({ baseUrl: llmBaseUrl, apiKey: llmApiKey, model: llmModelName, extraBody })
     : null
-  if (!reasoningModel) warn('LLM is not fully configured (env or dashboard) — reasoning work stays gated until setup completes')
+  if (!reasoningModel) warn('LLM is not fully configured — finish the setup wizard in the dashboard; reasoning work stays gated until then')
   const tmdbKey = cfg.secret('TMDB_API_KEY').value
   const tmdb = tmdbKey
     ? new TmdbClient({ apiKey: tmdbKey, baseUrl: process.env.TMDB_BASE_URL, proxyUrl: process.env.TMDB_PROXY_URL })
     : null
-  if (!tmdb) warn('TMDB_API_KEY is not configured (env or dashboard) — engine stays gated until setup completes')
+  if (!tmdb) warn('TMDB_API_KEY is not configured — finish the setup wizard in the dashboard; engine stays gated until then')
   return { cacheRoot, mappings, tmdb, reasoningModel }
 }
 
@@ -328,7 +328,7 @@ async function cmdWatch() {
   const buildCurrent = async (): Promise<WatchClients> => {
     const { mappings, tmdb, reasoningModel } = await assemble(cfg, warn)
     const satisfied = tmdb !== null && reasoningModel !== null
-    const realignAdapters = await buildAdapters(emitProviderEvent, cfg, warn)
+    const realignAdapters = await buildAdapters(cfg, emitProviderEvent, warn)
     const realignRunEpisode = satisfied
       ? makeRealignRunEpisode({
           runFindSubtitleTask: makeFindSubtitleWorker({
@@ -698,7 +698,7 @@ async function cmdWatch() {
       if (!translateCfg) {
         return { status: 'no-embedded' as const, reason: 'translate 未启用：需配 TRANSLATE_MODEL/TRANSLATE_BASE_URL/TRANSLATE_API_KEY 三件套' }
       }
-      const adapters = await buildAdapters(emitProviderEvent, cfg, warn)
+      const adapters = await buildAdapters(cfg, emitProviderEvent, warn)
       const fetchSourceSub = makeRealFetchSourceSub(db, adapters, emitProviderEvent)
       const runItem = makeDaemonTranslateRunItem({
         db, cfg: translateCfg, fetchSourceSub, tmdb: clients.current.tmdb, roots: currentRoots,
@@ -776,13 +776,16 @@ async function cmdDoctor() {
         snapDb.close()
       }
     } catch {
-      // openDb 抛错（迁移失败/外键违例）时快照留空 → 本次体检退化成 env-only。同一种抛错由下方
+      // openDb 抛错（迁移失败/外键违例）时快照留空 → 本次体检按"未配置"报。同一种抛错由下方
       // checkDatabase 转成 ✗ 诊断行，这里不重复报（R2D-20 的既有口径）。
+      // 2026-08-20：不再回落 env-only——env 凭证路径已删（用户裁决），没配就是没配，
+      // 指到 wizard 去配。
     }
   }
-  const cfg = dbExists
-    ? makeAdapterConfigResolver(process.env, (k) => secretSnap.get(k) ?? null)
-    : envOnlyAdapterConfig(process.env)
+  // 2026-08-20（env 凭证删除）：doctor 与 watch 同源，一律读库。库未初始化/未配置 → ✗ + 指向
+  // dashboard 向导，绝不再看 process.env（旧回落会让"compose 里塞了 env"的部署得到一张
+  // 全绿的假体检单，而 watch 实际根本不认那些 env）。
+  const cfg = makeAdapterConfigResolver(process.env, (k) => secretSnap.get(k) ?? null)
 
   // env 缺失走诊断项（✗ + hint、exit 1），不 requireEnv 急切崩溃（那是 exit 2 的”用法错误”通道）
   // TMDB 排最前:它是 watch 的硬前置(缺 key 直接拒绝启动),缺它 doctor 必须 ✗ 而非
@@ -825,7 +828,7 @@ async function cmdDoctor() {
 
   const jimakuKey = cfg.secret('JIMAKU_API_KEY').value
   if (!jimakuKey) {
-    results.push({ name: 'jimaku', ok: true, skip: true, detail: '未配置(可选 provider)', hint: '设 JIMAKU_API_KEY 启用（jimaku.cc 账号设置复制）。' })
+    results.push({ name: 'jimaku', ok: true, skip: true, detail: '未配置(可选 provider)', hint: '在 dashboard 设置页配置 JIMAKU_API_KEY 启用（jimaku.cc 账号设置复制）。' })
   } else {
     const jk = new JimakuClient({ apiKey: jimakuKey })
     results.push(await checkJimaku(() => withTimeout(jk.search({ query: 'test' }), 10_000, 'Jimaku')))

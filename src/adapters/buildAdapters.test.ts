@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { buildAdapters } from './buildAdapters.js'
+import { makeAdapterConfigResolver } from '../v2/secrets.js'
 
-const ENV_KEYS = [
-  'ASSRT_TOKEN', 'OPENSUBTITLES_API_KEY', 'OPENSUBTITLES_USERNAME', 'OPENSUBTITLES_PASSWORD',
-  'ZIMUKU_ENABLED', 'LLM_BASE_URL', 'LLM_API_KEY', 'LLM_MODEL', 'SUBTITLE_SCOUT_CACHE_DIR',
-  'SUBHD_ENABLED', 'SUBHD_BASE_URL', 'JIMAKU_API_KEY',
-] as const
+// 2026-08-20（env 凭证删除，用户裁决）：buildAdapters 的 cfg 从"默认 env-only"改为**必传**，
+// env 激活路径的旧用例整组退役——同语义的分支已由下方 cfg resolver 组全覆盖。
+// env 清理只保留 SUBTITLE_SCOUT_CACHE_DIR（那是部署基建路径，不是凭证）。
+const ENV_KEYS = ['SUBTITLE_SCOUT_CACHE_DIR'] as const
 
 let saved: Record<string, string | undefined>
 
@@ -21,81 +21,7 @@ afterEach(() => {
   }
 })
 
-describe('buildAdapters', () => {
-  it('returns an empty array when no provider env vars are configured', async () => {
-    const adapters = await buildAdapters()
-    expect(adapters).toEqual([])
-  })
-
-  it('includes assrt when ASSRT_TOKEN is set', async () => {
-    process.env.ASSRT_TOKEN = 'test-token'
-    const adapters = await buildAdapters()
-    expect(adapters.map(a => a.name)).toEqual(['assrt'])
-  })
-
-  it('includes opensubtitles when OPENSUBTITLES_API_KEY is set', async () => {
-    process.env.OPENSUBTITLES_API_KEY = 'test-key'
-    const adapters = await buildAdapters()
-    expect(adapters.map(a => a.name)).toEqual(['opensubtitles'])
-  })
-
-  it('includes both, in order, when both env vars are set', async () => {
-    process.env.ASSRT_TOKEN = 'test-token'
-    process.env.OPENSUBTITLES_API_KEY = 'test-key'
-    const adapters = await buildAdapters()
-    expect(adapters.map(a => a.name)).toEqual(['assrt', 'opensubtitles'])
-  })
-
-  it('includes subhd when SUBHD_ENABLED=true (no LLM needed — subhd has no captcha)', async () => {
-    process.env.SUBHD_ENABLED = 'true'
-    const adapters = await buildAdapters()
-    expect(adapters.map(a => a.name)).toEqual(['subhd'])
-  })
-
-  it('excludes subhd when SUBHD_ENABLED is unset', async () => {
-    const adapters = await buildAdapters()
-    expect(adapters.some(a => a.name === 'subhd')).toBe(false)
-  })
-
-  it('includes jimaku when JIMAKU_API_KEY is set(F2 日字源)', async () => {
-    process.env.JIMAKU_API_KEY = 'k-test'
-    const adapters = await buildAdapters()
-    expect(adapters.map(a => a.name)).toEqual(['jimaku'])
-  })
-
-  it('excludes jimaku when JIMAKU_API_KEY unset', async () => {
-    const adapters = await buildAdapters()
-    expect(adapters.some(a => a.name === 'jimaku')).toBe(false)
-  })
-
-  // ⚠️ 这条用例原本叫「skips zimuku … LLM_* env is missing」，断言 `toEqual([])` + 一条 warn。
-  // `c582571`（zimuku 验证码改成**优先模板匹配**、视觉 LLM 降级为可选兜底）之后那个前提就
-  // 不成立了，于是它一直红着（接手时 7 条既有失败之一）。**是测试过时，不是 bug。**
-  // 现在守的是改动后的真实契约：没有视觉配置照样入列（模板匹配是 0 token 的主路径），
-  // 视觉缺席只影响"模板未命中时能不能兜底"，不影响适配器在不在。
-  it('zimuku：flag 开、无任何视觉配置 → **照常入列**（模板匹配是主路径，不需要 LLM）', async () => {
-    process.env.ZIMUKU_ENABLED = 'true'
-    const warns: string[] = []
-    const adapters = await buildAdapters(() => {}, undefined, (m) => warns.push(m))
-    expect(adapters.map(a => a.name)).toEqual(['zimuku'])
-    // 也不该再为此 warn——它不是降级，是正常形态
-    expect(warns).toEqual([])
-  })
-
-  it('forwards api_call events to the supplied emit callback', async () => {
-    process.env.ASSRT_TOKEN = 'test-token'
-    const events: unknown[] = []
-    const adapters = await buildAdapters(e => events.push(e))
-    // Construction alone never calls onApiCall — only a real search/resolve would.
-    // This test only asserts buildAdapters accepted and wired the emit param without throwing.
-    expect(adapters).toHaveLength(1)
-    expect(events).toEqual([])
-  })
-})
-
-import { makeAdapterConfigResolver } from '../v2/secrets.js'
-
-describe('buildAdapters · cfg resolver（spec A §4.3：DB 供凭据）', () => {
+describe('buildAdapters · cfg resolver（spec A §4.3：DB 供凭据；2026-08-20 起 env 路径已删）', () => {
   // env 全空（beforeEach 已清），凭据全走 cfg——证明 DB 解析路径能驱动所有分支。
   const cfgOf = (secrets: Record<string, string>, flags: Record<string, string> = {}) =>
     makeAdapterConfigResolver({}, (key) => {
@@ -104,18 +30,28 @@ describe('buildAdapters · cfg resolver（spec A §4.3：DB 供凭据）', () =>
       return null
     })
 
+  it('什么都没配 → 空数组（诚实空态）', async () => {
+    const adapters = await buildAdapters(cfgOf({}))
+    expect(adapters).toEqual([])
+  })
+
   it('cfg 供 ASSRT_TOKEN → 入列（env 全空）', async () => {
-    const adapters = await buildAdapters(() => {}, cfgOf({ ASSRT_TOKEN: 'db-token' }))
+    const adapters = await buildAdapters(cfgOf({ ASSRT_TOKEN: 'db-token' }))
     expect(adapters.map(a => a.name)).toEqual(['assrt'])
   })
 
   it('cfg 供 opensubtitles 三件套 → 入列', async () => {
-    const adapters = await buildAdapters(() => {}, cfgOf({ OPENSUBTITLES_API_KEY: 'db-key' }))
+    const adapters = await buildAdapters(cfgOf({ OPENSUBTITLES_API_KEY: 'db-key' }))
     expect(adapters.map(a => a.name)).toEqual(['opensubtitles'])
   })
 
+  it('assrt + opensubtitles 都配 → 按序双入列', async () => {
+    const adapters = await buildAdapters(cfgOf({ ASSRT_TOKEN: 't', OPENSUBTITLES_API_KEY: 'k' }))
+    expect(adapters.map(a => a.name)).toEqual(['assrt', 'opensubtitles'])
+  })
+
   it('zimuku：flag 开 + ZIMUKU_VISION_* 三件套齐 → 入列（视觉兜底可用）', async () => {
-    const adapters = await buildAdapters(() => {}, cfgOf(
+    const adapters = await buildAdapters(cfgOf(
       {
         ZIMUKU_VISION_BASE_URL: 'https://llm.example/v1',
         ZIMUKU_VISION_API_KEY: 'k',
@@ -126,33 +62,56 @@ describe('buildAdapters · cfg resolver（spec A §4.3：DB 供凭据）', () =>
     expect(adapters.map(a => a.name)).toEqual(['zimuku'])
   })
 
-  // 同上：`c582571` 之后"视觉三件套不齐"不再是跳过的理由。
+  // `c582571`（zimuku 验证码改为模板匹配优先）之后"视觉三件套不齐"不再是跳过的理由。
   // 这里刻意只给一件（BASE_URL 缺 KEY/MODEL）——半齐的配置**不许**被当成齐，
   // 但也**不许**因此把整个适配器踢掉（模板匹配那条主路径与视觉配置无关）。
   it('zimuku：视觉三件套只齐一件 → 仍然入列（半齐 ≠ 齐，但也 ≠ 不能用）', async () => {
     const warns: string[] = []
     const adapters = await buildAdapters(
-      () => {},
       cfgOf({ ZIMUKU_VISION_API_KEY: 'k' }, { ZIMUKU_ENABLED: 'true' }),
+      () => {},
       (m) => warns.push(m),
     )
     expect(adapters.map(a => a.name)).toEqual(['zimuku'])
     expect(warns).toEqual([])
   })
 
+  it('zimuku：flag 开、无任何视觉配置 → **照常入列**（模板匹配是主路径，不需要 LLM）', async () => {
+    const warns: string[] = []
+    const adapters = await buildAdapters(cfgOf({}, { ZIMUKU_ENABLED: 'true' }), () => {}, (m) => warns.push(m))
+    expect(adapters.map(a => a.name)).toEqual(['zimuku'])
+    expect(warns).toEqual([])
+  })
+
+  it('zimuku：flag 关 → 不入列', async () => {
+    const adapters = await buildAdapters(cfgOf({}))
+    expect(adapters.some(a => a.name === 'zimuku')).toBe(false)
+  })
+
   it('subhd：flag 来自 cfg provider:SUBHD_ENABLED', async () => {
-    const adapters = await buildAdapters(() => {}, cfgOf({}, { SUBHD_ENABLED: 'true' }))
+    const adapters = await buildAdapters(cfgOf({}, { SUBHD_ENABLED: 'true' }))
     expect(adapters.map(a => a.name)).toEqual(['subhd'])
   })
 
+  it('subhd：flag 未设 → 不入列', async () => {
+    const adapters = await buildAdapters(cfgOf({}))
+    expect(adapters.some(a => a.name === 'subhd')).toBe(false)
+  })
+
   it('jimaku：key 来自 cfg', async () => {
-    const adapters = await buildAdapters(() => {}, cfgOf({ JIMAKU_API_KEY: 'db-jk' }))
+    const adapters = await buildAdapters(cfgOf({ JIMAKU_API_KEY: 'db-jk' }))
     expect(adapters.map(a => a.name)).toEqual(['jimaku'])
   })
 
-  it('默认 cfg = env-only：env 供 key 的老路径逐字语义不变', async () => {
-    process.env.ASSRT_TOKEN = 'env-token'
-    const adapters = await buildAdapters()
-    expect(adapters.map(a => a.name)).toEqual(['assrt'])
+  it('jimaku：key 未配 → 不入列', async () => {
+    const adapters = await buildAdapters(cfgOf({}))
+    expect(adapters.some(a => a.name === 'jimaku')).toBe(false)
+  })
+
+  it('emit 回调被原样接线（构造期零调用）', async () => {
+    const events: unknown[] = []
+    const adapters = await buildAdapters(cfgOf({ ASSRT_TOKEN: 't' }), e => events.push(e))
+    expect(adapters).toHaveLength(1)
+    expect(events).toEqual([])
   })
 })

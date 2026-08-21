@@ -1,7 +1,7 @@
 // src/v2/secrets.test.ts：spec A §4.1/§4.2 解析优先级、打码、provider flag 语义的纯函数契约。
 import { describe, it, expect } from 'vitest'
 import {
-  SECRET_NAMES, isSecretName, resolveSecret, maskSecretValue,
+  SECRET_NAMES, isSecretName, maskSecretValue,
   resolveProviderFlag, makeAdapterConfigResolver, envOnlyAdapterConfig,
 } from './secrets.js'
 
@@ -30,22 +30,21 @@ describe('SECRET_NAMES 白名单（spec §4.1）', () => {
   })
 })
 
-describe('resolveSecret 优先级（spec §4.2：env > db > none）', () => {
-  it('env 非空 → env 胜（库里同名值被无视）', () => {
-    expect(resolveSecret('TMDB_API_KEY', { TMDB_API_KEY: 'env-key' }, () => 'db-key'))
-      .toEqual({ value: 'env-key', source: 'env' })
+// resolveSecret（env > db > none）已于 2026-08-20 用户裁决（env 凭证删除）整函数删除。
+// 这里换成守**新红线**：产品运行态的 makeAdapterConfigResolver 对 env **完全失明**——
+// 塞了 env 也好、空 env 也好，答案只来自库。当年"env > db"的用例组随之退役。
+describe('makeAdapterConfigResolver：env 完全失明（2026-08-20 env 凭证删除）', () => {
+  it('env 塞了值 → 依然只有库里的值生效（env 不是兜底、不是优先级、什么都不算）', () => {
+    const cfg = makeAdapterConfigResolver({ TMDB_API_KEY: 'env-key' } as NodeJS.ProcessEnv, () => 'db-key')
+    expect(cfg.secret('TMDB_API_KEY')).toEqual({ value: 'db-key', source: 'db' })
   })
-  it('env 缺席 → db 兜底', () => {
-    expect(resolveSecret('TMDB_API_KEY', {}, () => 'db-key'))
-      .toEqual({ value: 'db-key', source: 'db' })
+  it('env 有值而库没有 → none（compose 里塞 env 的部署在 doctor/health 上必须如实报未配置）', () => {
+    const cfg = makeAdapterConfigResolver({ TMDB_API_KEY: 'env-key' } as NodeJS.ProcessEnv, () => null)
+    expect(cfg.secret('TMDB_API_KEY')).toEqual({ value: null, source: 'none' })
   })
-  it('空字符串 env 视为未设（手滑 export X= 不挡库里的真 key）', () => {
-    expect(resolveSecret('TMDB_API_KEY', { TMDB_API_KEY: '' }, () => 'db-key'))
-      .toEqual({ value: 'db-key', source: 'db' })
-  })
-  it('env/db 都没有 → none；db 空串同样视为 none', () => {
-    expect(resolveSecret('TMDB_API_KEY', {}, () => null)).toEqual({ value: null, source: 'none' })
-    expect(resolveSecret('TMDB_API_KEY', {}, () => '')).toEqual({ value: null, source: 'none' })
+  it('库里空串视为未配置（手滑存空串不挡下次向导重存）', () => {
+    const cfg = makeAdapterConfigResolver({}, () => '')
+    expect(cfg.secret('TMDB_API_KEY')).toEqual({ value: null, source: 'none' })
   })
 })
 

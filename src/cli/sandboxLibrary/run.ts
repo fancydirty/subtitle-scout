@@ -170,7 +170,7 @@ async function assembleLiveWorkers(cacheRoot: string, targetLanguage: 'zh' | 'en
     baseUrl: process.env.TMDB_BASE_URL,
     proxyUrl: process.env.TMDB_PROXY_URL,
   })
-  const adapters = await buildAdapters(() => {}, cfg, () => {})
+  const adapters = await buildAdapters(cfg, () => {}, () => {})
 
   const identify: IdentifySchedulerDeps = {
     db,

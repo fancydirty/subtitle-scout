@@ -14,7 +14,7 @@ import { containingRoot } from '../core/mediaContext.js'
 import { GlossaryRepo } from '../v2/glossaryRepo.js'
 import { makeRealFetchSourceSub } from './fetchSourceSub.js'
 import { buildAdapters } from '../adapters/buildAdapters.js'
-import { makeAdapterConfigResolver, envOnlyAdapterConfig, SECRET_NAMES, type AdapterConfigResolver } from '../v2/secrets.js'
+import { makeAdapterConfigResolver, SECRET_NAMES, type AdapterConfigResolver } from '../v2/secrets.js'
 import { SettingsRepo } from '../v2/settingsRepo.js'
 import { CHINESE_SIDECAR_TAGS } from '../agent/languages.js'
 import { resolveTargetLanguages } from './targetLanguages.js'
@@ -326,12 +326,12 @@ export async function cmdTranslateItem(videoPath: string): Promise<void> {
         snapDb.close()
       }
     } catch {
-      // 库打不开就退化成 env-only；:272 区既有的 existsSync 分支照原样报它该报的错。
+      // 库打不开就按"未配置"报；:272 区既有的 existsSync 分支照原样报它该报的错。
+      // 2026-08-20：不再回落 env-only——env 凭证路径已删（用户裁决），同 doctor。
     }
   }
-  const secrets = secretSnap.size > 0
-    ? makeAdapterConfigResolver(process.env, (k) => secretSnap.get(k) ?? null)
-    : envOnlyAdapterConfig(process.env)
+  // 2026-08-20（env 凭证删除）：手动 CLI 与 daemon 同源，一律读库。
+  const secrets = makeAdapterConfigResolver(process.env, (k) => secretSnap.get(k) ?? null)
   const cfg = translateLlmCfg(secrets)
   const criticOn = (process.env.TRANSLATE_CRITIC ?? 'on').toLowerCase() !== 'off'
   console.log(`[translate-item] 模型=${cfg.model} critic=${criticOn ? '开' : '关'} 路径=workspace-agent`)
@@ -352,7 +352,7 @@ export async function cmdTranslateItem(videoPath: string): Promise<void> {
     try {
       const { openDb } = await import('../v2/db.js')
       db = openDb(dbPath)
-      const adapters = await buildAdapters(() => {}, secrets, (m) => console.log('[translate-item] ' + m))
+      const adapters = await buildAdapters(secrets, () => {}, (m) => console.log('[translate-item] ' + m))
       fetchSourceSub = makeRealFetchSourceSub(db, adapters)
     } catch (e) {
       console.log(`[translate-item] 源语言外挂搜索腿未启用(${e instanceof Error ? e.message : String(e)}),仅走内嵌轨`)

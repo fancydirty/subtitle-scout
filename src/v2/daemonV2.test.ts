@@ -5317,20 +5317,19 @@ describe('ScoutDaemonV2 阶段 3 · C13 sub_attempt 单调递增', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // 第 4 步：翻译流接进 daemonV2 —— 主进程内独立循环（R19 + C32 + C3）
 //
-// **循环形态与它的论证**（C32 要求形态必须明确）：照 spec §4 的建议——主巡检每轮**末尾**
-// 推进一次翻译，**单次只处理一个作品**。
+// **循环形态与它的论证**（2026-08-20 用户裁决后的形态）：run() 里主循环与 translateLoop
+// **并行双车道**；翻译车道队列有活就背靠背领（单飞：一次一个文件），空了/全在退避才睡一拍。
 //
 // 为什么这个形态满足 R11「翻译流独立，不与识别/字幕互相阻塞」：
-//  · 不阻塞识别/字幕 —— 它跑在阶段 3 **之后**，此时两条上游工作台的快照都已消费完；
-//    翻译再慢也只是让"歇到明天"晚开始，不会让任何一个字幕活等它（用例 11 钉这条）。
+//  · 不阻塞识别/字幕/维护 —— 翻译是自己车道里的活，主循环的巡检闸、维护拍（checkpoint/
+//    备份）、带外扫描不再被一个数小时的翻译活卡住（旧形态挂在巡检尾部，实测一个 2h 的活
+//    会让当天维护停摆——这正是用户废弃 C32 节流的直接动因）。
 //  · 不被它们阻塞 —— 它有自己的取件谓词（sub_status='handoff_translate'）与自己的退避列
 //    （tr_recheck_after / D3），与字幕流的谓词严格互斥（C14），故字幕流的队列状态挡不住它。
 //    旧 daemon.ts 的设计恰恰相反（"translate 只在巡检世界全空时才领"= 被巡检阻塞），
 //    那正是 C3 记的"旧设计与 R11 正相反"。
-//  · 单次只处理一个作品 —— 一个作品的翻译是数分钟到数小时的付费 LLM。一轮吃光整个队列会
-//    把巡检拖成几十小时，期间删除清理（R6/R7 的地基）与两条工作台全被堵在后面。
-//    队列不会因此饿死：每轮巡检推进一个，且没被领到的行 tr_recheck_after 一列都没被碰过，
-//    下一轮照样是最优先的候选（谓词是 `IS NULL OR <= now`，不是"轮转指针"）。
+//  · 排干不靠节流 —— "队列一天排不干、字幕队列又跑了一轮"的竞态由谓词互斥（C14）+ 回写
+//    守卫（D10）消化：两条车道按 sub_status 瓜分 files 表，谁也不会碰到对方的行。
 // ─────────────────────────────────────────────────────────────────────────────
 describe('翻译工作流 · 主进程内独立循环（第 4 步 / R19 + R12 + C3 + C32 + D6 + D10）', () => {
   const NOW2 = 1_000_000_000_000
@@ -5539,9 +5538,10 @@ describe('翻译工作流 · 主进程内独立循环（第 4 步 / R19 + R12 + 
     db.close()
   })
 
-  it('🔴 用例 11：翻译不阻塞识别/字幕——翻译跑在阶段 3 之后，且它抛错也不影响两条工作台', async () => {
-    // 形态论证的可测部分（见本 describe 顶部）：断言**顺序**（识别、字幕都先跑完）+ **隔离**
-    // （翻译整支炸掉，前面阶段的产出照样落库、巡检照样算成功推进时间闸）。
+  it('🔴 用例 11：巡检与翻译互不阻塞——巡检一个翻译活都不派，识别/字幕照常跑完（2026-08-20 改造）', async () => {
+    // 形态论证的可测部分（见本 describe 顶部）：断言**车道分离**（巡检不再调翻译——
+    // runItem 若被巡检碰到，这个 throw 就是证据）+ **巡检自身完好**（识别、字幕都先跑完）。
+    // 翻译的隔离性（它抛错不掀翻自己的车道）由 translateLoop 那组用例守。
     const db = openDb(':memory:')
     // 一个待识别目录 + 一个待找字幕的作品 + 一个待翻译的行
     db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_dir, updated_at)
@@ -5573,11 +5573,12 @@ describe('翻译工作流 · 主进程内独立循环（第 4 步 / R19 + R12 + 
       },
       translateRunItem: async () => { order.push('translate'); throw new Error('translate exploded') },
     }))
-    // 整轮巡检必须**成功**（时间闸推进），翻译的爆炸被隔离
+    // 整轮巡检必须**成功**（时间闸推进）
     await expect((daemon as any).runInspection(new AbortController().signal)).resolves.toBeUndefined()
-    expect(order.indexOf('translate')).toBe(order.length - 1)     // 翻译在最后
     expect(order).toContain('identify')
     expect(order).toContain('subtitle')
+    // 2026-08-20 起翻译是独立车道：巡检（runInspection）一个翻译活都不许派
+    expect(order).not.toContain('translate')
     db.close()
   })
 
@@ -5653,6 +5654,110 @@ describe('翻译工作流 · 主进程内独立循环（第 4 步 / R19 + R12 + 
     await advance(daemon)
     expect(calls).toBe(0)
     expect([...((daemon as any).inFlightStagingJobIds as Set<string>)]).toEqual([])
+    db.close()
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 2026-08-20 用户裁决：废弃 C32「每轮巡检只推进一个作品」的节流形态。
+  // 翻译改为**独立车道持续排干**：run() 里主循环与 translateLoop 并行，队列有活就
+  // 背靠背领，空了/全在退避才睡一拍。旧的"阶段 4 挂巡检尾部"接线随之拆除。
+  // ───────────────────────────────────────────────────────────────────────────
+
+  it('🔴 巡检不再推进翻译（翻译已挪进独立 translateLoop 车道，runInspection 一个活都不派）', async () => {
+    const db = openDb(':memory:')
+    seedHandoff(db, V1)
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      now: () => NOW2,
+      translateEnabled: () => true,
+      fileExists: () => true,
+      translateRunItem: async () => { throw new Error('巡检不许碰翻译——这个 throw 就是被调用的证据') },
+    }))
+    await expect((daemon as any).runInspection(new AbortController().signal)).resolves.toBeUndefined()
+    db.close()
+  })
+
+  it('🔴 translateLoop 连续排干：三个活背靠背跑完，中途不睡；空了才睡一拍', async () => {
+    const db = openDb(':memory:')
+    seedHandoff(db, V1)                                     // tmdb:1 E01
+    seedHandoff(db, V2)                                     // tmdb:1 E02
+    seedHandoff(db, '/media/Other/E01.mkv', { workId: 'tmdb:2' })
+    const events: string[] = []
+    const ctrl = new AbortController()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      now: () => NOW2,
+      translateEnabled: () => true,
+      fileExists: () => true,
+      translateRunItem: async (p: string) => { events.push(`run:${p}`); return { status: 'installed' as const } },
+      sleep: async () => { events.push('sleep'); ctrl.abort() },
+    }))
+    await (daemon as any).translateLoop(ctrl.signal)
+    // 背靠背：三个 run 之间零 sleep；第 4 圈查无候选（installed 已写退避）→ 睡一拍 → abort 退出
+    expect(events).toEqual([
+      'run:/media/Show/E01.mkv',
+      'run:/media/Show/E02.mkv',
+      'run:/media/Other/E01.mkv',
+      'sleep',
+    ])
+    db.close()
+  })
+
+  it('🔴 失败项写入退避后，同一循环不重领（连续形态下 D6 防付费 LLM 热循环）', async () => {
+    const db = openDb(':memory:')
+    seedHandoff(db, V1)
+    let calls = 0
+    const ctrl = new AbortController()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      now: () => NOW2,
+      translateEnabled: () => true,
+      fileExists: () => true,
+      translateRunItem: async () => { calls++; return { status: 'held' as const, reason: 'gate' } },
+      sleep: async () => { ctrl.abort() },
+    }))
+    await (daemon as any).translateLoop(ctrl.signal)
+    // held → tr_recheck_after=NOW2+RECHECK → 第 2 圈查无候选 → 睡 → 退出。runItem 只许被调 1 次。
+    expect(calls).toBe(1)
+    expect(trRowOf(db, V1).tr_recheck_after).toBeGreaterThan(NOW2)
+    db.close()
+  })
+
+  it('🔴 翻译在飞行中不阻塞扫描（车道独立：installed 前扫描照样跑完）', async () => {
+    const db = openDb(':memory:')
+    seedHandoff(db, V1)
+    let releaseRun!: () => void
+    const runGate = new Promise<void>((r) => { releaseRun = r })
+    const runStarted = new Promise<void>(() => { /* resolved by spy below */ })
+    let markStarted!: () => void
+    const started = new Promise<void>((r) => { markStarted = r })
+    const ctrl = new AbortController()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      now: () => NOW2,
+      translateEnabled: () => true,
+      fileExists: () => true,
+      translateRunItem: async () => { markStarted(); await runGate; return { status: 'installed' as const } },
+      listVideoFiles: () => [V1],
+      statFile: () => ({ mtimeMs: 1000, size: BIG }),
+      sleep: async () => { ctrl.abort() },
+    }))
+    void runStarted
+    const loopP = (daemon as any).translateLoop(ctrl.signal)
+    await started                                  // 翻译已真正在飞
+    await (daemon as any).scanOnce(ctrl.signal)    // 必须能在翻译未完时照常收官
+    releaseRun()
+    await loopP
+    db.close()
+  })
+
+  it('🔴 advanceTranslateOnce 返回"是否干了活"（循环据此决定立即续跑还是睡一拍）', async () => {
+    const db = openDb(':memory:')
+    seedHandoff(db, V1)
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      now: () => NOW2,
+      translateEnabled: () => true,
+      fileExists: () => true,
+      translateRunItem: async () => ({ status: 'installed' as const }),
+    }))
+    await expect((daemon as any).advanceTranslateOnce()).resolves.toBe(true)   // 有活
+    await expect((daemon as any).advanceTranslateOnce()).resolves.toBe(false)  // installed 已退避 → 无活
     db.close()
   })
 })
