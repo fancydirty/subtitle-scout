@@ -11,6 +11,7 @@ const STAGE: Record<string, Stage> = {
   search_source: 'source', search_tmdb: 'source', get_tmdb_details: 'source',
   resolve_source: 'source', fetch_tmdb_context: 'source', fetch_series_target_subs: 'source',
   fetch_wiki_context: 'source', materialize_agent_view: 'source', read_workspace_doc: 'source',
+  read_doc: 'source', write_identified_media: 'source',
   // 术语表
   lookup_glossary: 'glossary', freeze_glossary: 'glossary',
   // 逐句翻译
