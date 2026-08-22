@@ -10,7 +10,7 @@ import type { ScoutCurrentDTO } from './types.js'
 const current = (over: Partial<ScoutCurrentDTO> = {}): ScoutCurrentDTO => ({
   kind: 'subtitle', title: 'A', index: 0, total: 1,
   workId: 'tmdb:1', backdropPath: null, chineseTitle: null,
-  startedAt: 1, lastStep: null, ...over,
+  startedAt: 1, lastStep: null, cueDone: null, cueTotal: null, ...over,
 })
 
 describe('shouldReloadMedia', () => {

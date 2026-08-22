@@ -109,6 +109,9 @@ export interface ScoutCurrent {
   startedAt: number | null
   /** 最近一条 progress 的 `data.step`（工具 id）。被节流折叠的 progress 也要写——快照在节流门前。 */
   lastStep: string | null
+  /** 翻译 cue 级进度（2026-08-21 活动页重做）。字幕/识别流恒 null。 */
+  cueDone: number | null
+  cueTotal: number | null
 }
 
 export interface ScoutEvent extends ScoutEventInput {
@@ -265,6 +268,8 @@ export class ScoutEventBus {
           chineseTitle: nonemptyString(d?.chineseTitle),
           startedAt: this.nowFn(),
           lastStep: null,
+          cueDone: null,
+          cueTotal: null,
         }
         return
       }
@@ -276,6 +281,8 @@ export class ScoutEventBus {
         const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
         const sameKind = this.current?.kind === input.workbench
         const step = nonemptyString(d?.step)
+        const cueDoneVal = num(d?.cueDone)
+        const cueTotalVal = num(d?.cueTotal)
         this.current = {
           kind: input.workbench,
           title: input.title ?? null,
@@ -288,6 +295,8 @@ export class ScoutEventBus {
           chineseTitle: nonemptyString(d?.chineseTitle) ?? (sameKind ? (this.current?.chineseTitle ?? null) : null),
           startedAt: sameKind ? (this.current?.startedAt ?? null) : null,
           lastStep: step ?? (sameKind ? (this.current?.lastStep ?? null) : null),
+          cueDone: cueDoneVal ?? (sameKind ? (this.current?.cueDone ?? null) : null),
+          cueTotal: cueTotalVal ?? (sameKind ? (this.current?.cueTotal ?? null) : null),
         }
       }
       // health（带 workbench，当前生产无此点）不动 current：它是异常播报，不是"在处理谁"。

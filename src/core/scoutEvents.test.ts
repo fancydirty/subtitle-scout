@@ -22,7 +22,7 @@ function cur(p: Partial<ScoutCurrent> & Pick<ScoutCurrent, 'kind'>): ScoutCurren
   return {
     title: null, index: null, total: null,
     workId: null, backdropPath: null, chineseTitle: null,
-    startedAt: null, lastStep: null,
+    startedAt: null, lastStep: null, cueDone: null, cueTotal: null,
     ...p,
   }
 }

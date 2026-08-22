@@ -72,7 +72,7 @@ import type { EventsStatus, ScoutEvent } from '../events/types.js'
 import type { ActivityQueueItemDTO, HealthDTO, ScoutCurrentDTO } from '../api/types.js'
 import { ACTIVITY_TABS, laneOf, type ActivityTab } from './workbenchRouting.js'
 import { displayTitle } from './displayTitle.js'
-import { stepPhraseKey } from './stepPhrase.js'
+import { stepActionKey, stageOf } from './stepPhrase.js'
 // 2026-08-13 清理：`tabOf` 从这行 import 里删除（本文件零调用）。
 // 它的文档写着"两个 tab 的唯一入口"，读起来像是本页的路由核心——实测**生产零调用者**，
 // 只有 workbenchRouting.test.ts 在测它。为什么用不上：本页两个 tab 的队列不是靠事件分流
@@ -140,6 +140,8 @@ function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Cu
         chineseTitle: nonemptyString(d?.chineseTitle),
         startedAt: typeof e.at === 'number' ? e.at : Date.now(),
         lastStep: null,
+        cueDone: null,
+        cueTotal: null,
       })
       return
     }
@@ -148,6 +150,8 @@ function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Cu
       const num = (v: unknown): number | null =>
         typeof v === 'number' && Number.isFinite(v) ? v : null
       const step = nonemptyString(d?.step)
+      const cueDoneVal = num(d?.cueDone)
+      const cueTotalVal = num(d?.cueTotal)
       setCurrent((prev) => {
         const sameKind = prev?.kind === kind
         return {
@@ -158,6 +162,8 @@ function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Cu
           chineseTitle: nonemptyString(d?.chineseTitle) ?? (sameKind ? (prev?.chineseTitle ?? null) : null),
           startedAt: sameKind ? (prev?.startedAt ?? null) : null,
           lastStep: step ?? (sameKind ? (prev?.lastStep ?? null) : null),
+          cueDone: cueDoneVal ?? (sameKind ? (prev?.cueDone ?? null) : null),
+          cueTotal: cueTotalVal ?? (sameKind ? (prev?.cueTotal ?? null) : null),
         }
       })
     }
@@ -234,7 +240,7 @@ function useStepLog(workId: string | null | undefined): string[] {
     appliedProg.current = progress.id
     const step = nonemptyString(progress.data?.step)
     if (!step) return
-    const phrase = t(stepPhraseKey(step))
+    const phrase = t(stepActionKey(step))
     setLines((prev) => [...prev, phrase].slice(-5))
   }, [progress, t])
 
@@ -518,12 +524,19 @@ function TabPanel({
             posterPath: null,
             backdropPath: runBackdrop,
           }}
+          stage={current.lastStep ? stageOf(current.lastStep) : null}
+          kind={current.kind === 'translate' ? 'translate' : 'subtitle'}
           progress={
             current.index !== null && current.total !== null
               ? { done: current.index, total: current.total }
               : null
           }
-          stepLabel={current.lastStep ? t(stepPhraseKey(current.lastStep)) : null}
+          cueProgress={
+            current.cueDone !== null && current.cueTotal !== null
+              ? { done: current.cueDone, total: current.cueTotal }
+              : null
+          }
+          stepLabel={current.lastStep ? t(stepActionKey(current.lastStep)) : null}
           logLines={logLines}
           elapsedLabel={typeof current.startedAt === 'number' ? relAgoLabel(now - current.startedAt, lang) : null}
           staleNote={live === 'live' ? null : t('wb_run_maybe_stale')}

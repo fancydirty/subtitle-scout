@@ -113,7 +113,9 @@ function liveCurrentFromEvent(e: ScoutEvent): ScoutCurrentDTO | null {
     workId: null,
     backdropPath: null,
     chineseTitle: null,
-    startedAt: typeof e.at === 'number' ? e.at : null,
+    startedAt: typeof e.at === 'number' ? e.at : Date.now(),
     lastStep: null,
+    cueDone: null,
+    cueTotal: null,
   }
 }

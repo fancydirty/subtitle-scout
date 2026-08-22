@@ -363,6 +363,9 @@ export interface ScoutCurrentDTO {
   chineseTitle: string | null
   startedAt: number | null
   lastStep: string | null
+  /** 翻译 cue 级进度（2026-08-21 活动页重做）。字幕/识别流恒 null。 */
+  cueDone: number | null
+  cueTotal: number | null
 }
 
 /** 一个认不出来的作品目录。**刻意只有两个字段**——后端点名的信息量边界

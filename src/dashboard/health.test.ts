@@ -372,7 +372,7 @@ describe('GET /api/v2/health（Task ⑤）', () => {
     expect(body.current).toEqual({
       kind: 'subtitle', title: '甲剧', index: 3, total: 47,
       workId: null, backdropPath: null, chineseTitle: null,
-      startedAt: expect.any(Number), lastStep: null,
+      startedAt: expect.any(Number), lastStep: null, cueDone: null, cueTotal: null,
     })
   })
 
@@ -395,7 +395,7 @@ describe('GET /api/v2/health（Task ⑤）', () => {
     expect((await getHealth(base)).body.current).toEqual({
       kind: 'translate', title: '乙剧', index: null, total: null,
       workId: null, backdropPath: null, chineseTitle: null,
-      startedAt: expect.any(Number), lastStep: null,
+      startedAt: expect.any(Number), lastStep: null, cueDone: null, cueTotal: null,
     })
   })
 
@@ -425,7 +425,7 @@ describe('GET /api/v2/health（Task ⑤）', () => {
     expect(first.body.current).toEqual({
       kind: 'identify', title: '丙剧', index: null, total: null,
       workId: null, backdropPath: null, chineseTitle: null,
-      startedAt: expect.any(Number), lastStep: null,
+      startedAt: expect.any(Number), lastStep: null, cueDone: null, cueTotal: null,
     })
     // 第二次请求要再调一次——"现取"这件事在调用计数上也留痕（上面那条只看得见值）。
     await getHealth(base)
