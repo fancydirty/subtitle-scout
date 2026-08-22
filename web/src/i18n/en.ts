@@ -596,6 +596,7 @@ export const en = {
   wb_run_files_done_suffix: 'files done',
   wb_run_cues_done_suffix: 'cues translated',
   wb_step_search: 'Searching sources',
+  wb_step_source: 'Sourcing',
   wb_step_glossary: 'Freezing glossary',
   wb_step_translate: 'Translating cues',
   wb_step_review: 'Checking candidates',

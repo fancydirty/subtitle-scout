@@ -101,7 +101,7 @@ function StageBar({ stage, kind }: { stage: string | null; kind: 'subtitle' | 't
           data-stage-active={i === activeIdx ? 'true' : 'false'}
         >
           <span className="wb-stage-dot">{i < activeIdx ? '✓' : i + 1}</span>
-          <span className="wb-stage-label">{t(`wb_step_${s === 'glossary' ? 'glossary' : s === 'translate' ? 'translate' : s}` as Parameters<typeof t>[0])}</span>
+          <span className="wb-stage-label">{t(`wb_step_${s}` as Parameters<typeof t>[0])}</span>
         </div>
       ))}
     </div>

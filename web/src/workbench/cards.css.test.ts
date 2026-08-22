@@ -236,3 +236,36 @@ describe('R-F11：Linear 视觉基准——拒绝投影', () => {
     expect(sel).not.toMatch(/(?:^|;)\s*background/)
   })
 })
+
+// ── 2026-08-22 视觉验收抓到的"隐形元素" ────────────────────────────────────
+// 步骤条与 cue 进度条当初写成了 var(--color-accent)。那个 token 在新栈里是 #16181f
+// （近黑），画在深色在跑卡上等于隐形——实测计算样式：done/active 的标签是
+// rgb(22,24,31)，比**未点亮**的 --color-weak 还暗，用户看到的是"当前步骤最不显眼"。
+// styles.css 里有七八处注释在反复警告这个坑（cmdk-trigger、focus ring……），
+// 这条用例把那些注释变成机器可判的守卫。
+//
+// 为什么不整段禁用 --color-accent：tab 选中态的下划线**应该**用它（上一条用例在守），
+// 那里是细线不是色块，且不在卡片的深色面上。故只钉在跑卡里画色块/文字的这几个选择器。
+describe('在跑卡上的元素不许用 --color-accent（新栈近黑 = 隐形）', () => {
+  const INK_ON_CARD = [
+    '.wb-stage-node.done .wb-stage-dot',
+    '.wb-stage-node.active .wb-stage-dot',
+    '.wb-stage-node.done .wb-stage-label',
+    '.wb-stage-node.active .wb-stage-label',
+    '.wb-cue-bar-fill',
+  ]
+  for (const sel of INK_ON_CARD) {
+    it(`🔴 ${sel} 不引用 --color-accent`, () => {
+      const body = new RegExp(`${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*(?:,[^{]*)?\\{([^}]*)\\}`).exec(WB_CSS)?.[1]
+      expect(body, `选择器 ${sel} 在活动页段里找不到——改名了就把这条一起改`).toBeTruthy()
+      expect(body).not.toContain('var(--color-accent)')
+    })
+  }
+
+  it('🔴 进行中的节点比已完成的更显眼（active 有 font-weight，done 没有）', () => {
+    const active = new RegExp(`\\.wb-stage-node\\.active \\.wb-stage-label\\s*\\{([^}]*)\\}`).exec(WB_CSS)?.[1] ?? ''
+    const done = new RegExp(`\\.wb-stage-node\\.done \\.wb-stage-label\\s*\\{([^}]*)\\}`).exec(WB_CSS)?.[1] ?? ''
+    expect(active).toMatch(/font-weight/)
+    expect(done).not.toMatch(/font-weight/)
+  })
+})

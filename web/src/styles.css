@@ -2245,14 +2245,19 @@
   border: none;
   transition: background 0.3s ease, color 0.3s ease, border 0.3s ease;
 }
+/* ⚠️ 强调色用 --color-ring / --color-fg，**不是 --color-accent**：后者在新栈里是
+   #16181f（近黑），画在深色卡片上等于隐形；scout.css:86 那边又把它遮蔽成柠檬绿。
+   同本文件 cmdk-trigger:focus-visible / wb-card-title 的既有口径。
+   2026-08-22 视觉验收实测到这个形态：done/active 的标签算出来是 rgb(22,24,31)，
+   比未点亮的 --color-weak 还暗——用户看到的是「当前步骤最不显眼」。 */
 .wb-stage-node.done .wb-stage-dot {
-  background: var(--color-accent);
+  background: var(--color-ring);
   color: #fff;
 }
 .wb-stage-node.active .wb-stage-dot {
   background: transparent;
-  color: var(--color-accent);
-  border: 1.5px solid var(--color-accent);
+  color: var(--color-ring);
+  border: 1.5px solid var(--color-ring);
   animation: wb-pulse 2s ease-in-out infinite;
 }
 @keyframes wb-pulse {
@@ -2268,9 +2273,14 @@
   text-overflow: ellipsis;
   transition: color 0.3s ease;
 }
-.wb-stage-node.done .wb-stage-label,
+/* 已完成 = 常规前景色；进行中 = 前景色 + 加粗（当前位置必须是最显眼的那个）。
+   未点亮的保持 --color-weak，形成 弱 < 常规 < 加粗 的三档递进。 */
+.wb-stage-node.done .wb-stage-label {
+  color: var(--color-fg);
+}
 .wb-stage-node.active .wb-stage-label {
-  color: var(--color-accent);
+  color: var(--color-fg);
+  font-weight: 600;
 }
 /* 阶段之间的连线（伪元素） */
 .wb-stage-node:not(:last-child)::after {
@@ -2306,7 +2316,9 @@
 .wb-cue-bar-fill {
   height: 100%;
   border-radius: 2.5px;
-  background: var(--color-accent);
+  /* --color-ring，不是 --color-accent（新栈近黑 → 填充在深色槽里看不出来）。
+     同上面 wb-stage-dot 的论证。 */
+  background: var(--color-ring);
   transition: width 0.6s ease;
 }
 /* 进度条底色呼吸（无事件时也活着） */

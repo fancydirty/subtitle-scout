@@ -75,6 +75,27 @@ describe('RunCard 步骤条（StageBar）', () => {
     const { container } = mount({ kind: 'translate', stage: null })
     expect(container.querySelectorAll('.wb-stage-node').length).toBe(0)
   })
+
+  // 🔴 视觉验收缺陷。实测第一个节点的标签是**空字符串**：阶段名是 'source'，拼出的
+  // i18n key 是 wb_step_source，而当时 i18n 里只有 wb_step_search → 取不到值 → 空。
+  // 这条用例遍历两条流的全部阶段，任何一个阶段少了 i18n 词条都会红。
+  it('🔴 每条流的每个阶段节点都有非空标签（i18n key 齐全）', () => {
+    for (const kind of ['subtitle', 'translate'] as const) {
+      for (const stage of ['source', 'download', 'review', 'install', 'glossary', 'translate']) {
+        cleanup()
+        const { container } = mount({ kind, stage })
+        const nodes = Array.from(container.querySelectorAll('.wb-stage-label'))
+        // 该阶段不属于本流时不画步骤条（上一条用例的口径），跳过
+        if (nodes.length === 0) continue
+        for (const n of nodes) {
+          expect(
+            (n.textContent ?? '').trim(),
+            `${kind} 流的某个阶段节点标签是空的——检查 wb_step_* 词条是否齐全`,
+          ).not.toBe('')
+        }
+      }
+    }
+  })
 })
 
 describe('RunCard cue 级进度条', () => {

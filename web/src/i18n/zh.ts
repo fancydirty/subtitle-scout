@@ -528,6 +528,9 @@ export const zh = {
   // （PLUTO S01E02 那集 194 句），写"集已装上"就是把 194 句说成 194 集。
   wb_run_cues_done_suffix: '句已翻',
   wb_step_search: '正在搜源',
+  // 步骤条节点名。**阶段名是 'source'**（见 WorkbenchCards 的 STAGES），拼出来的 key
+  // 就是 wb_step_source——缺了它第一个节点的标签恒为空串（2026-08-22 视觉验收实测）。
+  wb_step_source: '找源',
   wb_step_glossary: '冻结术语表',
   wb_step_translate: '逐句翻译',
   wb_step_review: '正在看候选',
