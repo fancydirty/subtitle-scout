@@ -1,46 +1,48 @@
-// web/src/workbench/stepPhrase.ts —— 工具 id → 在跑卡 chrome 键（spec §10.1 闭包）。
-// 未知一律 wb_step_working；永不把 raw tool 字符串交出去（那会画上屏幕）。
+// web/src/workbench/stepPhrase.ts —— 工具 id → 两层映射：阶段（步骤条节点）+ 阶段内动作
+// （日志行 chrome 键，spec §10.1 闭包）。未知一律 working / wb_step_working；
+// 永不把 raw tool 字符串交出去（那会画上屏幕）。
 import type { TKey } from '../i18n/useT.js'
 
-type StepChrome =
-  | 'wb_step_search'
-  | 'wb_step_review'
-  | 'wb_step_download'
-  | 'wb_step_install'
-  | 'wb_step_wrapup'
-  | 'wb_step_working'
+/** 工作台阶段（步骤条的节点）。unknown 一律 working。 */
+export type Stage = 'source' | 'glossary' | 'translate' | 'review' | 'download' | 'install' | 'wrapup' | 'working'
 
-const STEP_PHRASE: Record<string, StepChrome> = {
-  search_source: 'wb_step_search',
-  search_tmdb: 'wb_step_search',
-  get_tmdb_details: 'wb_step_search',
-  write_identified_media: 'wb_step_search',
-  resolve_source: 'wb_step_search',
-  read_doc: 'wb_step_search',
-  fetch_tmdb_context: 'wb_step_search',
-  fetch_series_target_subs: 'wb_step_search',
-  fetch_wiki_context: 'wb_step_search',
-  materialize_agent_view: 'wb_step_search',
-  read_workspace_doc: 'wb_step_search',
-  lookup_glossary: 'wb_step_search',
-  freeze_glossary: 'wb_step_search',
-
-  list_candidates: 'wb_step_review',
-  get_candidate: 'wb_step_review',
-  list_rows: 'wb_step_review',
-  get_window: 'wb_step_review',
-  run_critic: 'wb_step_review',
-  run_structural_gate: 'wb_step_review',
-
-  download_candidate: 'wb_step_download',
-
-  install_subtitle: 'wb_step_install',
-  merge_to_srt: 'wb_step_install',
-  install_sidecar: 'wb_step_install',
-
-  finalize: 'wb_step_wrapup',
+const STAGE: Record<string, Stage> = {
+  // 搜索/选源
+  search_source: 'source', search_tmdb: 'source', get_tmdb_details: 'source',
+  resolve_source: 'source', fetch_tmdb_context: 'source', fetch_series_target_subs: 'source',
+  fetch_wiki_context: 'source', materialize_agent_view: 'source', read_workspace_doc: 'source',
+  // 术语表
+  lookup_glossary: 'glossary', freeze_glossary: 'glossary',
+  // 逐句翻译
+  update_row: 'translate', update_rows: 'translate',
+  // 审核/校验
+  list_candidates: 'review', get_candidate: 'review', list_rows: 'review',
+  get_window: 'review', run_critic: 'review', run_structural_gate: 'review',
+  // 下载
+  download_candidate: 'download',
+  // 装盘
+  install_subtitle: 'install', merge_to_srt: 'install', install_sidecar: 'install',
+  // 收官
+  finalize: 'wrapup',
 }
 
-export function stepPhraseKey(tool: string): TKey {
-  return STEP_PHRASE[tool] ?? 'wb_step_working'
+export function stageOf(tool: string): Stage {
+  return STAGE[tool] ?? 'working'
 }
+
+/** 阶段内动作的 i18n key（日志行文案）。 */
+export function stepActionKey(tool: string): TKey {
+  switch (stageOf(tool)) {
+    case 'source': return 'wb_step_search'
+    case 'glossary': return 'wb_step_glossary'
+    case 'translate': return 'wb_step_translate'
+    case 'review': return 'wb_step_review'
+    case 'download': return 'wb_step_download'
+    case 'install': return 'wb_step_install'
+    case 'wrapup': return 'wb_step_wrapup'
+    default: return 'wb_step_working'
+  }
+}
+
+// 向后兼容别名：现有调用方（ActivityPage）在 Task 5 切到 stepActionKey 前继续可用。
+export const stepPhraseKey = stepActionKey

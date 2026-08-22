@@ -525,6 +525,8 @@ export const zh = {
   wb_run_translate: '正在翻译',
   wb_run_files_done_suffix: '集已装上',
   wb_step_search: '正在搜源',
+  wb_step_glossary: '冻结术语表',
+  wb_step_translate: '逐句翻译',
   wb_step_review: '正在看候选',
   wb_step_download: '正在下载',
   wb_step_install: '正在安装',
