@@ -1360,12 +1360,22 @@ export class ScoutDaemonV2 {
     const total = 1
     const unsub = traceBus.subscribe((e) => {
       if (e.runKey !== runKey) return
+      // 2026-08-21（活动页重做）：update_row(s) 的返回值带 cueDone/cueTotal（Task 1），
+      // 它出现在 resultSummary 里（reasoningAgent 把工具返回值序列化进去）。
+      // 解析出来透传给前端——这是翻译 cue 级进度条的唯一数据源。
+      const cueDoneMatch = /cueDone[\"']?\s*:\s*(\d+)/.exec(e.resultSummary)
+      const cueTotalMatch = /cueTotal[\"']?\s*:\s*(\d+)/.exec(e.resultSummary)
       this.emit({
         type: 'progress',
         message: e.tool,
         title: c.title,
         workbench: 'translate',
-        data: { done, total, ...face, step: e.tool },
+        data: {
+          done, total, ...face, step: e.tool,
+          ...(cueDoneMatch && cueTotalMatch
+            ? { cueDone: Number(cueDoneMatch[1]), cueTotal: Number(cueTotalMatch[1]) }
+            : {}),
+        },
       })
     })
     let status: TranslateRunItemResult['status']

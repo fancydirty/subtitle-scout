@@ -5760,6 +5760,39 @@ describe('翻译工作流 · 主进程内独立循环（第 4 步 / R19 + R12 + 
     await expect((daemon as any).advanceTranslateOnce()).resolves.toBe(false)  // installed 已退避 → 无活
     db.close()
   })
+
+  it('🔴 翻译流 progress 事件的 data 带 cueDone/cueTotal（cue 级进度进 SSE）', async () => {
+    const db = openDb(':memory:')
+    seedHandoff(db, V1)
+    const events: any[] = []
+    const runKey = `job-${translateJobId('tmdb:1', V1)}`
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      now: () => NOW2,
+      translateEnabled: () => true,
+      fileExists: () => true,
+      // 模拟 translateWorker 内部 traceBus 推了一条带 cue 信息的事件。
+      // 必须在 runItem 飞行中推（同 runSubtitleWorkDir 那两条既有用例的形态）——traceBus
+      // 是直播总线，只广播给当下已订阅者，不向晚到的订阅者重放缓冲（见 traceBus.ts 模块头注）。
+      translateRunItem: async () => {
+        traceBus.publish({
+          runKey,
+          seq: 0, tool: 'update_rows',
+          argsSummary: '',
+          resultSummary: '{"ok":true,"count":2,"cueDone":47,"cueTotal":210}',
+          tookMs: 100, at: NOW2,
+        })
+        return { status: 'installed' as const }
+      },
+      emit: (e: any) => events.push(e),
+    }))
+    await advance(daemon)
+    const progressEvents = events.filter((e) => e.type === 'progress' && e.workbench === 'translate')
+    const cueEvent = progressEvents.find((e) => e.data?.cueDone !== undefined)
+    expect(cueEvent).toBeDefined()
+    expect(cueEvent.data.cueDone).toBe(47)
+    expect(cueEvent.data.cueTotal).toBe(210)
+    db.close()
+  })
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
