@@ -174,7 +174,7 @@ export function RunCard(
       <StageBar stage={stage ?? null} kind={kind ?? 'subtitle'} />
       {cueFinite ? (
         <div className="wb-cue-progress">
-          <span className="wb-cue-label">{stepLabel ?? ''} {cueProgress!.done} / {cueProgress!.total} {t('wb_run_files_done_suffix')}</span>
+          <span className="wb-cue-label">{stepLabel ?? ''} {cueProgress!.done} / {cueProgress!.total} {t('wb_run_cues_done_suffix')}</span>
           <div
             className="wb-cue-bar"
             data-cue-bar

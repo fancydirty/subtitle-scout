@@ -14,11 +14,15 @@ const STAGE: Record<string, Stage> = {
   read_doc: 'source', write_identified_media: 'source',
   // 术语表
   lookup_glossary: 'glossary', freeze_glossary: 'glossary',
-  // 逐句翻译
+  // 逐句翻译。get_window / list_rows 是这个循环内部的取窗口/读行——**必须归 translate**：
+  // 归 'review' 的话，TRANSLATE_STAGES（source/glossary/translate/install）里没有 review
+  // 槽位 → StageBar 的 indexOf 返回 -1 → 翻译跑到 get_window 时步骤条整个塌掉。
+  // 2026-08-22 本地 e2e 视觉验收实测到这个形态（PLUTO S01E02，194 cue 那轮）。
   update_row: 'translate', update_rows: 'translate',
-  // 审核/校验
-  list_candidates: 'review', get_candidate: 'review', list_rows: 'review',
-  get_window: 'review', run_critic: 'review', run_structural_gate: 'review',
+  get_window: 'translate', list_rows: 'translate',
+  // 审核/校验（字幕流的选候选环节）
+  list_candidates: 'review', get_candidate: 'review',
+  run_critic: 'review', run_structural_gate: 'review',
   // 下载
   download_candidate: 'download',
   // 装盘

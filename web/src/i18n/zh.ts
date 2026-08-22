@@ -524,6 +524,9 @@ export const zh = {
   wb_run_subtitle: '正在装字幕',
   wb_run_translate: '正在翻译',
   wb_run_files_done_suffix: '集已装上',
+  // cue 级进度的单位。**不许复用 wb_run_files_done_suffix**：cueTotal 是句子数
+  // （PLUTO S01E02 那集 194 句），写"集已装上"就是把 194 句说成 194 集。
+  wb_run_cues_done_suffix: '句已翻',
   wb_step_search: '正在搜源',
   wb_step_glossary: '冻结术语表',
   wb_step_translate: '逐句翻译',
