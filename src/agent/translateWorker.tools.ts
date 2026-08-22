@@ -76,6 +76,22 @@ function readTerms(paths: WorkspacePaths): GlossaryTerm[] {
   }
 }
 
+/** cue 级进度信号：update_row/update_rows 成功后随返回值带上，给前端「在跑卡片」进度条用。
+ *  cueDone = bilingual.jsonl 里 status==='ok' 的行数（BilingualStatus 无 'done'，'ok' 即已翻完）；
+ *  cueTotal = agent_view/source_clean.jsonl 的行数（materialize_agent_view 写入）；
+ *  source_clean 缺失/读取失败时退化为 bilingual 行数（永远给一个非零分母，前端不出 NaN）。 */
+function cueProgress(paths: WorkspacePaths): { cueDone: number; cueTotal: number } {
+  const rows = readRows(paths)
+  const cueDone = rows.filter((r) => r.status === 'ok').length
+  let cueTotal = 0
+  try {
+    if (existsSync(paths.sourceCleanPath)) {
+      cueTotal = readFileSync(paths.sourceCleanPath, 'utf8').split('\n').filter(Boolean).length
+    }
+  } catch { cueTotal = rows.length }
+  return { cueDone, cueTotal: cueTotal || rows.length }
+}
+
 function cueEndSec(timing: string): number {
   const m = timing.match(/-->\s*(\d+):(\d+):(\d+)[,.](\d+)/)
   if (!m) return 0
@@ -437,7 +453,7 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
       if ('error' in r) return r
       writeRows(paths, rows)
       clearGateMarker(paths) // any row edit invalidates a prior gate pass
-      return { ok: true, row: r.row }
+      return { ok: true, row: r.row, ...cueProgress(paths) }
     },
   })
 
@@ -466,7 +482,7 @@ export function makeTranslateWorkspaceTools(deps: TranslateToolDeps) {
       }
       writeRows(paths, rows)
       clearGateMarker(paths)
-      return { ok: true, count: updated.length }
+      return { ok: true, count: updated.length, ...cueProgress(paths) }
     },
   })
 

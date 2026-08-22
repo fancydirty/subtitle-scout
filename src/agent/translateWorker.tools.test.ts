@@ -557,4 +557,25 @@ describe('translate workspace tools', () => {
     expect(JSON.stringify(w.cues)).not.toMatch(/-->/)
     expect(w.cues[0]).toMatchObject({ id: '1', text: 'Hello Nico' })
   })
+
+  it('🔴 update_rows 成功后，argsSummary 带 cueDone/cueTotal（cue 级进度数据源）', async () => {
+    // 初始化 3 条 pending 行（覆盖 baseDeps 的 2 行 SAMPLE_SRT）
+    // 注：BilingualStatus 枚举无 'done'，「已翻完」= status:'ok'（用户确认）
+    const srt3 = '1\n00:00:01,000 --> 00:00:02,000\nA\n\n2\n00:00:03,000 --> 00:00:04,000\nB\n\n3\n00:00:05,000 --> 00:00:06,000\nC\n'
+    const tools = makeTranslateWorkspaceTools(baseDeps({
+      resolveDeps: {
+        probe: async () => [{ lang: 'eng', codec: 'subrip', isImageBased: false }],
+        extract: async () => srt3,
+      },
+    }))
+    await call(tools.resolve_source)
+    await call(tools.materialize_agent_view)
+    // 先写 1 行
+    await call(tools.update_row, { id: '1', tgt: '甲', status: 'ok' })
+    // 再批量写 2 行
+    const r = await call(tools.update_rows, { rows: [{ id: '2', tgt: '乙', status: 'ok' }, { id: '3', tgt: '丙', status: 'ok' }] })
+    expect(r).toMatchObject({ ok: true })
+    // cueDone/cueTotal 必须以可序列化形式出现在工具调用的进度信号里
+    expect(r).toMatchObject({ cueDone: 3, cueTotal: 3 })
+  })
 })
