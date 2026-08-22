@@ -79,19 +79,71 @@ export function SplitHero({
   )
 }
 
+/** 阶段步骤条：4 个节点，当前阶段高亮 + pulse 动画，已完成阶段打勾。
+ *  字幕流: source → download → review → install
+ *  翻译流: source → glossary → translate → install（用 cueProgress 画进度）
+ *  调用方传入 stage（来自 stageOf(tool)），据此确定高亮位置。 */
+const SUBTITLE_STAGES = ['source', 'download', 'review', 'install'] as const
+const TRANSLATE_STAGES = ['source', 'glossary', 'translate', 'install'] as const
+
+function StageBar({ stage, kind }: { stage: string | null; kind: 'subtitle' | 'translate' }) {
+  const { t } = useT()
+  const stages = kind === 'translate' ? TRANSLATE_STAGES : SUBTITLE_STAGES
+  const activeIdx = stage ? (stages as readonly string[]).indexOf(stage) : -1
+  if (activeIdx < 0) return null
+  return (
+    <div className="wb-stage-bar" role="list">
+      {stages.map((s, i) => (
+        <div
+          key={s}
+          className={`wb-stage-node${i < activeIdx ? ' done' : ''}${i === activeIdx ? ' active' : ''}`}
+          data-stage={s}
+          data-stage-active={i === activeIdx ? 'true' : 'false'}
+        >
+          <span className="wb-stage-dot">{i < activeIdx ? '✓' : i + 1}</span>
+          <span className="wb-stage-label">{t(`wb_step_${s === 'glossary' ? 'glossary' : s === 'translate' ? 'translate' : s}` as Parameters<typeof t>[0])}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** 相同动作合并 "×N"：相邻重复行折叠。 */
+function mergeLogLines(lines: string[]): string[] {
+  const out: string[] = []
+  for (const line of lines) {
+    const prev = out[out.length - 1]
+    if (prev) {
+      const m = /^(.*) ×(\d+)$/.exec(prev)
+      const base = m ? m[1]! : prev
+      const count = m ? Number(m[2]) : 1
+      if (base === line) {
+        out[out.length - 1] = `${base} ×${count + 1}`
+        continue
+      }
+    }
+    out.push(line)
+  }
+  return out.slice(-5)
+}
+
 /**
- * 「正在跑」的卡片。SplitHero + 右栏进度/步骤/log。
+ * 「正在跑」的卡片。SplitHero + 右栏阶段步骤条 / 进度 / cue 进度 / log。
  *
  * `progress` 是 `{ done, total }`；index/total 为 null 时不传——**诚实的 null**，
- * 不编 "0/0"、不画 progressbar。分数行是 `` `${done} / ${total} ${suffix}` ``，
- * 不用 t() 插值引擎。`stepLabel` / `logLines` 必须已经是译文，禁止塞 raw tool id
- * 或 `event.message`。有图时不渲染 `.wb-run-fade`（不许再罩一层把图压暗）。
+ * 不编 "0/0"、不画 progressbar。`cueProgress` 是翻译的 cue 级进度（done/total 句），
+ * 有值时画迷你进度条——这是活动页重做的核心动感。
+ * `stepLabel` / `logLines` 必须已经是译文，禁止塞 raw tool id 或 `event.message`。
+ * 有图时不渲染 `.wb-run-fade`（不许再罩一层把图压暗）。
  */
 export function RunCard(
-  { face, progress, staleNote, stepLabel, logLines, elapsedLabel }:
+  { face, stage, kind, progress, cueProgress, staleNote, stepLabel, logLines, elapsedLabel }:
   {
     face: WorkbenchCardFace
+    stage?: string | null
+    kind?: 'subtitle' | 'translate'
     progress?: { done: number; total: number } | null
+    cueProgress?: { done: number; total: number } | null
     staleNote?: string | null
     stepLabel?: string | null
     logLines?: string[]
@@ -103,8 +155,13 @@ export function RunCard(
   const total = progress?.total
   const finite = typeof done === 'number' && Number.isFinite(done)
     && typeof total === 'number' && Number.isFinite(total)
-  const lines = (logLines ?? []).slice(-5)
+  const lines = mergeLogLines(logLines ?? [])
   const subtitle = elapsedLabel ? `${face.subtitle} · ${elapsedLabel}` : face.subtitle
+  const cueDone = cueProgress?.done
+  const cueTotal = cueProgress?.total
+  const cueFinite = typeof cueDone === 'number' && Number.isFinite(cueDone)
+    && typeof cueTotal === 'number' && Number.isFinite(cueTotal)
+    && cueTotal > 0
   return (
     <SplitHero
       className="wb-run-card"
@@ -114,7 +171,26 @@ export function RunCard(
     >
       <span className="wb-card-title">{face.title}</span>
       <span className="wb-card-sub">{subtitle}</span>
-      {finite ? (
+      <StageBar stage={stage ?? null} kind={kind ?? 'subtitle'} />
+      {cueFinite ? (
+        <div className="wb-cue-progress">
+          <span className="wb-cue-label">{stepLabel ?? ''} {cueProgress!.done} / {cueProgress!.total} {t('wb_run_files_done_suffix')}</span>
+          <div
+            className="wb-cue-bar"
+            data-cue-bar
+            role="progressbar"
+            aria-valuenow={cueProgress!.done}
+            aria-valuemin={0}
+            aria-valuemax={cueProgress!.total}
+          >
+            <div
+              className="wb-cue-bar-fill"
+              style={{ width: `${Math.min(100, (cueProgress!.done / cueProgress!.total) * 100)}%` }}
+            />
+          </div>
+        </div>
+      ) : null}
+      {finite && !cueFinite ? (
         <>
           <span className="wb-card-progress">
             {`${done} / ${total} ${t('wb_run_files_done_suffix')}`}
@@ -137,7 +213,7 @@ export function RunCard(
       {lines.length > 0 ? (
         <div className="wb-run-log" role="log">
           {lines.map((line, i) => (
-            <div key={`${i}:${line}`} className={i === lines.length - 1 ? 'wb-run-log-latest' : undefined}>
+            <div key={`${i}:${line}`} data-log-line className={i === lines.length - 1 ? 'wb-run-log-latest' : undefined}>
               {line}
             </div>
           ))}

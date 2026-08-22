@@ -2216,6 +2216,108 @@
 }
 .wb-list { display: flex; flex-direction: column; gap: 8px; }
 
+/* ── 阶段步骤条（2026-08-21 活动页重做）────────────────────────────── */
+.wb-stage-bar {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin: 8px 0 4px;
+}
+.wb-stage-node {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+.wb-stage-dot {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font-size: 10px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: var(--color-border);
+  color: var(--color-weak);
+  border: none;
+  transition: background 0.3s ease, color 0.3s ease, border 0.3s ease;
+}
+.wb-stage-node.done .wb-stage-dot {
+  background: var(--color-accent);
+  color: #fff;
+}
+.wb-stage-node.active .wb-stage-dot {
+  background: transparent;
+  color: var(--color-accent);
+  border: 1.5px solid var(--color-accent);
+  animation: wb-pulse 2s ease-in-out infinite;
+}
+@keyframes wb-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.92); }
+}
+.wb-stage-label {
+  font-size: 10px;
+  line-height: 14px;
+  color: var(--color-weak);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color 0.3s ease;
+}
+.wb-stage-node.done .wb-stage-label,
+.wb-stage-node.active .wb-stage-label {
+  color: var(--color-accent);
+}
+/* 阶段之间的连线（伪元素） */
+.wb-stage-node:not(:last-child)::after {
+  content: '';
+  flex: 1;
+  height: 1.5px;
+  background: var(--color-border);
+  margin: 0 2px;
+  min-width: 8px;
+}
+.wb-stage-node.done:not(:last-child)::after {
+  background: var(--color-accent);
+}
+
+/* ── cue 级进度条（翻译流核心动感）───────────────────────────────── */
+.wb-cue-progress {
+  margin: 6px 0 2px;
+}
+.wb-cue-label {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-fg);
+  display: block;
+  margin-bottom: 4px;
+}
+.wb-cue-bar {
+  height: 5px;
+  width: 100%;
+  background: var(--color-border);
+  border-radius: 2.5px;
+  overflow: hidden;
+}
+.wb-cue-bar-fill {
+  height: 100%;
+  border-radius: 2.5px;
+  background: var(--color-accent);
+  transition: width 0.6s ease;
+}
+/* 进度条底色呼吸（无事件时也活着） */
+@keyframes wb-bar-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+.wb-stage-node.active ~ .wb-cue-progress .wb-cue-bar {
+  animation: wb-bar-breathe 3s ease-in-out infinite;
+}
+
 /* ---- 🟡 读数已过期（实时通道掉线）——**诚实性**，不是排障提示 ----
    与上面 [data-stale='true']（「daemon 可能没在跑」）刻意长得像：两者是同一类判决的
    两半（那边是"后端歇了而我们连着"，这边是"后端在跑而我们听不见"），
