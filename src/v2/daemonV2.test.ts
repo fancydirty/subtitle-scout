@@ -5293,6 +5293,63 @@ describe('ScoutDaemonV2 阶段 3 · C13 sub_attempt 单调递增', () => {
     db.close()
   })
 
+  it('🔴🔴 用例7b: 装盘成功 → **请求一次带外扫描**（covered 落库的唯一途径）', async () => {
+    // 用例 7 钉的是"不写 covered"（R24：磁盘上有没有由扫描说了算）。但只有那一半的话，
+    // 语义就成了"装完盘什么都不做"——covered 要等最长 24 小时后的自然巡检才落库，期间
+    // 媒体库对**已经装好字幕**的文件显示"没有字幕"。两条必须成对，就像用例 6/7 成对。
+    //
+    // 2026-08-23 NAS live test 的教训：这一脚代码里一直有，但**没有守卫、且文档清单漏列**
+    // （requestScan 的注释只写了"加根/手动扫描/翻译装盘"三个点）。排查者据注释判定
+    // "字幕装盘不触发扫描"，把正常行为误当成缺陷。没有守卫的正确行为随时会被无声删掉。
+    //
+    // 断言 scanRequested 这个内部标志而不是"扫描真的跑了"：runInspection 是被直接驱动的
+    // （没有主循环在取件），标志置位就是这条路径能表达的全部。取件之后的链路由
+    // requestScan 那一组的闭环用例守（装盘 → 扫描 → covered）。
+    const db = openDb(':memory:')
+    seedWorkbench(db, 'tmdb:1', [{ path: A }])
+    const disk = fakeVideoDisk([A])
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      ...fakeFs({ '/media': [A] }),
+      fileExists: disk.fileExists,
+      writableRoots: new Map([['/media', true]]),
+      subtitleWorker: async () => ({
+        installed: [{ itemId: 'tmdb:1/s1e1', installedPath: SUB, installedLanguage: 'zh', candidateProvider: 'assrt', candidateProviderId: 'x', reason: '' }],
+        no_safe_match: [], retry_later: [], hardsub_assumed: [],
+      }),
+    }))
+    // 前提：巡检开跑时这个标志会被清掉（见 mainLoop 的取件逻辑），故这里从 false 起步。
+    ;(daemon as any).scanRequested = false
+    await (daemon as any).runInspection(new AbortController().signal)
+    expect(
+      (daemon as any).scanRequested,
+      '🔴 装盘成功必须请求带外扫描——漏了这一脚，covered 要等下一轮自然巡检（最长 24h）',
+    ).toBe(true)
+    db.close()
+  })
+
+  it('🔴 一条都没装上时**不请求**扫描（"这轮没找到"不是磁盘变化，别白扫一趟）', async () => {
+    // 阳性对照：只断言"装盘会置位"的话，一个**恒置位**的实现也会全绿——而那意味着
+    // 每轮巡检结束都白扫一趟全库（软路由上 Movies 一趟全量 readdir 实测 44s）。
+    const db = openDb(':memory:')
+    seedWorkbench(db, 'tmdb:1', [{ path: A }])
+    const disk = fakeVideoDisk([A])
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      ...fakeFs({ '/media': [A] }),
+      fileExists: disk.fileExists,
+      writableRoots: new Map([['/media', true]]),
+      subtitleWorker: async () => ({
+        installed: [], no_safe_match: [{ itemId: 'tmdb:1/s1e1', reason: '没有安全匹配' }],
+        retry_later: [], hardsub_assumed: [],
+      }),
+    }))
+    ;(daemon as any).scanRequested = false
+    await (daemon as any).runInspection(new AbortController().signal)
+    expect((daemon as any).scanRequested).toBe(false)
+    db.close()
+  })
+
   // 编排侧裁决（2026-08-08）：`bumpAllAsAttempt` 这条路径写的是 `sub_attempt + 1` ——
   // 它已经表态"这是一次真实尝试"。既然表了态，就必须同时归零 sub_retry_streak，
   // 否则同一次回写里自相矛盾：一边说算一次尝试、一边保留 retry_later 的豁免进度。
@@ -6587,6 +6644,77 @@ describe('ScoutDaemonV2.requestScan · 带外扫描（"加根后立刻扫"的真
     await expect(scan(bad)).rejects.toThrow('EIO')
     expect(bad.isScanning(), '🔴 抛错路径也必须由 finally 释放，否则 realign 永久等待').toBe(false)
     db.close()
+  })
+
+  // ── 装盘 → 扫描 → covered 的闭环（2026-08-23 live test）─────────────────────
+  //
+  // 为什么这两条值得单列：`requestScan()` 的四个调用点里，**两个装盘触发点此前一条守卫
+  // 都没有**——代码里有那一脚，文档注释的清单里却漏了字幕那条（本次一并补上）。于是
+  // 2026-08-23 的 NAS live test 上真的害了人：排查者读注释得出"字幕装盘不触发扫描"，
+  // 把一个正常行为误判成产品缺陷，差点去"修"一个没坏的东西。
+  //
+  // 漏掉这一脚的真实后果（不是理论）：worker 把 sidecar 放到磁盘上了，但 R24 规定
+  // **只有扫描有权写 covered**（worker 的成功报告不算数，磁盘上有没有由扫描说了算）。
+  // 没人踢这一脚的话，covered 要等最长 24 小时后的下一轮自然巡检才落库——期间媒体库对
+  // 这些**已经装好字幕**的文件显示"没有字幕"。生产实测那轮是 130 个文件。
+  //
+  // 断言口径照本组第一条：不测"某个回调被调了"，测**库里 sub_status 真的变成 covered**。
+  // 把 `this.requestScan()` 从装盘分支删掉 → 两条都红。
+  const installClosesLoop = async (lane: 'subtitle' | 'translate') => {
+    const db = openDb(':memory:')
+    const video = '/media/Show/E01.mkv'
+    // 磁盘：视频一直在；sidecar 一开始不在，"装盘"之后才出现（下面的 installed 开关）。
+    let installed = false
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      listVideoFiles: () => [video],
+      statFile: () => ({ mtimeMs: 1000, size: BIG }),
+      // covered 的判据走这一趟 readdir（listSidecarLanguages）。
+      readdir: () => (installed ? ['E01.mkv', 'E01.zh-Hans.srt'] : ['E01.mkv']),
+      targetLanguage: 'zh',
+      // 巡检闸关死：确保 covered **只可能**由带外扫描写出来，否则自然巡检顺手扫一遍
+      // 就成了假绿（同本组第一条的论证）。
+      inspectEveryMs: Number.MAX_SAFE_INTEGER,
+      maintenanceTickMs: 1,
+      sleep: undefined,
+    }))
+    db.prepare(`INSERT INTO meta (key, value) VALUES ('last_inspect_at', ?)`).run(String(1_000_000_000_000))
+
+    const ctrl = new AbortController()
+    const p = daemon.run(ctrl.signal)
+    // 先扫一轮把文件入库（此时磁盘上还没有 sidecar → 不该是 covered）
+    daemon.requestScan()
+    await new Promise(r => setTimeout(r, 60))
+    const before = db.prepare('SELECT sub_status FROM files WHERE path = ?').get(video) as { sub_status: string | null } | undefined
+    expect(before, '前提：文件已入库').toBeTruthy()
+    expect(before!.sub_status, '前提：装盘之前不是 covered（否则下面的断言无意义）').not.toBe('covered')
+
+    // worker 把 sidecar 放到磁盘上，然后踢那一脚——这正是两个装盘分支做的事。
+    //
+    // ⚠️ `sub_recheck_at = 0` 不是为了让测试变绿的作弊，它是装盘路径**真的会写**的那一列
+    // （subtitleScheduler 的 markInstalled，见那里 🔴🔴 段的完整论证）。少了它，刚装盘的
+    // 文件两档调度都不命中：A 档要指纹变化（装 sidecar 不改视频的 mtime/size），B 档要
+    // `sub_recheck_at <= now`（上一轮观察已把它推到 now+7 天）→ 扫了也不看这一行。
+    // 这条 fixture 因此同时钉住了那个修复：把 markInstalled 里的 sub_recheck_at 去掉，
+    // 生产会退回"7 天看不见新字幕"，而这两条用例照样红。
+    installed = true
+    db.prepare('UPDATE files SET sub_recheck_at = 0 WHERE path = ?').run(video)
+    daemon.requestScan()
+    await new Promise(r => setTimeout(r, 60))
+    ctrl.abort()
+    await p
+
+    const after = db.prepare('SELECT sub_status FROM files WHERE path = ?').get(video) as { sub_status: string | null }
+    db.close()
+    return after.sub_status
+  }
+
+  it('🔴 装盘后踢的那一脚扫描，真的把 sub_status 写成 covered（字幕轨）', async () => {
+    expect(await installClosesLoop('subtitle')).toBe('covered')
+  })
+
+  it('🔴 同一条闭环对翻译轨同样成立（两个装盘分支同型，不许只有一边有）', async () => {
+    expect(await installClosesLoop('translate')).toBe('covered')
   })
 })
 

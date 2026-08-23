@@ -453,11 +453,17 @@ export class ScoutDaemonV2 {
    *
    *  ── 这个方法是谁的后继 ──
    *  它顶替的是旧世界的 `requestIngest()`（cli/index.ts 的 ingestTrigger 闭包 →
-   *  daemon/ingestTrigger.ts → v2/ingest.ts 的 makeIngestPass）。三个调用点原样保留、
+   *  daemon/ingestTrigger.ts → v2/ingest.ts 的 makeIngestPass）。原有三个调用点原样保留、
    *  语义不变，只把绳子的另一头从 ingest 换成 daemonV2：
    *    ① `POST /api/v2/settings/roots` 加根成功后（server.ts，R6"加完目录立刻扫"）
    *    ② `POST /api/v2/library/scan` 手动扫描按钮（server.ts）
    *    ③ 翻译装盘成功后（本文件 handleTranslateResult，R24"只有扫描有权写 covered"）
+   *    ④ **字幕装盘成功后**（本文件 runInspection 阶段 3 的 found 分支，同 ③ 的理由）
+   *
+   *  ⚠️ ④ 曾经不在这份清单里，而代码里是有的。2026-08-23 的 live test 上真的害了人：
+   *  排查者读这段注释得出"字幕装盘不触发扫描"的结论，进而误判成产品缺陷。清单漏一条
+   *  比没有清单更糟——没有清单会去读代码，有清单会信它。下面日志那句文案同理，
+   *  两处要一起改。
    *
    *  ── 为什么必须换绳子（实测，不是推理）──
    *  旧链路今天对这三个调用点**完全无效**，且不是"心跳停了"这么简单：ingest 写的是
@@ -476,7 +482,7 @@ export class ScoutDaemonV2 {
    *  runInspection 阶段 2/3 是两条**付费 LLM 工作台**（识别 + 字幕）。带外触发点里有一个
    *  是 HTTP 端点，暴露"用户点一下按钮就烧一轮 LLM"的形状；更糟的是加根 UI 有防抖但没有
    *  幂等保证，猴子动作能连点出好几轮。而这三个调用点想要的东西**只需要机械扫描**：
-   *  加根要的是"新目录下的文件进 files 表"，翻译装盘要的是"新 sidecar 被记成 covered"
+   *  加根要的是"新目录下的文件进 files 表"，字幕/翻译装盘要的是"新 sidecar 被记成 covered"
    *  （R24：detectSubtitles 就在 scanOnce 里）。识别与字幕交给当天的自然巡检，不抢跑。
    *
    *  幂等：重复调用只是把同一个标志重复置位，主循环一次取件跑一轮——连点 10 次不会扫 10 遍。 */
@@ -759,7 +765,7 @@ export class ScoutDaemonV2 {
         // setup 未完成（没配密钥）时用户加了守备目录同样该看见文件进库——那正是 wizard
         // 期间最需要的反馈，闸掉它等于"配完密钥前加目录什么都不会发生"。
         try {
-          this.deps.log('带外扫描（加根 / 手动扫描 / 翻译装盘触发）')
+          this.deps.log('带外扫描（加根 / 手动扫描 / 字幕装盘 / 翻译装盘触发）')
           await this.scanOnce(signal)
         } catch (e) {
           // 隔离口径同 gcStaging/各回填 pass：带外扫描失败绝不许掀翻主循环——
