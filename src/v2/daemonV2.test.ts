@@ -5350,6 +5350,50 @@ describe('ScoutDaemonV2 阶段 3 · C13 sub_attempt 单调递增', () => {
     db.close()
   })
 
+  it('🔴🔴 用例7c: 装盘成功 → **本轮巡检内**就写出 covered（不许等整轮跑完）', async () => {
+    // 2026-08-23 NAS live test 实测到的缺陷，这是全组里唯一一条"用户当场看得见"的：
+    //   磁盘字幕  18 → 24 → 32 → 50 → 55 → 64 → 71 → 78 → 84（18 分钟内一直在涨）
+    //   covered   15 →  15 →  15 → 15 → 15 → 15 → 15 → 15 → 15（钉死不动）
+    // 69 个文件的字幕**已经在磁盘上**，媒体库却显示"没有字幕"。
+    //
+    // 成因是 requestScan() 的取件点在 mainLoop、位置刻意排在 runInspection **之后**
+    // （"两个 scanOnce 永不并发"）。这个串行保证本身是对的，但代价是：一轮巡检在真实
+    // 媒体库上要跑几小时，期间每一次装盘的成果都不可见——用户看到的是一个"一直在找、
+    // 什么都没找到"的系统，而它其实已经装好了几十集。
+    //
+    // 修法不碰那个并发保证：装盘后**定点观察那几个文件**（observeSubtitle，就是扫描
+    // 用来写 covered 的同一个函数），不跑整轮 scanOnce。于是：
+    //  · 不违反 R24 —— 写 covered 的仍然是"观察磁盘"这个动作本身，不是 worker 的报告
+    //  · 不违反 R4 —— 只碰刚装盘的那几条路径，不重查队列、不动冻结快照
+    //  · 不与 scanOnce 并发 —— 它压根不是 scanOnce，只是逐文件的 observe
+    // requestScan() 那一脚**保留**（用例 7b）：全量复核仍然要做，这里只是让用户早点看见。
+    const db = openDb(':memory:')
+    seedWorkbench(db, 'tmdb:1', [{ path: A }])
+    const disk = fakeVideoDisk([A])
+    // 装盘前目录里只有视频；worker "装盘"之后 sidecar 才出现在 readdir 里。
+    let installed = false
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      roots: ['/media'],
+      ...fakeFs({ '/media': [A] }),
+      fileExists: disk.fileExists,
+      readdir: () => (installed ? ['E01.mkv', 'E01.zh-Hans.srt'] : ['E01.mkv']),
+      writableRoots: new Map([['/media', true]]),
+      subtitleWorker: async () => {
+        installed = true          // worker 把字幕放到磁盘上
+        return {
+          installed: [{ itemId: 'tmdb:1/s1e1', installedPath: SUB, installedLanguage: 'zh', candidateProvider: 'assrt', candidateProviderId: 'x', reason: '' }],
+          no_safe_match: [], retry_later: [], hardsub_assumed: [],
+        }
+      },
+    }))
+    await (daemon as any).runInspection(new AbortController().signal)
+    expect(
+      subStatusOf(db, A),
+      '🔴 装盘后必须当场观察到 covered——否则媒体库要等整轮巡检（生产上数小时）才不再说假话',
+    ).toBe('covered')
+    db.close()
+  })
+
   // 编排侧裁决（2026-08-08）：`bumpAllAsAttempt` 这条路径写的是 `sub_attempt + 1` ——
   // 它已经表态"这是一次真实尝试"。既然表了态，就必须同时归零 sub_retry_streak，
   // 否则同一次回写里自相矛盾：一边说算一次尝试、一边保留 retry_later 的豁免进度。

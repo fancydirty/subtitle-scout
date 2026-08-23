@@ -1035,9 +1035,41 @@ export class ScoutDaemonV2 {
             workbench: 'subtitle',
             data: { installed: report.installed.length, files: item.files.length },
           })
+          // ── ① 当场观察这几个文件，把 covered 写出来（2026-08-23 NAS live test）──
+          //
+          // 光有下面那一脚 requestScan() 是不够的：它的取件点在 mainLoop，位置刻意排在
+          // runInspection **之后**（"两个 scanOnce 永不并发"）。而一轮巡检在真实媒体库上
+          // 要跑几小时——期间每一次装盘的成果都不可见。实测那 18 分钟：
+          //     磁盘字幕 18 → 84（一直在涨）   covered 15 → 15（钉死不动）
+          // 69 个文件的字幕已经在磁盘上，媒体库却显示"没有字幕"。用户看到的是一个
+          // "一直在找、什么都没找到"的系统，而它其实已经装好了几十集。
+          //
+          // 为什么是 observeSubtitle 而不是在这里跑一趟 scanOnce：
+          //  · **不违反并发保证** —— 它压根不是 scanOnce，只是逐文件的观察，没有走盘、
+          //    没有删除差集、不写 files 表的机械列，与阶段 1 那趟不可能互相踩。
+          //  · **不违反 R4 冻结** —— 只碰刚装盘的那几条路径，不重查队列、不动快照。
+          //  · **不违反 R24** —— 写 covered 的仍然是"观察磁盘"这个动作本身（就是扫描
+          //    用的同一个函数），不是 worker 的成功报告。worker 声称装了但文件没落地时，
+          //    这里照样观察不到、照样不写 covered。
+          //
+          // 逐文件 try/catch：一个文件的 stat/readdir 抖动（FUSE 常态）不许掀翻整轮巡检。
+          // 观察失败的那个文件仍有 sub_recheck_at=0 + 下面的 requestScan 兜底。
+          const observeNow = this.deps.now?.() ?? Date.now()
+          const observeReaddir = this.deps.readdir ?? ((d: string) => readdirSync(d))
+          const observeExists = this.deps.fileExists ?? ((p: string) => existsSync(p))
+          for (const f of item.files) {
+            try {
+              this.observeSubtitle(f.path, observeExists, observeReaddir, observeNow)
+            } catch (e) {
+              this.deps.log(`warn: 装盘后定点观察失败（隔离，下轮扫描仍会复核）: ${f.path}: ${String(e)}`)
+            }
+          }
+          // ── ② 仍然踢一脚全量扫描 ──
           // 装盘成功踢一脚扫描：新 sidecar 越早被扫到、covered 越早落库（R24 只有扫描有权写）。
           // 与翻译轨 handleTranslateResult 装盘分支同型——漏了这一脚，覆盖会停在 pending，
           // 活动页一直说"正在找"直到明天巡检的扫描阶段。
+          // ①**不能取代**它：① 只看本作品这几个文件，而全量扫描还负责删除差集、
+          // 用户手放字幕的发现、其他作品的 B 档轮转。
           this.requestScan()
         }
       } catch (e) {
