@@ -1,9 +1,22 @@
+# ⚠️  开源使用者注意
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 本文件通过环境变量透传所有 API 凭据（LLM_API_KEY, TMDB_API_KEY, ASSRT_TOKEN 等）。
+# 使用前必须：
+#   1. 复制 .env.example 为 .env
+#   2. 填写你自己的 API keys（见 README 获取方式）
+#   3. 确保 .env 在 .gitignore 中（已配置，勿删除该规则）
+#   4. 切勿将 .env 提交到版本控制或公开分享
+#
+# 快速启动：
+#   cp .env.example .env
+#   # 编辑 .env 填写凭据
+#   docker compose -f docker-compose.bundle.yml up -d
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#
 # v(next)：Jellyfin 不再是 subtitle-scout 的运行依赖——它直接扫描磁盘 + TMDB 识别文件，
 # 不再打任何媒体服务器的 API。这份"全家桶"因此不再有功能上的特殊性：下面的 jellyfin
 # 服务纯粹是"顺手给你一个播放器"的可选附赠，与 scout 找字幕/整理这条主线完全无关——
 # 只想跑 scout 本体，直接用 docker-compose.yml 即可，效果等价且少一个容器。
-# 用法：cp .env.example .env 填好三把钥匙，然后
-#   docker compose -f docker-compose.bundle.yml up -d
 # 注意：Jellyfin（如果你要用它当播放器）首次运行需先完成初始向导（http://<主机>:8096）。
 services:
   jellyfin:
