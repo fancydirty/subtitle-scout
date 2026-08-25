@@ -1,6 +1,8 @@
 # Contributing to Subtitle Scout
 
-感谢考虑为 Subtitle Scout 做贡献！
+[English](./CONTRIBUTING.en.md) · [中文](#contributing-to-subtitle-scout)
+
+感谢考虑为 Subtitle Scout 做贡献。
 
 ## Code of Conduct
 
@@ -143,6 +145,3 @@ npm run format  # 如果配置了该脚本
 
 By contributing, you agree that your contributions will be licensed under the **GPL v3.0** license.
 
----
-
-再次感谢你的贡献！🎉

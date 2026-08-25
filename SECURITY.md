@@ -1,5 +1,7 @@
 # Security Policy
 
+[中文](./SECURITY.zh.md)
+
 ## Reporting a vulnerability
 
 Do not open a public issue for a credential leak, authentication bypass, arbitrary file write, path traversal, or data-loss bug. Contact the maintainers privately through the security contact configured for the repository, or use a private security advisory when GitHub provides one.

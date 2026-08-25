@@ -1,8 +1,12 @@
 # subtitle-scout
 
-subtitle-scout 盯着你的媒体库，自动找到、验证并放好最合适的中文字幕。它不是又一个字幕下载器——它是一层带判断力的匹配智能：宁可不下，也不下错。直接扫描媒体根目录识别文件，不依赖任何媒体服务器（Jellyfin/Emby/Plex 等）——装不装、用哪个播放器都与它无关，字幕落盘后你的播放器该怎么刷新怎么刷新。
+[English](#quick-start-5-minutes) · [中文](#快速上手)
 
-**核心能力**：自动发现缺中文字幕的影片 → 搜索并用大模型挑最合适的 → 验证后放到位；支持剧集整季打包下载；剧集目录/命名跟 TMDB 排布对不上时自动整理（可回滚）；自带监控页，处理记录可查。
+subtitle-scout watches a media library, finds a matching Chinese subtitle, verifies it, and writes it next to the video. It scans filesystem roots; it does not depend on Jellyfin, Emby, or Plex.
+
+**What it does:** discover titles missing Chinese sidecars → search and rank candidates → install; season packs; optional directory repair against TMDB (reversible); a dashboard with an activity log.
+
+subtitle-scout 盯着媒体库，自动找到、验证并放好最合适的中文字幕。直接扫描媒体根目录，不依赖任何媒体服务器。字幕落盘后由播放器自行刷新。
 
 ---
 
@@ -18,9 +22,11 @@ Get subtitle-scout running from zero to dashboard in under 5 minutes.
 
 ### Step 1: Get API Keys
 
-You'll need **two required** and **one optional** API keys:
+The wizard can skip ASSRT, OpenSubtitles, and Jimaku. Configure all three. OpenSubtitles is useful for **both Chinese-speaking and non-Chinese-speaking users**—that is why it should not be skipped. ASSRT is the professional Chinese catalog (finished Chinese sidecars). Jimaku is not: it feeds the translation agent with Japanese source subtitles.
 
-**📖 Detailed Guide**: For step-by-step instructions with screenshots and troubleshooting, see **[docs/GET_CREDENTIALS.md](docs/GET_CREDENTIALS.md)**
+LLM (OpenAI-compatible) is a separate wizard step and is not covered here.
+
+**Credentials**: [English](docs/GET_CREDENTIALS.en.md) · [中文](docs/GET_CREDENTIALS.md)
 
 #### Required: TMDB API Key (Free)
 
@@ -31,29 +37,26 @@ TMDB powers media file recognition. Without it, subtitle-scout cannot identify y
 3. Request a **Developer** key
 4. Copy the API key (v3 32-char key or v4 Read Access Token both work)
 
-**→ [Detailed TMDB guide](docs/GET_CREDENTIALS.md#1-tmdb-api-key-必需)**
+**→ [TMDB](docs/GET_CREDENTIALS.en.md#1-tmdb-api-key)** · [中文](docs/GET_CREDENTIALS.md#1-tmdb-api-key)
 
-#### Required: ASSRT Token (Free)
+#### Strongly recommended: ASSRT Token (Free)
 
-ASSRT is the primary Chinese subtitle source.
+ASSRT is the primary Chinese subtitle source. The wizard lets you skip it; don't, if you want Chinese subs.
 
-1. Register at [assrt.net](https://assrt.net)
-2. Log in and go to "用户中心" (User Center)
-3. Copy your API token
+1. Register at [assrt.net](https://assrt.net/user/register.xml) (the homepage does not show Sign up)
+2. Log in, then open [https://assrt.net/usercp.php](https://assrt.net/usercp.php) (nav: **用户面板**)
+3. Copy the API token
 
-**→ [Detailed ASSRT guide](docs/GET_CREDENTIALS.md#2-assrt-token-必需)**
+**→ [ASSRT](docs/GET_CREDENTIALS.en.md#2-assrt-token)** · [中文](docs/GET_CREDENTIALS.md#2-assrt-token)
 
-#### Optional: LLM API Key
+#### OpenSubtitles and Jimaku (configure anyway)
 
-For AI-powered subtitle matching. Any OpenAI-compatible endpoint works:
+OpenSubtitles is an international source for Chinese-speaking and non-Chinese-speaking users alike. Jimaku is not a professional Chinese catalog; it supplies Japanese **source** subtitles to the translation agent.
 
-- **DeepSeek** (`https://api.deepseek.com/v1` + your key + model `deepseek-chat`)
-- **OpenAI** (`https://api.openai.com/v1` + your key + model `gpt-4o-mini`)
-- **Silicon Flow** or other compatible providers
+- OpenSubtitles: [https://www.opensubtitles.com/en/consumers](https://www.opensubtitles.com/en/consumers) → **API consumers** → **NEW CONSUMER**. No VIP. Name: letters and digits only.
+- Jimaku (Japanese): [https://jimaku.cc/account](https://jimaku.cc/account)
 
-**→ [Detailed LLM guide with cost comparison](docs/GET_CREDENTIALS.md#4-llm-api-key-可选---用于-ai-翻译)**
-
-> **Note**: Without LLM, subtitle-scout can still download subtitles but won't perform AI-powered quality verification.
+**→ [OpenSubtitles](docs/GET_CREDENTIALS.en.md#3-opensubtitles-api)** · [Jimaku](docs/GET_CREDENTIALS.en.md#4-jimaku-api-key)
 
 ### Step 2: Clone and Configure
 
@@ -140,6 +143,8 @@ For detailed configuration, troubleshooting, and development setup, see the sect
 
 ## 快速上手
 
+凭证说明（中文 / English）：[docs/GET_CREDENTIALS.md](docs/GET_CREDENTIALS.md) · [docs/GET_CREDENTIALS.en.md](docs/GET_CREDENTIALS.en.md)。ASSRT 是专业中文源；OpenSubtitles 对中外用户都有用，不要省；Jimaku 给翻译 agent 当日文源字幕。
+
 启动后通过监控页完成配置：
 
 ```bash
@@ -169,8 +174,8 @@ subtitle-scout 需要三组凭据：ASSRT 字幕库、大模型、TMDB（识别�
 ### 1. ASSRT Token
 
 **获取步骤**：
-1. 注册 [assrt.net](https://assrt.net)
-2. 登录后进入"用户中心"
+1. 注册 [assrt.net](https://assrt.net/user/register.xml)
+2. 登录后点「用户面板」，或直接打开 [https://assrt.net/usercp.php](https://assrt.net/usercp.php)
 3. 复制 API token，在设置向导（或设置页）的 ASSRT 卡片里粘贴
 
 **预期管理**：
@@ -185,7 +190,7 @@ subtitle-scout 需要三组凭据：ASSRT 字幕库、大模型、TMDB（识别�
 |------|------|
 | Base URL | 如 `https://api.deepseek.com/v1` |
 | API Key | 对应端点的 API key |
-| 模型 | 模型名，如 `deepseek-chat` |
+| 模型 | 模型名，如 `deepseek-v4-flash` |
 
 **关键**：三项必须来自**同一个服务商**。模型能力影响匹配质量。
 
@@ -210,19 +215,24 @@ subtitle-scout 直接扫描媒体根目录发现文件，靠 TMDB 识别标题/�
 
 **填哪**：设置向导（或设置页）的 TMDB 卡片。填完即生效（向导落库同进程点火，不用重启容器）。
 
-### OpenSubtitles（可选）：第二字幕源
+### OpenSubtitles / Jimaku
 
-ASSRT 主打国产字幕站，欧美剧集/电影覆盖有限；OpenSubtitles 是 ASSRT 之外的第二数据源，专门补这块——同一部片，中文字幕这边常有 ASSRT 搜不到的补充。
+OpenSubtitles 是面向**中文用户和海外用户**的国际源，不是「只给翻译用」才值得配。专业中文站覆盖不到的片目可以在这里找到；非中文用户也把它当作常用源。向导允许跳过，**仍应配置**。
 
-**怎么申请**（免费）：
+Jimaku **不是**专业中文站：它给翻译 agent 提供日文源字幕。
+
+**怎么申请**（免费，不必买 VIP）：
 
 1. 注册 [opensubtitles.com](https://www.opensubtitles.com) 账号
-2. 进入 [API Consumers](https://www.opensubtitles.com/en/consumers) 建一个 API consumer（名字仅限字母数字）
-3. 复制生成的 key，在设置页的 OpenSubtitles 卡片里粘贴
+2. 打开 [https://www.opensubtitles.com/en/consumers](https://www.opensubtitles.com/en/consumers)（侧栏 **API consumers**）
+3. 点 **NEW CONSUMER**，名字仅限字母数字（如 `subtitlescout`）
+4. 复制生成的 key，在设置页的 OpenSubtitles 卡片里粘贴
 
-**可选加成**：额外填 `OPENSUBTITLES_USERNAME` / `OPENSUBTITLES_PASSWORD`——登录后免费档 20 次下载/天；不填则走匿名档，5 次/天。创建 consumer 时勾选 "Under development" 可拿到 100 次下载/天，开发期很够用。
+Jimaku（日文源字幕）：登录 [https://jimaku.cc/account](https://jimaku.cc/account) 生成 key，写入 Settings 的 Jimaku 卡片。
 
-> 搜索本身不耗配额，只有实际下载才扣；doctor 的探测请求（搜索《黑客帝国》）不会碰下载额度。没有 key 也能跑：这是纯增益的第二数据源，不配置就自动跳过，不阻塞主流程。
+**可选加成**：额外填 `OPENSUBTITLES_USERNAME` / `OPENSUBTITLES_PASSWORD`——登录后免费档约 20 次下载/天；不填则走匿名档。创建 consumer 时勾选 "Under development" 可提高开发期额度。
+
+搜索本身不耗下载配额。doctor 探测不会扣下载次数。向导允许不配 OpenSubtitles；不配则中外用户都会少一个覆盖面最广的国际源。
 
 ---
 
@@ -401,7 +411,7 @@ docker compose exec subtitle-scout node dist/cli/index.js translate-item "/hostr
 
 ```bash
 scripts/gen-mock-library.sh          # 生成 fixtures/media 下的 mock 媒体库
-cp .env.example .env                 # 填 LLM/ASSRT/TMDB 三把钥匙
+cp .env.example .env                 # 只需 TZ=；密钥走 dashboard 向导
 docker compose -f docker-compose.local.yml up -d --build
 ```
 

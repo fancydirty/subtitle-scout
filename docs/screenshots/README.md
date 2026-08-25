@@ -1,63 +1,49 @@
-# Screenshots 目录说明
+# docs/screenshots
 
-## 关于截图
+[English](#english) · [中文](#中文)
 
-本目录原计划存放 TMDB API Key 获取流程的实际截图，但由于技术限制（ego-browser 截图功能超时），目前教程采用纯文字描述方式。
+## 中文
 
-## 截图缺失的影响
+`GET_CREDENTIALS.md` / `GET_CREDENTIALS.en.md` 所用截图。登录后的密钥字符串不拍摄。
 
-实际上，**纯文字教程已经足够清晰**，因为：
+| 文件 | 内容 |
+|------|------|
+| `tmdb-01-homepage.png` | TMDB 首页，Join TMDB |
+| `tmdb-02-signup-form.png` | TMDB 注册表 |
+| `tmdb-03-settings-menu.png` | 未登录打开 `/settings/api` |
+| `tmdb-docs-getting-started.png` | 官方文档：账号设置 → API |
+| `assrt-01-homepage.png` | ASSRT 首页（无注册入口） |
+| `assrt-02-register.png` | ASSRT 注册表 |
+| `assrt-03-api-docs.png` | Token 在用户面板 |
+| `assrt-04-login-links.png` | 未登录：加入我们 / 登录 |
+| `assrt-05-usercp-nav.png` | 登录后：用户面板 → usercp.php |
+| `opensubtitles-01-homepage.png` | OpenSubtitles 首页 |
+| `opensubtitles-02-signup-form.png` | 注册窗口 |
+| `opensubtitles-03-api-menu.png` | 未登录 `/en/consumers` |
+| `opensubtitles-04-api-consumers.png` | API consumers，NEW CONSUMER，无需 VIP |
+| `jimaku-01.png` | Jimaku 首页 Login |
 
-1. **流程简单直观**: TMDB 的注册和 API Key 申请流程非常标准
-2. **链接直达**: 教程中提供了所有关键页面的直接链接
-3. **详细步骤**: 每个步骤都有明确的操作说明和字段解释
+不要提交未打码的 API key。
 
-## 如何补充截图（可选）
+## English
 
-如果你希望添加实际截图，可以手动完成：
+Screenshots for `GET_CREDENTIALS.md` / `GET_CREDENTIALS.en.md`. Secret strings are never photographed.
 
-### 方法一：手动截图
+| File | Content |
+|------|---------|
+| `tmdb-01-homepage.png` | TMDB home, Join TMDB |
+| `tmdb-02-signup-form.png` | TMDB sign-up |
+| `tmdb-03-settings-menu.png` | Signed-out `/settings/api` |
+| `tmdb-docs-getting-started.png` | Docs: account settings → API |
+| `assrt-01-homepage.png` | ASSRT home (no sign-up) |
+| `assrt-02-register.png` | ASSRT registration |
+| `assrt-03-api-docs.png` | Token lives in the user panel |
+| `assrt-04-login-links.png` | Signed out: 加入我们 / 登录 |
+| `assrt-05-usercp-nav.png` | Signed in: 用户面板 → usercp.php |
+| `opensubtitles-01-homepage.png` | OpenSubtitles home |
+| `opensubtitles-02-signup-form.png` | Register dialog |
+| `opensubtitles-03-api-menu.png` | Signed-out `/en/consumers` |
+| `opensubtitles-04-api-consumers.png` | API consumers, NEW CONSUMER, no VIP |
+| `jimaku-01.png` | Jimaku home, Login |
 
-1. 按照 `GET_CREDENTIALS.md` 中的步骤操作
-2. 在每个关键步骤截图保存到此目录
-3. 命名格式：`tmdb-01-homepage.png`, `tmdb-02-signup-form.png` 等
-
-### 方法二：使用其他截图工具
-
-```bash
-# 使用 Playwright 截图
-npx playwright screenshot https://www.themoviedb.org/ tmdb-01-homepage.png
-
-# 或使用 Puppeteer
-node -e "
-const puppeteer = require('puppeteer');
-(async () => {
-  const browser = await puppeteer.launch();
-  const page = await browser.newPage();
-  await page.goto('https://www.themoviedb.org/');
-  await page.screenshot({path: 'tmdb-01-homepage.png'});
-  await browser.close();
-})();
-"
-```
-
-### 需要的截图列表
-
-- `tmdb-01-homepage.png` - TMDB 首页，显示"加入 TMDB"按钮
-- `tmdb-02-signup-form.png` - 注册表单页面
-- `tmdb-03-settings-menu.png` - 登录后的设置菜单
-- `tmdb-04-request-api.png` - API Key 申请表单
-- `tmdb-05-api-key.png` - 显示 API Key 的页面（需要模糊处理实际 Key）
-
-## 敏感信息处理
-
-如果补充截图，请注意：
-
-- ✅ **可以显示**: 页面布局、按钮位置、菜单结构
-- ⚠️ **需要标注**: API Key、邮箱、用户名等敏感信息的位置
-- ❌ **不要显示**: 实际的 API Key 值、个人邮箱、真实用户名
-
-建议使用图像编辑工具在敏感信息上添加高亮框或文字标注，例如：
-- 红框标注 + 文字说明："此处是你的 API Key"
-- 模糊处理 + 箭头指向
-
+Do not commit unredacted API keys.

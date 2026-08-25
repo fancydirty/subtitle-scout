@@ -1,848 +1,192 @@
-# 获取 API 凭证指南
+# 获取 API 凭证
 
-本指南将帮助你获取 Subtitle Scout 所需的各种 API 凭证。
+[English](./GET_CREDENTIALS.en.md)
+
+本文件说明如何取得 **TMDB** 与各字幕源凭证，以及它们在 Scout 里分别做什么。语言模型三件套由向导另一步收集，此处不展开。
+
+凭证写入本机 dashboard（`:8099` 向导或 Settings），**不**写入 `.env`。`.env` 中填入这些键不会生效。
+
+向导把 ASSRT / OpenSubtitles / Jimaku 标成可跳过。可跳过不等于建议跳过。**三份字幕源凭证都应配齐。OpenSubtitles 尤其不要省：它对中国用户和海外用户都有用。**
+
+| 源 | 向导 | 作用 |
+|----|------|------|
+| TMDB | 硬门禁 | 识别片库文件。没有它 Scout 无法工作。 |
+| ASSRT | 可跳过 | 专业中文字幕站。直接提供中文成品字幕。 |
+| OpenSubtitles | 可跳过 | 国际字幕源，**中文用户与海外用户都常用**。不是专业中文站，但覆盖面广，找字幕与翻译都能用到。 |
+| Jimaku | 可跳过 | **不是**专业中文源。给翻译 agent 提供日文源字幕（动画等）。 |
+
+内置的 zimuku / subhd 无需账号，不在本文件范围。
+
+测连接用 dashboard 的 **测试**。不要把真实密钥写入 git、issue 或截图。下文 URL 可整段复制。登录墙截图表示：先登录，再打开同一地址。密钥字符串本身没有实拍。
 
 ---
 
-## TMDB (The Movie Database) API Key
+## 1. TMDB API Key
 
-TMDB API 用于获取电影和电视剧的元数据信息（标题、年份、类型等），帮助准确匹配字幕。
+没有 TMDB，Scout 无法识别电影与剧集。v3 的 32 位 Key 与 v4 Read Access Token 均可。
 
-### 获取步骤
+### URLs
 
-#### Step 1: 注册 TMDB 账号
+```
+https://www.themoviedb.org/
+https://www.themoviedb.org/signup
+https://www.themoviedb.org/settings/api
+https://developer.themoviedb.org/docs/getting-started
+```
 
-1. 访问 [https://www.themoviedb.org/](https://www.themoviedb.org/)
-2. 点击右上角的 **"加入 TMDB"** (Join TMDB) 按钮
+### 注册
+
+1. 打开 [https://www.themoviedb.org/](https://www.themoviedb.org/)。右上角 **Join TMDB**（中文界面为「加入 TMDB」）。
 
    ![TMDB 首页](./screenshots/tmdb-01-homepage.png)
-   
-   > 💡 **提示**: 页面会显示中文界面（如果浏览器语言设置为中文）
 
-#### Step 2: 填写注册信息
+2. 注册页：[https://www.themoviedb.org/signup](https://www.themoviedb.org/signup)。填写 Username / Password / Email，或使用 Google。验证邮箱。
 
-在注册页面 (https://www.themoviedb.org/signup) 填写以下信息：
+   ![TMDB 注册表](./screenshots/tmdb-02-signup-form.png)
 
-- **用户名** (Username): 选择一个唯一的用户名
-- **密码** (Password): 设置一个安全的密码
-- **确认密码** (Confirm Password): 再次输入密码
-- **电子邮件** (Email): **填写你的真实邮箱地址**（用于接收验证邮件）
+### 申请 Key
 
-![注册表单](./screenshots/tmdb-02-signup-form.png)
+文档：[https://developer.themoviedb.org/docs/getting-started](https://developer.themoviedb.org/docs/getting-started) — 登录后在账号设置中打开 **API**。
 
-注册选项说明：
-- 可以选择 **"Continue with Google"** 使用 Google 账号快速注册
-- 可以选择 **"Email me a sign-in link"** 通过邮件链接登录（无需密码）
+![TMDB Getting Started](./screenshots/tmdb-docs-getting-started.png)
 
-勾选同意条款后，点击 **"注册"** (Sign up) 按钮。
+设置页：[https://www.themoviedb.org/settings/api](https://www.themoviedb.org/settings/api)
 
-> ⚠️ **重要**: 注册后需要到邮箱查收验证邮件并点击验证链接激活账号。
+未登录会落到权限页。登录后再次打开同一 URL。
 
-#### Step 3: 登录账号
+![未登录访问 API 设置](./screenshots/tmdb-03-settings-menu.png)
 
-注册并验证邮箱后：
+登录后选择 **Developer**，填写应用名称（例如 `Subtitle Scout`），提交后立即生效。复制 **API Key (v3 auth)** 或 v4 Read Access Token。
 
-1. 返回 TMDB 首页
-2. 点击右上角 **"登录"** (Login)
-3. 输入用户名/邮箱和密码登录
+### 写入 Scout
 
-#### Step 4: 进入 API 设置页面
-
-登录后，访问 API 设置页面：
-
-**方法一：直接访问**
-- 直接打开: [https://www.themoviedb.org/settings/api](https://www.themoviedb.org/settings/api)
-
-**方法二：通过菜单导航**
-1. 点击右上角的头像或用户名
-2. 选择 **"设置"** (Settings)
-3. 在左侧菜单中选择 **"API"**
-
-![API 设置入口](./screenshots/tmdb-03-settings-menu.png)
-
-#### Step 5: 申请 API Key
-
-在 API 设置页面，你会看到两个选项：
-
-1. **API Key (v3 auth)** - 传统的 API Key 认证方式
-2. **API Read Access Token (v4 auth)** - 新的 Bearer Token 认证方式
-
-对于 Subtitle Scout，我们需要 **API Key (v3)**。
-
-如果是首次申请：
-
-1. 点击 **"Request an API Key"** 或 **"申请 API 密钥"**
-2. 选择 API 使用类型：
-   - **Developer** (开发者) - 用于个人开发项目 ✅ **选择这个**
-   - **Commercial** (商业) - 用于商业产品
-3. 填写简单的申请表单：
-   - **Application Name**: 填写应用名称（例如: "Subtitle Scout"）
-   - **Application URL**: 可以填写 GitHub 仓库地址或留空
-   - **Application Summary**: 简单描述用途（例如: "Personal subtitle downloader tool"）
-4. 同意使用条款
-5. 点击 **"Submit"** 提交申请
-
-申请会立即通过，无需等待审核。
-
-![申请 API Key](./screenshots/tmdb-04-request-api.png)
-
-#### Step 6: 复制 API Key
-
-申请成功后，API 设置页面会显示你的凭证信息：
-
-```
-API Key (v3 auth)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-your_api_key_here_32_characters_long
-
-API Read Access Token (v4 auth)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJ...
-```
-
-找到 **"API Key (v3 auth)"** 部分，复制那串 32 位字符的密钥。
-
-![API Key 展示](./screenshots/tmdb-05-api-key.png)
-
-> ⚠️ **敏感信息**: 这是你的个人 API Key，请妥善保管，不要分享或提交到公开的代码仓库。
-
-#### Step 7: 配置到 Subtitle Scout
-
-将获取到的 API Key 配置到你的环境变量或配置文件中：
-
-**环境变量方式：**
-```bash
-export TMDB_API_KEY="your_api_key_here"
-```
-
-**或在 `.env` 文件中：**
-```
-TMDB_API_KEY=your_api_key_here
-```
-
-**或在配置文件中：**
-```json
-{
-  "tmdb": {
-    "api_key": "your_api_key_here"
-  }
-}
-```
-
-### 验证 API Key
-
-你可以通过以下方式验证 API Key 是否有效：
-
-```bash
-curl "https://api.themoviedb.org/3/configuration?api_key=YOUR_API_KEY"
-```
-
-如果返回 JSON 配置信息，说明 API Key 有效。
-
-### 常见问题
-
-**Q: API Key 有使用限制吗？**
-A: 免费账号有请求速率限制（每秒约 40 次请求），对于个人使用完全足够。
-
-**Q: API Key 会过期吗？**
-A: 不会，除非你主动重新生成或删除。
-
-**Q: 忘记 API Key 怎么办？**
-A: 重新登录 TMDB，访问 API 设置页面即可查看。
-
-**Q: 可以使用 API Read Access Token 吗？**
-A: 可以，但需要修改代码以支持 Bearer Token 认证方式。推荐使用 API Key (v3) 更简单。
-
-### 相关链接
-
-- [TMDB API 官方文档](https://developer.themoviedb.org/docs)
-- [TMDB API 认证说明](https://developer.themoviedb.org/docs/authentication-application)
-- [TMDB 账号注册](https://www.themoviedb.org/signup)
+向导第二步 **TMDB**：粘贴 → **测试** → 保存。之后可在 Settings 的 TMDB 卡片修改。
 
 ---
 
-## 2. ASSRT Token (必需)
+## 2. ASSRT Token
 
-ASSRT (assrt.net) 是国内最大的字幕分享平台，提供海量中文字幕资源。对于中文用户来说，这是**必需配置**的字幕源。
+ASSRT（[assrt.net](https://assrt.net)，SHOOTER / 伪射手）是专业中文字幕站，供找字幕流水线直接装中文成品。向导允许跳过；中文片库不应跳过。
 
-### 获取步骤
+实测配额为 **每分钟 5 次**。Scout 将请求间隔限制在约 15 秒。
 
-#### Step 1: 注册 ASSRT 账号
+### URLs
 
-1. 访问 [https://assrt.net/](https://assrt.net/)
-2. 点击页面右上角或导航栏中的 **"注册"** 按钮
-
-   > 💡 **提示**: ASSRT 网站可能需要一定的加载时间，请耐心等待页面完全加载。
-
-#### Step 2: 完成账号注册
-
-在注册页面填写以下信息：
-
-- **用户名**: 选择一个唯一的用户名（用于登录）
-- **密码**: 设置一个安全的密码
-- **电子邮件**: 填写你的真实邮箱地址
-
-根据网站要求完成注册流程。
-
-> ⚠️ **重要**: 某些情况下可能需要邮箱验证，请检查你的邮箱并点击验证链接。
-
-#### Step 3: 登录账号
-
-注册完成后：
-
-1. 返回 ASSRT 首页 [https://assrt.net/](https://assrt.net/)
-2. 使用注册的用户名和密码登录
-
-#### Step 4: 进入用户面板
-
-登录后，访问用户面板获取 API Token：
-
-**方法一：直接访问**
-- 直接打开: [https://assrt.net/usercp.php](https://assrt.net/usercp.php)
-
-**方法二：通过导航菜单**
-1. 登录后，点击页面右上角的用户名或头像
-2. 在下拉菜单中选择 **"用户设置"** 或 **"个人面板"**
-
-#### Step 5: 查看 API Token
-
-在用户面板页面中：
-
-1. 找到 **"API"** 或 **"API 密钥"** 或 **"Token"** 相关的设置项
-2. 你会看到一个 32 位字符组成的 Token（包含数字和大小写字母）
-
-Token 格式示例：
 ```
-a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6
+https://assrt.net/
+https://assrt.net/user/register.xml
+https://assrt.net/usercp.php
+https://assrt.net/api/doc
 ```
 
-3. 复制这个 Token
+### 注册
 
-> ⚠️ **敏感信息**: 这是你的个人 API Token，请妥善保管。不要分享给他人或提交到公开的代码仓库。
+首页不提供注册入口。打开 [https://assrt.net/user/register.xml](https://assrt.net/user/register.xml)，或从内页选择 **加入我们**。
 
-#### Step 6: 配置到 Subtitle Scout
+![ASSRT 首页](./screenshots/assrt-01-homepage.png)
 
-将获取到的 Token 配置到你的环境变量或配置文件中：
+![未登录：加入我们 / 登录](./screenshots/assrt-04-login-links.png)
 
-**环境变量方式：**
-```bash
-export ASSRT_TOKEN="your_token_here"
+![ASSRT 注册表](./screenshots/assrt-02-register.png)
+
+注册页写明不建议使用 QQ 邮箱。
+
+### 取得 Token
+
+登录后点击导航 **用户面板**（或头像），进入：
+
+```
+https://assrt.net/usercp.php
 ```
 
-**或在 `.env` 文件中：**
-```
-ASSRT_TOKEN=your_token_here
-```
+Token 显示在该页，为 32 位字母数字，可重置。
 
-**或在配置文件中：**
-```json
-{
-  "assrt": {
-    "token": "your_token_here"
-  }
-}
-```
+![登录后：用户面板](./screenshots/assrt-05-usercp-nav.png)
 
-### 验证 Token
+说明见 [https://assrt.net/api/doc](https://assrt.net/api/doc#usetoken)。
 
-你可以通过以下命令验证 Token 是否有效：
+![ASSRT API 文档：使用 Token](./screenshots/assrt-03-api-docs.png)
 
-```bash
-curl "https://api.assrt.net/v1/user/quota?token=YOUR_TOKEN"
-```
+### 写入 Scout
 
-如果返回类似以下的 JSON 响应，说明 Token 有效：
-
-```json
-{
-  "status": 0,
-  "user": {
-    "result": "succeed",
-    "action": "quota",
-    "quota": 20
-  }
-}
-```
-
-其中 `quota` 表示你当前可用的 API 配额（每分钟剩余请求次数）。
-
-### Token 说明
-
-**有效期：**
-- Token 永久有效，除非你主动重置
-
-**权限：**
-- 可以搜索字幕
-- 可以获取字幕详情
-- 可以下载字幕文件
-- 受到 API 配额限制（见下文）
-
-**重置 Token：**
-- 如果 Token 泄露，可以在用户面板中找到 **"重置 Token"** 或 **"重新生成"** 按钮
-- 重置后旧 Token 将立即失效
-
-### API 配额说明
-
-ASSRT API 默认配额为：
-
-| 配额类型 | 限制 |
-|---------|------|
-| **默认配额** | 20 次/分钟 |
-| **计费方式** | 按 Token 和 IP 地址共享配额 |
-
-> 💡 **提示**: 
-> - 如果同一 IP 下有多个 Token，它们共享同一个配额池
-> - 如果同一 Token 从不同 IP 访问，也共享配额
-> - 对于个人使用，默认配额完全足够
-
-**申请更高配额：**
-
-如果你的使用场景需要更高的请求速率，可以：
-
-1. 发送邮件到 ASSRT 官方邮箱（在网站底部的"联系"链接中可以找到）
-2. 说明你的应用场景和所需配额
-3. 等待审核
-
-> 📝 **注意**: ASSRT 优先为发布高质量字幕的个人用户提供更高配额。
-
-### 常见问题
-
-**Q: Token 会过期吗？**
-A: 不会，除非你主动重置或删除账号。
-
-**Q: 忘记 Token 怎么办？**
-A: 重新登录 ASSRT，访问用户面板即可查看。
-
-**Q: API 请求失败显示 "invalid token" 错误？**
-A: 检查以下几点：
-   - Token 是否完整复制（32 位字符）
-   - Token 中是否有多余的空格或换行符
-   - 账号是否正常（尝试重新登录网站）
-
-**Q: 超过配额限制怎么办？**
-A: 等待一分钟后配额会自动恢复。如果经常遇到限制，考虑：
-   - 在代码中添加请求间隔（例如每次请求间隔 3-5 秒）
-   - 实现本地缓存机制，避免重复请求
-   - 申请更高配额
-
-**Q: ASSRT 和 OpenSubtitles 有什么区别？**
-A: 
-   - **ASSRT**: 国内最大中文字幕站，中文资源丰富，必需配置
-   - **OpenSubtitles**: 国际字幕站，英文和其他语言资源丰富，可选配置
-
-### 相关链接
-
-- [ASSRT API 官方文档](https://assrt.net/api/doc)
-- [ASSRT 用户面板](https://assrt.net/usercp.php)
-- [ASSRT 账号注册](https://assrt.net/user/register.xml)
+向导 **字幕源** 或 Settings 的 ASSRT 卡片：粘贴 → **测试**。仅测试通过的值会保存。
 
 ---
 
-## OpenSubtitles API (可选)
+## 3. OpenSubtitles API
 
-OpenSubtitles 是**可选的**国际字幕源，提供海量英文和其他语言字幕。如果你主要使用中文字幕，可以跳过此配置。
+OpenSubtitles 是面向**中文用户和海外用户**的国际字幕源：专业中文站覆盖不到的片目可以在这里找到，非中文用户也把它当作常用源。向导标为可跳过，**仍应配置**——不要省的原因是它对两类用户都有用。翻译 agent 也可以把它当作外文源字幕使用。生成 API key **不需要 VIP**。
 
-### 费用说明
+使用 [opensubtitles.com](https://www.opensubtitles.com/)，不是已停维护的 opensubtitles.org。
 
-OpenSubtitles 提供两种账号类型：
-
-| 类型 | 费用 | API 配额 | 下载限制 |
-|------|------|---------|---------|
-| **Free** | 免费 | 每天 200 次请求 | 每天 20 个字幕 |
-| **VIP** | $1.99/月 或 $14.99/年 | 每天 1000 次请求 | 无限制下载 |
-
-> 💡 **建议**: 个人使用免费账号已经足够。VIP 主要适合高频使用或批量下载场景。
-
-### 获取步骤
-
-#### Step 1: 注册 OpenSubtitles 账号
-
-1. 访问 [https://www.opensubtitles.com/](https://www.opensubtitles.com/)
-2. 点击右上角的 **"Sign Up"** 按钮
-
-   ![OpenSubtitles 首页](./screenshots/opensubtitles-01-homepage.png)
-
-#### Step 2: 填写注册信息
-
-在注册页面填写以下信息：
-
-- **Username**: 选择一个唯一的用户名（**记住此用户名，API 需要用到**）
-- **Email**: 填写你的真实邮箱地址
-- **Password**: 设置一个安全的密码（**记住此密码，API 需要用到**）
-- **Confirm Password**: 再次输入密码
-
-![注册表单](./screenshots/opensubtitles-02-signup-form.png)
-
-勾选同意条款后，点击 **"Sign Up"** 按钮。
-
-> ⚠️ **重要**: 注册后需要到邮箱查收验证邮件并点击验证链接激活账号。
-
-#### Step 3: 登录账号
-
-验证邮箱后：
-
-1. 返回 OpenSubtitles 首页
-2. 点击右上角 **"Login"**
-3. 输入用户名或邮箱和密码登录
-
-#### Step 4: 申请 API Key
-
-登录后，访问 API 管理页面：
-
-**直接访问：**
-- 打开: [https://www.opensubtitles.com/en/consumers](https://www.opensubtitles.com/en/consumers)
-
-**或通过菜单导航：**
-1. 点击右上角的用户名
-2. 选择 **"Consumer"** 或 **"API"**
-
-![API 入口](./screenshots/opensubtitles-03-api-menu.png)
-
-#### Step 5: 创建 Consumer
-
-在 API Consumer 页面：
-
-1. 点击 **"Create new consumer"** 或 **"New Consumer"**
-2. 填写申请表单：
-   - **Application Name**: 应用名称（例如: "Subtitle Scout"）
-   - **Application Type**: 选择 **"Other"** 或 **"Personal"**
-   - **Description**: 简单描述（例如: "Personal subtitle downloader for movies and TV shows"）
-   - **URL**: 可以填写 GitHub 仓库地址或留空
-
-3. 点击 **"Create"** 或 **"Submit"** 提交
-
-申请通常会立即通过。
-
-![创建 Consumer](./screenshots/opensubtitles-04-create-consumer.png)
-
-#### Step 6: 复制 API Key
-
-创建成功后，页面会显示你的 API Key：
+### URLs
 
 ```
-API Key
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-AbCdEfGh1234567890XyZaBcDeFgHiJk
+https://www.opensubtitles.com/
+https://www.opensubtitles.com/en/consumers
+https://opensubtitles.stoplight.io/docs/opensubtitles-api/
 ```
 
-复制这个 API Key 并妥善保存。
+### 注册
 
-![API Key 展示](./screenshots/opensubtitles-05-api-key.png)
+打开 [https://www.opensubtitles.com/](https://www.opensubtitles.com/)，右上角 **Register**。
 
-> ⚠️ **敏感信息**: 这是你的个人 API Key，请妥善保管。
-> 
-> ⚠️ **注意**: 某些旧教程可能提到需要"申请审核"，但目前 OpenSubtitles.com 已支持即时创建 API Key。
+![OpenSubtitles 首页](./screenshots/opensubtitles-01-homepage.png)
 
-#### Step 7: 配置到 Subtitle Scout
+![注册窗口](./screenshots/opensubtitles-02-signup-form.png)
 
-OpenSubtitles API 需要三个凭证：API Key、Username 和 Password。
+用户名与密码可随后填入 Scout 以提高下载档位；API key 不依赖这两项。
 
-**环境变量方式：**
-```bash
-export OPENSUBTITLES_API_KEY="your_api_key_here"
-export OPENSUBTITLES_USERNAME="your_username"
-export OPENSUBTITLES_PASSWORD="your_password"
+### 创建 Consumer
+
+登录后打开：
+
+```
+https://www.opensubtitles.com/en/consumers
 ```
 
-**或在 `.env` 文件中：**
-```
-OPENSUBTITLES_API_KEY=your_api_key_here
-OPENSUBTITLES_USERNAME=your_username
-OPENSUBTITLES_PASSWORD=your_password
-```
+未登录会跳到登录页。登录后再次打开同一 URL。
 
-**或在配置文件中：**
-```json
-{
-  "opensubtitles": {
-    "api_key": "your_api_key_here",
-    "username": "your_username",
-    "password": "your_password"
-  }
-}
-```
+![未登录访问 /en/consumers](./screenshots/opensubtitles-03-api-menu.png)
 
-> 💡 **为什么需要 Username 和 Password？**
-> 
-> OpenSubtitles API 使用双重认证机制：
-> - **API Key**: 标识你的应用
-> - **Username + Password**: 认证你的用户账号并获取下载权限
-> 
-> 这样设计是为了追踪每个用户的配额使用情况。
+侧栏选择 **API consumers**。点击 **NEW CONSUMER**。应用名仅允许字母与数字（例如 `subtitlescout`，不要空格或连字符）。创建后列表出现该 consumer；齿轮图标用于查看并复制 API key。
 
-### 验证 API 凭证
+![API consumers：NEW CONSUMER，无需 VIP](./screenshots/opensubtitles-04-api-consumers.png)
 
-你可以通过以下方式验证凭证是否有效：
+### 写入 Scout
 
-```bash
-# 1. 先登录获取 token
-curl -X POST "https://api.opensubtitles.com/api/v1/login" \
-  -H "Content-Type: application/json" \
-  -H "Api-Key: YOUR_API_KEY" \
-  -d '{"username":"YOUR_USERNAME","password":"YOUR_PASSWORD"}'
+Settings / 向导字幕源 · OpenSubtitles：
 
-# 如果返回包含 "token" 字段的 JSON，说明凭证有效
-```
+- **API key** — 启用该源所必需
+- **用户名 / 密码** — 可选，用于登录档下载额度
 
-或者运行 Subtitle Scout 的测试命令（如果提供）。
-
-### 常见问题
-
-**Q: 不配置 OpenSubtitles 能用吗？**
-A: 可以！Subtitle Scout 会使用其他字幕源（如中文字幕网站）。OpenSubtitles 主要用于英文和国际字幕。
-
-**Q: 免费账号配额够用吗？**
-A: 对于个人使用完全够用。每天 20 个字幕下载量可以满足日常追剧需求。
-
-**Q: API Key 会过期吗？**
-A: 不会，除非你主动删除或重新生成。
-
-**Q: 忘记 API Key 怎么办？**
-A: 重新登录 OpenSubtitles，访问 Consumer 页面即可查看。
-
-**Q: 可以创建多个 API Key 吗？**
-A: 可以，你可以为不同的应用创建多个 Consumer 和对应的 API Key。
-
-**Q: 下载提示 "quota exceeded" 怎么办？**
-A: 说明当天配额用完了。可以等到第二天（UTC 时区重置），或者升级到 VIP 账号。
-
-**Q: OpenSubtitles.org 和 OpenSubtitles.com 有什么区别？**
-A: 
-- **OpenSubtitles.org**: 旧版网站（已不再维护）
-- **OpenSubtitles.com**: 新版官方网站，使用新的 REST API
-- Subtitle Scout 使用的是 **OpenSubtitles.com** 的 API
-
-### 相关链接
-
-- [OpenSubtitles.com 官网](https://www.opensubtitles.com/)
-- [OpenSubtitles API 文档](https://opensubtitles.stoplight.io/docs/opensubtitles-api/)
-- [API Consumer 管理](https://www.opensubtitles.com/en/consumers)
-- [VIP 订阅页面](https://www.opensubtitles.com/en/subscribe)
+仅测试通过的值会保存。
 
 ---
 
-## 其他字幕源配置
+## 4. Jimaku API Key
 
-*(待补充)*
+Jimaku **不是**专业中文源。它向翻译 agent 提供日文源字幕（动画等）。向导可跳过；翻译日语原作时应当配置。与 OpenSubtitles「中外用户都常用」不是同一条理由。
+
+### URLs
+
+```
+https://jimaku.cc/
+https://jimaku.cc/login
+https://jimaku.cc/account
+https://jimaku.cc/api/docs
+```
+
+右上角 **Login**。注册后在 [https://jimaku.cc/account](https://jimaku.cc/account) 生成 key。文档：[https://jimaku.cc/api/docs](https://jimaku.cc/api/docs)。
+
+![Jimaku 首页](./screenshots/jimaku-01.png)
+
+写入向导字幕源或 Settings 的 Jimaku 卡片。
 
 ---
 
-## 4. LLM API Key (可选 - 用于 AI 翻译)
-
-LLM API 是**可选功能**，仅在需要使用 AI 翻译字幕时才需要配置。Subtitle Scout 支持多个 LLM 提供商，你可以根据需求和预算选择合适的服务。
-
-> 💡 **提示**: 如果你不需要 AI 翻译功能，可以跳过本章节。
-
-### 4.1 OpenAI API
-
-OpenAI 提供的 GPT 系列模型支持高质量的多语言翻译。
-
-#### 获取步骤
-
-##### Step 1: 注册 OpenAI 账号
-
-1. 访问 [https://platform.openai.com/signup](https://platform.openai.com/signup)
-2. 使用邮箱或 Google/Microsoft 账号注册
-3. 验证邮箱地址（如果使用邮箱注册）
-
-> ⚠️ **注意**: OpenAI API 需要绑定信用卡才能使用，且按使用量付费。
-
-##### Step 2: 进入 API Keys 页面
-
-1. 登录后访问 [https://platform.openai.com/api-keys](https://platform.openai.com/api-keys)
-2. 或点击左侧菜单的 **"API keys"**
-
-##### Step 3: 创建 API Key
-
-1. 点击 **"Create new secret key"** 按钮
-2. 给密钥命名（例如: "Subtitle Scout Translation"）
-3. 设置权限（推荐选择最小权限，仅勾选 **"Model capabilities"**）
-4. 点击 **"Create secret key"**
-
-##### Step 4: 复制并保存 API Key
-
-API Key 的格式类似：
-```
-sk-proj-abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGHIJKLMNOPQRST
-```
-
-> ⚠️ **重要**: API Key 只会显示一次，请立即复制保存到安全的地方。如果丢失，需要重新创建新的密钥。
-
-#### 配置方式
-
-**在配置文件中：**
-```json
-{
-  "llm": {
-    "provider": "openai",
-    "api_key": "sk-proj-your_openai_api_key_here",
-    "base_url": "https://api.openai.com/v1",
-    "model": "gpt-4o-mini"
-  }
-}
-```
-
-**或环境变量方式：**
-```bash
-export LLM_PROVIDER="openai"
-export LLM_API_KEY="sk-proj-your_openai_api_key_here"
-export LLM_BASE_URL="https://api.openai.com/v1"
-export LLM_MODEL="gpt-4o-mini"
-```
-
-#### 推荐模型
-
-| 模型名称 | 适用场景 | 成本（每 1M tokens） |
-|---------|---------|---------------------|
-| `gpt-4o-mini` | **推荐** - 性价比最高，适合字幕翻译 | 输入: $0.15 / 输出: $0.60 |
-| `gpt-4o` | 高质量翻译，处理复杂语境 | 输入: $2.50 / 输出: $10.00 |
-| `gpt-4-turbo` | 平衡性能与成本 | 输入: $10.00 / 输出: $30.00 |
-
-> 💡 **成本估算**: 翻译一部 2 小时电影的字幕（约 1500 条字幕，约 20000 tokens），使用 `gpt-4o-mini` 大约花费 $0.03-0.05。
-
-#### 验证 API Key
-
-```bash
-curl https://api.openai.com/v1/models \
-  -H "Authorization: Bearer YOUR_API_KEY"
-```
-
-如果返回模型列表 JSON，说明 API Key 有效。
-
-#### 相关链接
-
-- [OpenAI API 文档](https://platform.openai.com/docs/api-reference)
-- [OpenAI 定价页面](https://openai.com/pricing)
-- [OpenAI 使用限制](https://platform.openai.com/docs/guides/rate-limits)
-
----
-
-### 4.2 Anthropic Claude API
-
-Anthropic 的 Claude 系列模型以高质量的文本理解和生成能力著称，同样支持多语言翻译。
-
-#### 获取步骤
-
-##### Step 1: 注册 Anthropic 账号
-
-1. 访问 [https://console.anthropic.com/](https://console.anthropic.com/)
-2. 点击 **"Sign Up"** 注册账号
-3. 使用邮箱或 Google 账号注册
-4. 验证邮箱地址
-
-##### Step 2: 进入 API Keys 页面
-
-1. 登录后访问 [https://console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys)
-2. 或点击左侧菜单的 **"API Keys"**
-
-##### Step 3: 创建 API Key
-
-1. 点击 **"Create Key"** 按钮
-2. 给密钥命名（例如: "Subtitle Scout"）
-3. 点击 **"Create Key"**
-
-##### Step 4: 复制并保存 API Key
-
-API Key 的格式类似：
-```
-sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ
-```
-
-> ⚠️ **重要**: API Key 只会显示一次，请立即复制保存。
-
-#### 配置方式
-
-**在配置文件中：**
-```json
-{
-  "llm": {
-    "provider": "anthropic",
-    "api_key": "sk-ant-api03-your_anthropic_api_key_here",
-    "base_url": "https://api.anthropic.com",
-    "model": "claude-3-5-haiku-20241022"
-  }
-}
-```
-
-**或环境变量方式：**
-```bash
-export LLM_PROVIDER="anthropic"
-export LLM_API_KEY="sk-ant-api03-your_anthropic_api_key_here"
-export LLM_BASE_URL="https://api.anthropic.com"
-export LLM_MODEL="claude-3-5-haiku-20241022"
-```
-
-#### 推荐模型
-
-| 模型名称 | 适用场景 | 成本（每 1M tokens） |
-|---------|---------|---------------------|
-| `claude-3-5-haiku-20241022` | **推荐** - 速度快，性价比高 | 输入: $0.80 / 输出: $4.00 |
-| `claude-3-5-sonnet-20241022` | 高质量翻译，理解复杂语境 | 输入: $3.00 / 输出: $15.00 |
-| `claude-3-opus-20240229` | 最高质量，处理专业内容 | 输入: $15.00 / 输出: $75.00 |
-
-> 💡 **成本估算**: 翻译一部 2 小时电影的字幕，使用 `claude-3-5-haiku` 大约花费 $0.08-0.12。
-
-#### 验证 API Key
-
-```bash
-curl https://api.anthropic.com/v1/messages \
-  -H "x-api-key: YOUR_API_KEY" \
-  -H "anthropic-version: 2023-06-01" \
-  -H "content-type: application/json" \
-  -d '{"model":"claude-3-5-haiku-20241022","max_tokens":10,"messages":[{"role":"user","content":"Hi"}]}'
-```
-
-如果返回正常响应而不是错误，说明 API Key 有效。
-
-#### 相关链接
-
-- [Anthropic API 文档](https://docs.anthropic.com/claude/reference/getting-started-with-the-api)
-- [Anthropic 定价页面](https://www.anthropic.com/pricing)
-- [Claude 模型对比](https://docs.anthropic.com/claude/docs/models-overview)
-
----
-
-### 4.3 其他兼容提供商
-
-Subtitle Scout 支持任何兼容 **OpenAI API 格式**的 LLM 服务。这包括：
-
-#### 本地部署方案
-
-如果你有足够的硬件资源（GPU），可以本地部署开源模型：
-
-**vLLM + OpenAI 兼容服务器：**
-```bash
-# 部署示例（需要 GPU）
-vllm serve Qwen/Qwen2.5-7B-Instruct --api-key your-local-key
-```
-
-配置：
-```json
-{
-  "llm": {
-    "provider": "openai",
-    "api_key": "your-local-key",
-    "base_url": "http://localhost:8000/v1",
-    "model": "Qwen/Qwen2.5-7B-Instruct"
-  }
-}
-```
-
-**推荐本地模型：**
-- `Qwen/Qwen2.5-7B-Instruct` - 多语言能力强
-- `meta-llama/Llama-3.1-8B-Instruct` - 英文翻译质量高
-- `google/gemma-2-9b-it` - 轻量高效
-
-#### OpenRouter
-
-[OpenRouter](https://openrouter.ai/) 是一个 LLM API 聚合服务，支持多家模型提供商。
-
-1. 访问 [https://openrouter.ai/keys](https://openrouter.ai/keys)
-2. 创建账号并生成 API Key
-3. 选择你想使用的模型
-
-配置：
-```json
-{
-  "llm": {
-    "provider": "openai",
-    "api_key": "sk-or-v1-your_openrouter_key",
-    "base_url": "https://openrouter.ai/api/v1",
-    "model": "anthropic/claude-3.5-haiku"
-  }
-}
-```
-
-优点：
-- 一个 API Key 访问多家模型
-- 按需付费，无需多个账号
-- 自动路由到可用的提供商
-
-#### 国内反代服务
-
-如果你在中国大陆，访问 OpenAI/Anthropic 官方 API 可能受限，可以使用反代服务：
-
-> ⚠️ **安全警告**: 使用第三方反代服务存在数据泄露风险，请谨慎选择可信赖的服务商。
-
-配置示例：
-```json
-{
-  "llm": {
-    "provider": "openai",
-    "api_key": "your_api_key",
-    "base_url": "https://your-proxy-domain.com/v1",
-    "model": "gpt-4o-mini"
-  }
-}
-```
-
-#### Azure OpenAI
-
-如果你有 Azure 订阅，可以使用 Azure OpenAI Service：
-
-1. 在 Azure Portal 创建 OpenAI 资源
-2. 部署模型（如 `gpt-4o-mini`）
-3. 获取 Endpoint 和 API Key
-
-配置：
-```json
-{
-  "llm": {
-    "provider": "azure",
-    "api_key": "your_azure_api_key",
-    "base_url": "https://your-resource.openai.azure.com",
-    "model": "gpt-4o-mini",
-    "api_version": "2024-02-15-preview"
-  }
-}
-```
-
----
-
-### 常见问题
-
-**Q: 哪个 LLM 提供商最适合字幕翻译？**
-A: 对于大多数用户，推荐 **OpenAI gpt-4o-mini**，性价比最高且翻译质量稳定。如果对质量要求更高，可以使用 **Claude 3.5 Haiku** 或 **GPT-4o**。
-
-**Q: 如何降低翻译成本？**
-A: 
-- 使用更便宜的模型（如 `gpt-4o-mini`、`claude-3-5-haiku`）
-- 只翻译部分字幕而不是全部
-- 考虑本地部署开源模型（需要 GPU）
-
-**Q: API Key 会过期吗？**
-A: OpenAI 和 Anthropic 的 API Key 不会自动过期，但你可以随时在控制台中撤销和重新生成。
-
-**Q: 如何监控 API 使用量和费用？**
-A: 
-- **OpenAI**: 访问 [https://platform.openai.com/usage](https://platform.openai.com/usage)
-- **Anthropic**: 访问 [https://console.anthropic.com/settings/billing](https://console.anthropic.com/settings/billing)
-
-**Q: 可以设置使用限额吗？**
-A: 
-- **OpenAI**: 在 [Billing settings](https://platform.openai.com/account/billing/limits) 中设置每月使用上限
-- **Anthropic**: 在账号设置中配置预算警报
-
-**Q: 翻译质量不满意怎么办？**
-A: 
-- 尝试更高级的模型（如 `gpt-4o`、`claude-3-5-sonnet`）
-- 调整翻译 prompt（如果工具支持自定义 prompt）
-- 对比不同模型的翻译结果
-
-**Q: 本地部署需要什么硬件？**
-A: 
-- 最低: 16GB VRAM 的 GPU（如 RTX 4080）可运行 7B 模型
-- 推荐: 24GB VRAM 以上（如 RTX 4090、A100）可运行更大模型
-- CPU 运行速度极慢，不推荐
-
----
-
-## 安全提醒
-
-⚠️ **请务必注意 API 凭证的安全：**
-
-1. **不要提交到 Git 仓库**: 将包含凭证的文件（如 `.env`）添加到 `.gitignore`
-2. **不要分享给他人**: API Key 是个人账号专用的
-3. **定期检查使用情况**: 在 TMDB 账号设置中可以查看 API 使用统计
-4. **如有泄露及时重置**: 在 API 设置页面可以重新生成新的 API Key
-
+## 安全
+
+- 不要将密钥提交到 git、issue、截图或聊天
+- `.env` 不是这些键的存放处
+- 泄露后在对应站点重置：ASSRT [usercp](https://assrt.net/usercp.php)、TMDB [API](https://www.themoviedb.org/settings/api)、OpenSubtitles [consumers](https://www.opensubtitles.com/en/consumers)、Jimaku [account](https://jimaku.cc/account)

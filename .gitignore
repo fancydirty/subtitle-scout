@@ -21,6 +21,10 @@ worker/
 # 内部设计、运维、战役和研究记录不随公开仓，本地仍保留。
 docs/*
 !docs/agent-first-identification-architecture.md
+!docs/GET_CREDENTIALS.md
+!docs/GET_CREDENTIALS.en.md
+!docs/screenshots/
+!docs/screenshots/**
 jellyfin-config/
 cache/
 
