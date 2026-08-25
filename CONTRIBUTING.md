@@ -11,7 +11,7 @@
 ### Reporting Bugs
 
 在提交 bug 前：
-- 搜索现有 [issues](https://github.com/yourusername/subtitle-scout/issues) 避免重复报告
+- 搜索现有 [issues](https://github.com/fancydirty/subtitle-scout/issues) 避免重复报告
 - 确认是 bug 而非使用问题
 
 提交 bug 时请提供：
@@ -39,7 +39,7 @@
 
 1. **Fork 仓库** 并 clone 到本地
    ```bash
-   git clone https://github.com/your-username/subtitle-scout.git
+   git clone https://github.com/fancydirty/subtitle-scout.git
    cd subtitle-scout
    ```
 
@@ -77,7 +77,7 @@
 
 ```bash
 # Clone your fork
-git clone https://github.com/your-username/subtitle-scout.git
+git clone https://github.com/fancydirty/subtitle-scout.git
 cd subtitle-scout
 
 # Install dependencies
