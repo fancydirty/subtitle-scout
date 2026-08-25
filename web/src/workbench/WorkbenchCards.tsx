@@ -209,7 +209,7 @@ export function RunCard(
           </div>
         </>
       ) : null}
-      {stepLabel ? <span className="wb-run-step">{stepLabel}</span> : null}
+      {stepLabel && !cueFinite ? <span className="wb-run-step">{stepLabel}</span> : null}
       {lines.length > 0 ? (
         <div className="wb-run-log" role="log">
           {lines.map((line, i) => (

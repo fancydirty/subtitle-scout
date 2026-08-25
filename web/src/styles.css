@@ -2292,7 +2292,7 @@
   min-width: 8px;
 }
 .wb-stage-node.done:not(:last-child)::after {
-  background: var(--color-accent);
+  background: var(--color-ring);
 }
 
 /* ── cue 级进度条（翻译流核心动感）───────────────────────────────── */
@@ -2312,6 +2312,7 @@
   background: var(--color-border);
   border-radius: 2.5px;
   overflow: hidden;
+  animation: wb-bar-breathe 3s ease-in-out infinite;
 }
 .wb-cue-bar-fill {
   height: 100%;
@@ -2325,9 +2326,6 @@
 @keyframes wb-bar-breathe {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.7; }
-}
-.wb-stage-node.active ~ .wb-cue-progress .wb-cue-bar {
-  animation: wb-bar-breathe 3s ease-in-out infinite;
 }
 
 /* ---- 🟡 读数已过期（实时通道掉线）——**诚实性**，不是排障提示 ----

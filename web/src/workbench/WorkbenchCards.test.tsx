@@ -134,6 +134,24 @@ describe('RunCard cue 级进度条', () => {
     expect(container.querySelector('.wb-card-progress')).toBeNull()
   })
 
+  // cue 标签已经带了 stepLabel。再画 .wb-run-step 会把同一句步骤文案印两遍。
+  it('🔴 cue 条已含步骤文案时不再另画 .wb-run-step', () => {
+    const { container } = mount({
+      kind: 'translate', stage: 'translate',
+      stepLabel: '逐句翻译',
+      cueProgress: { done: 30, total: 194 },
+    })
+    expect(container.querySelector('.wb-cue-label')!.textContent).toContain('逐句翻译')
+    expect(container.querySelector('.wb-run-step')).toBeNull()
+  })
+
+  it('无 cue 时步骤文案仍走 .wb-run-step', () => {
+    const { container } = mount({
+      kind: 'subtitle', stage: 'download', stepLabel: '正在搜源',
+    })
+    expect(container.querySelector('.wb-run-step')!.textContent).toBe('正在搜源')
+  })
+
   it('无 cueProgress → 退回作品级进度（0 / 1 集已装上）', () => {
     const { container } = mount({ kind: 'subtitle', stage: 'download', progress: { done: 0, total: 1 } })
     expect(container.querySelector('[data-cue-bar]')).toBeNull()

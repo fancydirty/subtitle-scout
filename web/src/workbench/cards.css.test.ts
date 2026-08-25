@@ -253,6 +253,7 @@ describe('在跑卡上的元素不许用 --color-accent（新栈近黑 = 隐形�
     '.wb-stage-node.done .wb-stage-label',
     '.wb-stage-node.active .wb-stage-label',
     '.wb-cue-bar-fill',
+    '.wb-stage-node.done:not(:last-child)::after',
   ]
   for (const sel of INK_ON_CARD) {
     it(`🔴 ${sel} 不引用 --color-accent`, () => {
@@ -267,5 +268,10 @@ describe('在跑卡上的元素不许用 --color-accent（新栈近黑 = 隐形�
     const done = new RegExp(`\\.wb-stage-node\\.done \\.wb-stage-label\\s*\\{([^}]*)\\}`).exec(WB_CSS)?.[1] ?? ''
     expect(active).toMatch(/font-weight/)
     expect(done).not.toMatch(/font-weight/)
+  })
+
+  it('🔴 cue 条自己呼吸，不靠选不中的 .wb-stage-node.active ~ 兄弟选择器', () => {
+    expect(decl('.wb-cue-bar', 'animation')).toMatch(/wb-bar-breathe/)
+    expect(WB_CSS).not.toContain('.wb-stage-node.active ~ .wb-cue-progress')
   })
 })
