@@ -20,6 +20,8 @@ Get subtitle-scout running from zero to dashboard in under 5 minutes.
 
 You'll need **two required** and **one optional** API keys:
 
+**📖 Detailed Guide**: For step-by-step instructions with screenshots and troubleshooting, see **[docs/GET_CREDENTIALS.md](docs/GET_CREDENTIALS.md)**
+
 #### Required: TMDB API Key (Free)
 
 TMDB powers media file recognition. Without it, subtitle-scout cannot identify your files.
@@ -29,6 +31,8 @@ TMDB powers media file recognition. Without it, subtitle-scout cannot identify y
 3. Request a **Developer** key
 4. Copy the API key (v3 32-char key or v4 Read Access Token both work)
 
+**→ [Detailed TMDB guide](docs/GET_CREDENTIALS.md#1-tmdb-api-key-必需)**
+
 #### Required: ASSRT Token (Free)
 
 ASSRT is the primary Chinese subtitle source.
@@ -37,6 +41,8 @@ ASSRT is the primary Chinese subtitle source.
 2. Log in and go to "用户中心" (User Center)
 3. Copy your API token
 
+**→ [Detailed ASSRT guide](docs/GET_CREDENTIALS.md#2-assrt-token-必需)**
+
 #### Optional: LLM API Key
 
 For AI-powered subtitle matching. Any OpenAI-compatible endpoint works:
@@ -44,6 +50,8 @@ For AI-powered subtitle matching. Any OpenAI-compatible endpoint works:
 - **DeepSeek** (`https://api.deepseek.com/v1` + your key + model `deepseek-chat`)
 - **OpenAI** (`https://api.openai.com/v1` + your key + model `gpt-4o-mini`)
 - **Silicon Flow** or other compatible providers
+
+**→ [Detailed LLM guide with cost comparison](docs/GET_CREDENTIALS.md#4-llm-api-key-可选---用于-ai-翻译)**
 
 > **Note**: Without LLM, subtitle-scout can still download subtitles but won't perform AI-powered quality verification.
 
