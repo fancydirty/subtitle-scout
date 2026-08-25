@@ -6,6 +6,130 @@ subtitle-scout 盯着你的媒体库，自动找到、验证并放好最合适�
 
 ---
 
+## Quick Start (5 Minutes)
+
+Get subtitle-scout running from zero to dashboard in under 5 minutes.
+
+### Prerequisites
+
+- **Docker** and **Docker Compose** installed
+- A media library directory (NAS, local disk, or any folder with video files)
+- Internet connection for API access
+
+### Step 1: Get API Keys
+
+You'll need **two required** and **one optional** API keys:
+
+#### Required: TMDB API Key (Free)
+
+TMDB powers media file recognition. Without it, subtitle-scout cannot identify your files.
+
+1. Sign up at [themoviedb.org](https://www.themoviedb.org)
+2. Go to **Settings** (top-right avatar menu) → **API**
+3. Request a **Developer** key
+4. Copy the API key (v3 32-char key or v4 Read Access Token both work)
+
+#### Required: ASSRT Token (Free)
+
+ASSRT is the primary Chinese subtitle source.
+
+1. Register at [assrt.net](https://assrt.net)
+2. Log in and go to "用户中心" (User Center)
+3. Copy your API token
+
+#### Optional: LLM API Key
+
+For AI-powered subtitle matching. Any OpenAI-compatible endpoint works:
+
+- **DeepSeek** (`https://api.deepseek.com/v1` + your key + model `deepseek-chat`)
+- **OpenAI** (`https://api.openai.com/v1` + your key + model `gpt-4o-mini`)
+- **Silicon Flow** or other compatible providers
+
+> **Note**: Without LLM, subtitle-scout can still download subtitles but won't perform AI-powered quality verification.
+
+### Step 2: Clone and Configure
+
+```bash
+# Clone the repository
+git clone https://github.com/your-repo/subtitle-scout.git
+cd subtitle-scout
+
+# Create environment file
+cp .env.example .env
+```
+
+**Edit `.env`** — you only need to set the timezone:
+
+```bash
+TZ=Asia/Shanghai  # or your timezone
+```
+
+> **Important**: API keys are **NOT** configured in `.env`. You'll enter them through the web dashboard in Step 4.
+
+### Step 3: Start the Container
+
+```bash
+docker compose up -d
+```
+
+Wait 10-20 seconds for the container to initialize.
+
+### Step 4: Complete Setup Wizard
+
+1. Open **`http://localhost:8099`** (or `http://<your-server-ip>:8099` if running on a NAS/server)
+
+2. **Create Admin Account** — the setup wizard will prompt you to:
+   - Set a username and password (minimum 10 characters)
+   - This generates an API key for automation (shown once)
+
+3. **Configure Credentials** — in the Settings page, fill in:
+   - **TMDB** card: paste your TMDB API key
+   - **ASSRT** card: paste your ASSRT token
+   - **LLM** card: enter Base URL, API Key, and Model name (all three from the same provider)
+
+4. **Add Media Directories**:
+   - Go to **Settings** → **Media**
+   - Click **Browse** and navigate to your media folder
+   - The default Docker setup mounts your host root at `/hostroot`, so:
+     - Host path `/mnt/media/Movies` → select `/hostroot/mnt/media/Movies`
+     - Host path `/Users/yourname/Media` → select `/hostroot/Users/yourname/Media`
+   - Click **Add** to save
+
+### Step 5: Verify Setup
+
+Run the health check:
+
+```bash
+docker compose exec subtitle-scout node dist/cli/index.js doctor
+```
+
+You should see green checkmarks (✓) for:
+- TMDB API key valid
+- ASSRT token valid
+- LLM endpoint working (if configured)
+- Media roots writable
+- Database ready
+
+### Step 6: Start Watching
+
+Subtitle-scout automatically scans your media library every 15 minutes. To trigger an immediate scan:
+
+1. Go to the **Library** tab in the dashboard
+2. Click **Full Library Reconcile** (or wait for the next auto-scan)
+3. Watch the **Activity** page for real-time progress
+
+That's it! Subtitle-scout is now monitoring your library and will automatically download Chinese subtitles for any media missing them.
+
+### What's Next?
+
+- **Activity Page** (`http://localhost:8099/activity`) — see what's being processed in real-time
+- **Notifications** — review download history
+- **Advanced Settings** — configure optional sources (OpenSubtitles, hardsub detection, etc.)
+
+For detailed configuration, troubleshooting, and development setup, see the sections below.
+
+---
+
 ## 快速上手
 
 启动后通过监控页完成配置：
