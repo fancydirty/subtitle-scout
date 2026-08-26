@@ -11,7 +11,9 @@ export const zh = {
   // ⚠️ nav_media 与 nav_library 的中文都是"媒体库"——**不是笔误**：新媒体库页（#/media）
   // 就是要取代旧海报墙（#/library）的位置，只是本 task 只建占位壳。两者不会同时出现在
   // 侧栏（TABS 里只有 media），所以用户看不到重名。nav_library 随 Task ⑪ 一起删。
-  brand_name: '字幕助手',
+  // 2026-08-26（用户裁决）：产品名不翻译，中文界面沿用英文 wordmark。i18n.test.ts 有一条
+  // 测试钉死 zh.brand_name === en.brand_name，不许在这里改回中文名。
+  brand_name: en.brand_name,
   nav_activity: '活动',
   nav_notifications: '通知',
   nav_media: '媒体库',
