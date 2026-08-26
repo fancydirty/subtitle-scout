@@ -117,10 +117,16 @@ export async function checkTmdb(probe: () => Promise<number>): Promise<DoctorRes
   }
 }
 
-export async function checkLlm(minimalChat: () => Promise<string>): Promise<DoctorResult> {
+/** model 可选：传入时成功行报出接的是哪个模型并给一句档位预期——「LLM 通了」和「LLM 够格」
+ *  是两回事，太弱的模型跑多步工具调用不报错、只会自信地编造（表现为识别错却全绿），
+ *  doctor 是唯一能在装好当天就把这句话递到用户眼前的位置。 */
+export async function checkLlm(minimalChat: () => Promise<string>, model?: string): Promise<DoctorResult> {
   try {
     await minimalChat()
-    return { name: 'llm', ok: true, detail: 'LLM 端点可用，最小对话成功' }
+    const modelSuffix = model
+      ? `（模型：${model}）。识别质量差时先怀疑模型档位，见 README「模型选择」`
+      : ''
+    return { name: 'llm', ok: true, detail: `LLM 端点可用，最小对话成功${modelSuffix}` }
   } catch (e) {
     return {
       name: 'llm', ok: false, detail: `调用失败：${String(e)}`,

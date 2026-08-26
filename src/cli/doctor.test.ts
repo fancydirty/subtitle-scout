@@ -42,6 +42,12 @@ describe('doctor 远端三项', () => {
     const r = await checkLlm(async () => 'ok')
     expect(r.ok).toBe(true)
   })
+  it('llm 传入模型名 → 成功行报出模型并提示档位预期', async () => {
+    const r = await checkLlm(async () => 'ok', 'deepseek-v4-flash')
+    expect(r.ok).toBe(true)
+    expect(r.detail).toContain('deepseek-v4-flash')
+    expect(r.detail).toContain('模型档位')
+  })
   it('llm 端点拒绝 → 失败并提示检查 base_url/key/model', async () => {
     const r = await checkLlm(async () => { throw new Error('401 Unauthorized') })
     expect(r.ok).toBe(false)

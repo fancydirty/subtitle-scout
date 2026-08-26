@@ -861,7 +861,7 @@ async function cmdDoctor() {
   } else {
     const model = makeModel({ baseUrl: llmBase, apiKey: llmKey, model: llmModel })
     results.push(await checkLlm(async () =>
-      (await generateText({ model, prompt: '回复"ok"两个字母即可', abortSignal: AbortSignal.timeout(30_000) })).text))
+      (await generateText({ model, prompt: '回复"ok"两个字母即可', abortSignal: AbortSignal.timeout(30_000) })).text, llmModel))
   }
 
   // R2D-11（R2 复审）：MEDIA_ROOTS env 只是"首启种子"——dashboard G4 之后真正生效的守备目录

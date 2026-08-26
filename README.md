@@ -24,7 +24,7 @@ Get subtitle-scout running from zero to dashboard in under 5 minutes.
 
 The wizard can skip ASSRT, OpenSubtitles, and Jimaku. Configure all three. OpenSubtitles is useful for **both Chinese-speaking and non-Chinese-speaking users**—that is why it should not be skipped. ASSRT is the professional Chinese catalog (finished Chinese sidecars). Jimaku is not: it feeds the translation agent with Japanese source subtitles.
 
-LLM (OpenAI-compatible) is a separate wizard step and is not covered here.
+LLM (OpenAI-compatible) is a separate wizard step and is not covered here. One expectation to set now: **model tier matters more than any other setting.** The agent does long multi-step tool-calling; models below roughly the `deepseek-v4-flash` / mini tier do not fail loudly — they confidently fabricate, which shows up as misidentified media rather than an error. If matching quality is poor, suspect the model tier before filing a bug. Good value starting points: `deepseek-v4-flash` (api.deepseek.com), Qwen `qwen3.5-plus` (Alibaba DashScope), or any current mini/flash-class frontier model. Check current prices on each provider's official pricing page.
 
 **Credentials**: [English](docs/GET_CREDENTIALS.en.md) · [中文](docs/GET_CREDENTIALS.md)
 
@@ -193,6 +193,12 @@ subtitle-scout 需要三组凭据：ASSRT 字幕库、大模型、TMDB（识别�
 | 模型 | 模型名，如 `deepseek-v4-flash` |
 
 **关键**：三项必须来自**同一个服务商**。模型能力影响匹配质量。
+
+#### 模型选择（预期管理，建议先读）
+
+- **推荐起步档**：`deepseek-v4-flash`（api.deepseek.com，当前性价比基准）；同档或更强均可。阿里 `qwen3.5-plus`（DashScope）、Kimi、GLM、MiniMax 的现役主力档也都够格——这五家大陆网络直连可用。OpenAI / Gemini / Claude 的官方 API 在大陆被封锁，需自备网络环境。
+- **底线警告**：agent 的识别与匹配是长链路多步工具调用。**太弱的模型（本地 3B 级、nano 级）不会显式报错，而是自信地编造**——表现为"识别成了另一部片"而不是失败提示。识别质量差时，先怀疑模型档位，再考虑报 bug。`doctor` 命令的 LLM 检查行会报出当前接的模型名。
+- 价格随时在变，本文不贴数字——以各服务商官方定价页为准。
 
 ### 3. TMDB API Key（硬性必填）
 
