@@ -2223,11 +2223,15 @@
   gap: 3px;
   margin: 8px 0 4px;
 }
+/* ⚠️ flex-basis 是 auto，**不是 0**（`flex: 1` 展开成 1 1 0%）：0% 会把四个节点切成
+   等宽的 25%，不管文案多长，长一点的标签立刻被 .wb-stage-label 的 ellipsis 吃掉。
+   auto 让节点按文案自己的宽度排，剩余空间交给连线伪元素（它自己是 flex: 1）去吃，
+   ellipsis 就只在窄到没办法时才兜底。2026-08-26 视觉验收实测到 25% 那个形态。 */
 .wb-stage-node {
   display: flex;
   align-items: center;
   gap: 4px;
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
 }
 .wb-stage-dot {

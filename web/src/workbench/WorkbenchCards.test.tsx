@@ -76,9 +76,9 @@ describe('RunCard 步骤条（StageBar）', () => {
     expect(container.querySelectorAll('.wb-stage-node').length).toBe(0)
   })
 
-  // 🔴 视觉验收缺陷。实测第一个节点的标签是**空字符串**：阶段名是 'source'，拼出的
-  // i18n key 是 wb_step_source，而当时 i18n 里只有 wb_step_search → 取不到值 → 空。
-  // 这条用例遍历两条流的全部阶段，任何一个阶段少了 i18n 词条都会红。
+  // 🔴 视觉验收缺陷。实测第一个节点的标签是**空字符串**：阶段名是 'source'，而当时
+  // i18n 里没有对应的节点词条 → 取不到值 → 空。节点词条现在是 wb_node_*（与阶段名
+  // 一一对应），这条用例遍历两条流的全部阶段，任何一个阶段少了词条都会红。
   it('🔴 每条流的每个阶段节点都有非空标签（i18n key 齐全）', () => {
     for (const kind of ['subtitle', 'translate'] as const) {
       for (const stage of ['source', 'download', 'review', 'install', 'glossary', 'translate']) {
@@ -90,10 +90,34 @@ describe('RunCard 步骤条（StageBar）', () => {
         for (const n of nodes) {
           expect(
             (n.textContent ?? '').trim(),
-            `${kind} 流的某个阶段节点标签是空的——检查 wb_step_* 词条是否齐全`,
+            `${kind} 流的某个阶段节点标签是空的——检查 wb_node_* 词条是否齐全`,
           ).not.toBe('')
         }
       }
+    }
+  })
+
+  // 🔴 视觉验收缺陷（2026-08-26 截图实测）：一张卡片上四个节点写着
+  // 「1 找源 — 2 正在… — 3 正在… — 4 正在…」，用户看不出这一轮跑到哪了。
+  // 根因不是词条缺失（上一条用例全绿），是**同一族 key 同时服务两个界面**：
+  // 日志行要进行句（"正在下载"），步骤条节点要短名词（"下载"）。而
+  // .wb-stage-label 是 nowrap + ellipsis（styles.css 的 .wb-stage-label 段），
+  // 共同前缀一被截断，三个节点就退化成同一个字符串。
+  // 所以判据有两条：整串互不相同，**且截断到首字后仍互不相同**——后者才是
+  // 截图上真正坏掉的那条，也是节点文案必须避开共同前缀的原因。
+  it('🔴 一张卡片里的四个节点标签互不相同（截断到首字也不许撞）', () => {
+    for (const [kind, stage] of [['subtitle', 'review'], ['translate', 'translate']] as const) {
+      cleanup()
+      const { container } = mount({ kind, stage })
+      const labels = Array.from(container.querySelectorAll('.wb-stage-label')).map((n) =>
+        (n.textContent ?? '').trim(),
+      )
+      expect(labels.length).toBe(4)
+      expect(new Set(labels).size, `${kind} 流的节点标签有重复：${labels.join(' / ')}`).toBe(4)
+      expect(
+        new Set(labels.map((l) => l.slice(0, 1))).size,
+        `${kind} 流的节点标签共用首字，被 ellipsis 截断后无法区分：${labels.join(' / ')}`,
+      ).toBe(4)
     }
   })
 })

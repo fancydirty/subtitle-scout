@@ -595,8 +595,8 @@ export const en = {
   wb_run_translate: 'Translating',
   wb_run_files_done_suffix: 'files done',
   wb_run_cues_done_suffix: 'cues translated',
+  // ── wb_step_*：**日志行**的进行句。步骤条节点走下面的 wb_node_*。──
   wb_step_search: 'Searching sources',
-  wb_step_source: 'Sourcing',
   wb_step_glossary: 'Freezing glossary',
   wb_step_translate: 'Translating cues',
   wb_step_review: 'Checking candidates',
@@ -604,6 +604,15 @@ export const en = {
   wb_step_install: 'Installing',
   wb_step_wrapup: 'Wrapping up',
   wb_step_working: 'Still working',
+  // ── wb_node_*：**步骤条节点名**（短名词）。日志行要一句话，节点只有巴掌大一格，
+  // 且 .wb-stage-label 是 nowrap + ellipsis → 节点文案必须短且不共用开头。
+  // zh 侧同族词条附有 2026-08-26 的截图实测记录。
+  wb_node_source: 'Source',
+  wb_node_glossary: 'Glossary',
+  wb_node_translate: 'Translate',
+  wb_node_review: 'Review',
+  wb_node_download: 'Download',
+  wb_node_install: 'Install',
   wb_loading: 'Loading…',
   wb_error_title: 'Could not load the queue',
   wb_retry: 'Retry',

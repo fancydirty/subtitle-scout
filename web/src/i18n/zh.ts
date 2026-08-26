@@ -529,10 +529,8 @@ export const zh = {
   // cue 级进度的单位。**不许复用 wb_run_files_done_suffix**：cueTotal 是句子数
   // （PLUTO S01E02 那集 194 句），写"集已装上"就是把 194 句说成 194 集。
   wb_run_cues_done_suffix: '句已翻',
+  // ── wb_step_*：**日志行**的进行句（"正在…"）。步骤条节点走下面的 wb_node_*。──
   wb_step_search: '正在搜源',
-  // 步骤条节点名。**阶段名是 'source'**（见 WorkbenchCards 的 STAGES），拼出来的 key
-  // 就是 wb_step_source——缺了它第一个节点的标签恒为空串（2026-08-22 视觉验收实测）。
-  wb_step_source: '找源',
   wb_step_glossary: '冻结术语表',
   wb_step_translate: '逐句翻译',
   wb_step_review: '正在看候选',
@@ -540,6 +538,17 @@ export const zh = {
   wb_step_install: '正在安装',
   wb_step_wrapup: '正在收尾',
   wb_step_working: '还在处理',
+  // ── wb_node_*：**步骤条节点名**（短名词）。两族分开是因为两个界面的需求相反：
+  // 日志行是一句话，节点是巴掌大的一格。.wb-stage-label 是 nowrap + ellipsis，
+  // 节点文案**不许共用首字**——2026-08-26 截图实测四个节点全被截成
+  // 「1 找源 — 2 正在… — 3 正在… — 4 正在…」，用户看不出跑到哪了。
+  // 键名与阶段名一一对应（见 WorkbenchCards 的 STAGES），拼 key 靠的就是这个。
+  wb_node_source: '找源',
+  wb_node_glossary: '术语表',
+  wb_node_translate: '翻译',
+  wb_node_review: '看候选',
+  wb_node_download: '下载',
+  wb_node_install: '装盘',
   wb_loading: '加载中…',
   wb_error_title: '没能加载队列',
   wb_retry: '重试',
