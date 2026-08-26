@@ -25,6 +25,10 @@ import { describe, it, expect } from 'vitest'
 declare const __STYLES_CSS__: string
 const CSS = __STYLES_CSS__
 
+/** tw.css 原文——token 的**定义方**。下面「引用的 token 真的存在」那条守卫要用。 */
+declare const __TW_CSS__: string
+const TW_CSS = __TW_CSS__
+
 /** 下一个页面段的段首。**在 styles.css 尾部追加新段的人必须把段首选择器加进来**——
  *  下面那条自检用例就是为此存在的（终局审计 🔴-1 追加了守备目录健康度段，
  *  这个数组第一次真的派上用场）。提到 IIFE 外面是为了让自检用例也能读到它，
@@ -273,5 +277,66 @@ describe('在跑卡上的元素不许用 --color-accent（新栈近黑 = 隐形�
   it('🔴 cue 条自己呼吸，不靠选不中的 .wb-stage-node.active ~ 兄弟选择器', () => {
     expect(decl('.wb-cue-bar', 'animation')).toMatch(/wb-bar-breathe/)
     expect(WB_CSS).not.toContain('.wb-stage-node.active ~ .wb-cue-progress')
+  })
+})
+
+// ── 2026-08-26 视觉验收抓到的「四个节点同显一个词」 ────────────────────────
+// 步骤条节点当初写成 `flex: 1`，它展开是 `1 1 0%`：flex-basis 0 让四格恒等宽 25%，
+// 不管文案多长。窄卡上标签立刻撞到 .wb-stage-label 的 nowrap + ellipsis，中文
+// 「正在下载 / 正在看候选 / 正在安装」共同前缀一被截断，三个节点退化成同一个字符串
+// ——用户看不出这一轮跑到哪了。词条那半（wb_node_*）由 WorkbenchCards.test.tsx 守；
+// **CSS 那半在这里**：jsdom 不排版，测不到 ellipsis，但能钉住 flex-basis 不是 0。
+describe('步骤条节点按文案宽度排（flex-basis 不许是 0，否则长标签被无声截断）', () => {
+  it('🔴 .wb-stage-node 的 flex 是 1 1 auto，不是 1 / 1 1 0% / 1 1 0', () => {
+    const flex = decl('.wb-stage-node', 'flex')
+    expect(flex, '.wb-stage-node 的 flex 声明不见了——改名或删了就把这条一起改').toBeTruthy()
+    // basis 必须是 auto。`flex: 1`（= 1 1 0%）和显式的 0/0% 都是被修掉的那个形态。
+    expect(flex).toBe('1 1 auto')
+  })
+
+  it('🔴 连线伪元素才是吃剩余空间的那个（flex:1 + min-width 兜底，不许被节点抢走）', () => {
+    // 节点让出剩余空间的前提是连线自己会长。连线若也变成 auto/0，节点又会去分空间。
+    expect(decl('.wb-stage-node:not(:last-child)::after', 'flex')).toBe('1')
+    expect(decl('.wb-stage-node:not(:last-child)::after', 'min-width')).toMatch(/^\d+px$/)
+  })
+
+  it('🔴 标签仍留着 ellipsis 兜底 + min-width:0（窄到没办法时才截，且不撑破 bar）', () => {
+    expect(decl('.wb-stage-label', 'text-overflow')).toBe('ellipsis')
+    expect(decl('.wb-stage-label', 'white-space')).toBe('nowrap')
+    expect(decl('.wb-stage-node', 'min-width')).toBe('0')
+  })
+})
+
+// ── 拼错的 token 名不会报错，只会静默失效 ──────────────────────────────────
+// CSS 的自定义属性没有拼写检查：`var(--color-fg)` 在 --color-fg 从未定义时既不报错
+// 也**不回退**到低优先级的那条声明，而是 IACVT（invalid at computed-value time）
+// → 该属性取继承值。color 是继承属性，多数元素因此拿到 body 的 --color-foreground，
+// 看起来「碰巧是对的」，错误只在父级另设了 color 的地方现形：.wb-run-log-latest 的父
+// .wb-run-log 设了 --color-weak，最新一行本该提亮成前景色，实际继承成了暗灰。
+// 真身是 --color-foreground（tw.css 定义，styles.css 另有 20 处在用）。
+describe('styles.css 引用的每个 --color-* token 都真的有定义（拼错不会报错，只会静默失效）', () => {
+  const DEFINED = new Set(
+    [...`${TW_CSS}\n${CSS}`.matchAll(/--(color-[a-z0-9-]+)\s*:/g)].map((m) => m[1]!),
+  )
+
+  it('🔴 定义方读到了（读空会让本段恒绿）', () => {
+    expect(TW_CSS.length).toBeGreaterThan(500)
+    expect(DEFINED.has('color-foreground')).toBe(true)
+    expect(DEFINED.has('color-weak')).toBe(true)
+  })
+
+  it('🔴 没有未定义的 --color-* 被引用（曾经的 --color-fg 就是这样溜进来的）', () => {
+    const bare = CSS.replace(/\/\*[\s\S]*?\*\//g, '')
+    const used = [...bare.matchAll(/var\(\s*--(color-[a-z0-9-]+)/g)].map((m) => m[1]!)
+    const missing = [...new Set(used)].filter((t) => !DEFINED.has(t))
+    expect(
+      missing,
+      `styles.css 引用了未定义的 token：${missing.map((t) => `--${t}`).join(', ')} —— ` +
+        '它们不会报错，只会让该属性取继承值（IACVT）。检查是不是拼错了 tw.css 里的名字。',
+    ).toEqual([])
+  })
+
+  it('🔴 --color-fg 这个拼错的名字不再出现（真身是 --color-foreground）', () => {
+    expect(CSS).not.toMatch(/--color-fg\b/)
   })
 })

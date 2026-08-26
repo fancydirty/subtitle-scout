@@ -16,9 +16,20 @@ import react from '@vitejs/plugin-react'
 // define 在构建期完成替换，运行时不需要任何模块，也不碰类型白名单。
 const STYLES_CSS = readFileSync(resolve(__dirname, 'src/styles.css'), 'utf8')
 
+// tw.css 同样注入：**token 的定义在 tw.css，消费方在 styles.css**，只读后者的话
+// `var(--color-fg)` 这种「拼错的 token 名」看起来和正确的一模一样。CSS 里未定义的
+// 自定义属性不会报错也不会回退到低优先级声明，而是 IACVT → 该属性取继承值，
+// 于是错误在多数元素上被 body 的 --color-foreground 掩盖掉，只在父级另设了 color
+// 的地方（.wb-run-log-latest）才现形。两个文件都在手里才能机器判定「引用的 token
+// 真的存在」。
+const TW_CSS = readFileSync(resolve(__dirname, 'src/tw.css'), 'utf8')
+
 export default defineConfig({
   plugins: [react()],
-  define: { __STYLES_CSS__: JSON.stringify(STYLES_CSS) },
+  define: {
+    __STYLES_CSS__: JSON.stringify(STYLES_CSS),
+    __TW_CSS__: JSON.stringify(TW_CSS),
+  },
   test: {
     environment: 'jsdom',
     globals: true,

@@ -863,10 +863,10 @@
 }
 .settings-lang-switch > button[aria-pressed='true'] {
   background: var(--color-secondary);
-  color: var(--color-fg);
+  color: var(--color-foreground);
 }
 .settings-lang-switch > button:hover {
-  color: var(--color-fg);
+  color: var(--color-foreground);
 }
 .settings-lang-switch > button:focus-visible {
   outline: 2px solid var(--color-ring);
@@ -2001,9 +2001,9 @@
   cursor: pointer;
   transition: color 120ms ease, border-color 120ms ease;
 }
-.wb-tab:hover { color: var(--color-fg); }
+.wb-tab:hover { color: var(--color-foreground); }
 .wb-tab[aria-selected='true'] {
-  color: var(--color-fg);
+  color: var(--color-foreground);
   border-bottom-color: var(--color-accent);
 }
 .wb-tab:focus-visible {
@@ -2178,7 +2178,7 @@
 .wb-run-step {
   font-size: 12px;
   line-height: 18px;
-  color: var(--color-fg);
+  color: var(--color-foreground);
 }
 .wb-run-log {
   font-size: 11px;
@@ -2186,14 +2186,14 @@
   color: var(--color-weak);
 }
 .wb-run-log-latest {
-  color: var(--color-fg);
+  color: var(--color-foreground);
 }
 
 .wb-card-title {
   font-size: 16px;
   line-height: 22px;
   font-weight: 500;
-  color: var(--color-fg);
+  color: var(--color-foreground);
 }
 /* 副标题合并成「2018 · 动画 · 13 集待处理」一行说完（R-F13 决定 3）。 */
 .wb-card-sub {
@@ -2249,7 +2249,7 @@
   border: none;
   transition: background 0.3s ease, color 0.3s ease, border 0.3s ease;
 }
-/* ⚠️ 强调色用 --color-ring / --color-fg，**不是 --color-accent**：后者在新栈里是
+/* ⚠️ 强调色用 --color-ring / --color-foreground，**不是 --color-accent**：后者在新栈里是
    #16181f（近黑），画在深色卡片上等于隐形；scout.css:86 那边又把它遮蔽成柠檬绿。
    同本文件 cmdk-trigger:focus-visible / wb-card-title 的既有口径。
    2026-08-22 视觉验收实测到这个形态：done/active 的标签算出来是 rgb(22,24,31)，
@@ -2280,10 +2280,10 @@
 /* 已完成 = 常规前景色；进行中 = 前景色 + 加粗（当前位置必须是最显眼的那个）。
    未点亮的保持 --color-weak，形成 弱 < 常规 < 加粗 的三档递进。 */
 .wb-stage-node.done .wb-stage-label {
-  color: var(--color-fg);
+  color: var(--color-foreground);
 }
 .wb-stage-node.active .wb-stage-label {
-  color: var(--color-fg);
+  color: var(--color-foreground);
   font-weight: 600;
 }
 /* 阶段之间的连线（伪元素） */
@@ -2306,7 +2306,7 @@
 .wb-cue-label {
   font-size: 11px;
   line-height: 16px;
-  color: var(--color-fg);
+  color: var(--color-foreground);
   display: block;
   margin-bottom: 4px;
 }
