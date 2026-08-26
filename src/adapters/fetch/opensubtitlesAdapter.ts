@@ -33,22 +33,45 @@ const emitQuotaNotice = (emit: (e: FetchEvent) => void, message: string, resetAt
  * 一律视为"无 imdb"，退化到标题+season/episode 查询——否则会带着必然 0 命中的 imdb_id 查询提交，
  * 而本该走的标题查询分支被跳过（`imdb != null` 对 0 和 NaN 都是 true）。
  */
-/** BCP-47 → OS 语言码映射（Shelby Oaks 案主刀，验收轮一 2026-07-17）：A4 语言域泛化后任务
- *  目标语言的内部规范形是 BCP-47 主码（'zh'），search_source 默认把它直传 adapter——而 OS API
- *  码表没有裸 'zh'，会**静默**返回 200+空集（不报错、不进 providerFailures），OS 自 A4 起在
- *  默认配置下从未贡献过一条候选、全程隐形。provider 特定码表归 provider adapter 消化：
- *  zh→zh-cn+zh-tw 双查、zh-Hans→zh-cn、zh-Hant→zh-tw，其余（en/ja/…）OS 本就收小写主码，
- *  原样透传；保序去重。 */
-function osLanguages(languages: string[]): string[] {
+/** OS 认识的语言码全集（GET /infos/languages 实测 105 种，2026-08-26 核对）。只收录本仓
+ *  会产生的目标语言相关码——不是完整镜像，用途是"送出前判断这个码 OS 到底认不认"。 */
+const OS_KNOWN_CODES = new Set([
+  'en', 'ja', 'ko', 'es', 'fr', 'de', 'ru', 'it',
+  'zh-cn', 'zh-tw', 'zh-ca', 'pt-pt', 'pt-br',
+])
+
+/** BCP-47 主码 → OS 码。OS 码表里没有裸 'zh'，也没有裸 'pt'——两者都必须展开成地区码，
+ *  否则 OS **静默**返回 200+空集。 */
+const OS_LANGUAGE_MAP: Record<string, string[]> = {
+  zh: ['zh-cn', 'zh-tw'],
+  'zh-hans': ['zh-cn'],
+  'zh-hant': ['zh-tw'],
+  pt: ['pt-pt', 'pt-br'],
+}
+
+/** BCP-47 → OS 语言码映射（Shelby Oaks 案主刀，验收轮一 2026-07-17；pt 补录 2026-08-26）。
+ *
+ *  历史：A4 语言域泛化后任务目标语言的内部规范形是 BCP-47 主码（'zh'），search_source 默认把它
+ *  直传 adapter——而 OS API 码表没有裸 'zh'，会**静默**返回 200+空集（不报错、不进
+ *  providerFailures），OS 自 A4 起在默认配置下从未贡献过一条候选、全程隐形。
+ *
+ *  2026-08-26 复发：设置页把目标语言从 4 种扩到 10 种，'pt' 撞上同一个坑（OS 只有 pt-pt/pt-br）。
+ *  根因不是"漏配一条映射"，而是**设置页选项集与 OS 码表之间没有对账机制**，且失败静默所以两次
+ *  都要靠人肉发现。故本次除补映射外加 fail-loud：任何不在 OS_KNOWN_CODES 里的码都发一条
+ *  provider_error 事件（不吞、不静默），让第三次踩坑在痕迹里立刻可见而不是隐形一个月。
+ *  注意不抛异常——单个坏码不该让整轮搜索崩掉，其余合法码仍应正常查询（degrade, don't die）。
+ *
+ *  映射：zh→zh-cn+zh-tw 双查、zh-Hans→zh-cn、zh-Hant→zh-tw、pt→pt-pt+pt-br，
+ *  其余（en/ja/ko/es/fr/de/ru/it）OS 本就收小写主码，原样透传；保序去重。 */
+function osLanguages(languages: string[], onUnknown?: (code: string) => void): string[] {
   const out: string[] = []
   for (const l of languages) {
     const lower = l.toLowerCase()
-    const mapped =
-      lower === 'zh' ? ['zh-cn', 'zh-tw'] :
-      lower === 'zh-hans' ? ['zh-cn'] :
-      lower === 'zh-hant' ? ['zh-tw'] :
-      [lower]
-    for (const m of mapped) if (!out.includes(m)) out.push(m)
+    const mapped = OS_LANGUAGE_MAP[lower] ?? [lower]
+    for (const m of mapped) {
+      if (!OS_KNOWN_CODES.has(m)) onUnknown?.(m)
+      if (!out.includes(m)) out.push(m)
+    }
   }
   return out
 }
@@ -76,8 +99,17 @@ export function makeOpenSubtitlesAdapter(
   return {
     name: 'opensubtitles',
     enabled: () => true,
-    search: async (args) => {
-      const languages = osLanguages(args.languages ?? ['zh-cn', 'zh-tw'])
+    search: async (args, emit) => {
+      // fail loud：未知语言码走 provider_error（进 providerFailures，痕迹通道可见）。
+      // 不 throw——坏码只废掉它自己，其余合法码继续查（见 osLanguages 注释）。
+      const languages = osLanguages(args.languages ?? ['zh-cn', 'zh-tw'], (bad) => {
+        emit({
+          event: 'provider_error',
+          provider: 'opensubtitles',
+          message: `language code '${bad}' is not one OpenSubtitles accepts — it would return 200 with an empty result set. `
+            + `Map it in OS_LANGUAGE_MAP (opensubtitlesAdapter.ts) the way 'zh' and 'pt' are mapped.`,
+        })
+      })
       const imdb = imdbDigits(args.imdb)
       let resp = await client.search(imdb != null
         ? { imdbId: imdb, languages }

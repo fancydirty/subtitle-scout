@@ -152,6 +152,67 @@ describe('makeOpenSubtitlesAdapter: search', () => {
     expect(search.mock.calls[0][0].languages).toEqual(['zh-cn', 'zh-tw', 'en'])
   })
 
+  // pt 是 zh 之后的**第二次**同类事故（2026-08-26）：OS 码表（/infos/languages 实测 105 种）
+  // 里没有裸 'pt'，只有 'pt-pt'/'pt-br'，而设置页把 'pt' 列为可选目标语言 → 与裸 zh 完全同构的
+  // 静默 200+空集。根因不是漏一条映射，而是"设置页选项集"与"OS 码表"之间从来没有对账机制。
+  it('③i language mapping: bare pt → pt-pt+pt-br (OS has no bare pt; second silent-empty case)', async () => {
+    const search = vi.fn(async (_p: OsSearchParams) => fixture)
+    const client = fakeClient({ search })
+    const adapter = makeOpenSubtitlesAdapter(client)
+
+    await adapter.search(args({ queries: ['Cidade de Deus'], languages: ['pt'] }), () => {})
+
+    expect(search.mock.calls[0][0].languages).toEqual(['pt-pt', 'pt-br'])
+  })
+
+  // 对账守卫：设置页十种目标语言逐一过 adapter，断言送出的每个码都在 OS 真实码表内。
+  // 这条才是防第三次踩坑的东西——加语言选项时若忘了配映射，这里立刻红。
+  it('③j every settings-page target language maps to codes OS actually accepts', async () => {
+    // OS /infos/languages 实测子集（2026-08-26），只列与本断言相关的码。
+    const OS_CODES = new Set([
+      'en', 'ja', 'ko', 'es', 'fr', 'de', 'ru', 'it',
+      'zh-cn', 'zh-tw', 'zh-ca', 'pt-pt', 'pt-br',
+    ])
+    const SETTINGS_LANGS = ['zh', 'en', 'ja', 'ko', 'es', 'fr', 'de', 'pt', 'ru', 'it']
+
+    for (const lang of SETTINGS_LANGS) {
+      const search = vi.fn(async (_p: OsSearchParams) => fixture)
+      const adapter = makeOpenSubtitlesAdapter(fakeClient({ search }))
+
+      await adapter.search(args({ queries: ['x'], languages: [lang] }), () => {})
+
+      const sent = search.mock.calls[0][0].languages
+      expect(sent.length, `${lang} produced no OS language code`).toBeGreaterThan(0)
+      for (const code of sent) {
+        expect(OS_CODES.has(code), `target language '${lang}' → '${code}' is not an OS language code`).toBe(true)
+      }
+    }
+  })
+
+  // fail loud（用户裁决 2026-08-26）：静默是这个 bug 两次都活很久的原因，所以未知码必须发声。
+  it('③k fail loud: an unknown language code emits provider_error instead of silently querying it', async () => {
+    const search = vi.fn(async (_p: OsSearchParams) => fixture)
+    const adapter = makeOpenSubtitlesAdapter(fakeClient({ search }))
+    const events: { event: string; provider?: string; message?: string }[] = []
+
+    await adapter.search(args({ queries: ['x'], languages: ['xx'] }), (e) => events.push(e))
+
+    const err = events.find((e) => e.event === 'provider_error')
+    expect(err, 'unknown code must not be swallowed').toBeDefined()
+    expect(err!.provider).toBe('opensubtitles')
+    expect(err!.message).toContain("'xx'")
+  })
+
+  it('③l fail loud degrades rather than dies: valid codes still queried alongside a bad one', async () => {
+    const search = vi.fn(async (_p: OsSearchParams) => fixture)
+    const adapter = makeOpenSubtitlesAdapter(fakeClient({ search }))
+
+    await adapter.search(args({ queries: ['x'], languages: ['xx', 'fr'] }), () => {})
+
+    expect(search).toHaveBeenCalledTimes(1)
+    expect(search.mock.calls[0][0].languages).toContain('fr')
+  })
+
   it('④imdb with tt prefix is stripped to a number', async () => {
     const search = vi.fn(async (_p: OsSearchParams) => emptyResp)
     const client = fakeClient({ search })
