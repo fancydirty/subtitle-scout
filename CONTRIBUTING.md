@@ -85,42 +85,39 @@ cd subtitle-scout
 # Install dependencies
 npm install
 
-# Run tests
+# 类型检查
+npm run check
+
+# 后端测试
 npm test
 
-# Start development
-npm run dev
+# 前端测试（web/ 是独立包）
+npm test --prefix web
 ```
+
+本地跑完整链路（不需要 NAS 或真实媒体库）见 README 的 Local development 一节：
+`scripts/gen-mock-library.sh` + `docker compose -f docker-compose.local.yml up -d --build`。
 
 ### 项目结构
 
 ```
 subtitle-scout/
-├── src/
-│   ├── providers/      # 字幕源实现
-│   ├── core/           # 核心逻辑
-│   ├── utils/          # 工具函数
-│   └── types/          # TypeScript 类型定义
-├── tests/              # 测试文件
-└── docs/               # 文档
+├── src/          # daemon、adapters、CLI、dashboard API
+├── web/          # dashboard 前端（独立 npm 包）
+├── docs/         # 对外文档（凭据指引、架构说明）
+└── CONTRIBUTING.md
 ```
 
 ## Code Style
 
-- **TypeScript strict mode**：确保类型安全
-- **Prettier**：自动格式化（配置在 `.prettierrc`）
-- **ESLint**：代码质量检查（如有配置）
+- **TypeScript strict mode**：确保类型安全，提交前跑 `npm run check`
+- **跟随周边代码风格**：仓库没有 Prettier / ESLint 配置，也没有 format 脚本——照你改动附近的既有写法来
 - **测试覆盖**：新功能必须包含测试
-
-运行格式化：
-```bash
-npm run format  # 如果配置了该脚本
-```
 
 ## Testing Guidelines
 
-- 单元测试放在 `tests/unit/`
-- 集成测试放在 `tests/integration/`
+- 测试文件与被测源码同目录，命名 `*.test.ts`（例：`src/adapters/fetchLib.ts` 旁边是 `src/adapters/fetchLib.test.ts`）；仓库没有独立的 `tests/` 目录
+- 后端 `npm test`，前端 `npm test --prefix web`——改哪个包就跑哪个，两边都碰就都跑
 - 使用描述性的测试名称：
   ```typescript
   describe('SubtitleProvider', () => {
@@ -133,9 +130,11 @@ npm run format  # 如果配置了该脚本
 ## Documentation
 
 如果你的 PR 引入了：
-- 新功能：更新 README.md
-- 新配置选项：更新配置文档
-- API 变更：更新相关文档
+- 新的用户可见行为：更新 `README.md`（中英两段都要改）
+- 凭据流程变更：同时更新 `docs/GET_CREDENTIALS.md` 与 `docs/GET_CREDENTIALS.en.md`
+- 新配置项 / API 变更：更新相关文档与 README 的环境变量表
+
+双语文档不要只改一边——中英不一致本身就是 bug。
 
 ## Questions?
 
@@ -143,5 +142,5 @@ npm run format  # 如果配置了该脚本
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the **GPL v3.0** license.
+By contributing, you agree that your contributions will be licensed under the **GPL-3.0-only** license.
 

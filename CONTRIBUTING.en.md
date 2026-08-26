@@ -58,4 +58,4 @@ subtitle-scout/
 
 ## License
 
-Contributions are licensed under **GPL v3.0**.
+Contributions are licensed under **GPL-3.0-only**.

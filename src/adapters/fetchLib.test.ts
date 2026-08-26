@@ -232,9 +232,16 @@ describe('runResolve header pass-through (zimuku archive download needs browser 
   })
 })
 
-describe('"no providers configured" message mentions all three provider gates', () => {
-  it('mentions ZIMUKU_ENABLED alongside ASSRT_TOKEN/OPENSUBTITLES_API_KEY', async () => {
-    await expect(runSearch({ queries: ['q'] }, [], () => {})).rejects.toThrow(/ZIMUKU_ENABLED/)
+describe('"no providers configured" message names all three provider gates and points at Settings', () => {
+  // Credentials and provider toggles live in the settings table, not env (2026-08-20 收口) —
+  // the message must not send the operator off to set ZIMUKU_ENABLED=true, which no longer works.
+  it('names Zimuku alongside ASSRT/OpenSubtitles and directs the operator to Settings', async () => {
+    const run = () => runSearch({ queries: ['q'] }, [], () => {})
+    await expect(run()).rejects.toThrow(/ASSRT/)
+    await expect(run()).rejects.toThrow(/OpenSubtitles/)
+    await expect(run()).rejects.toThrow(/Zimuku/)
+    await expect(run()).rejects.toThrow(/Settings/)
+    await expect(run()).rejects.not.toThrow(/ZIMUKU_ENABLED/)
   })
 })
 

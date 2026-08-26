@@ -53,7 +53,7 @@ export async function checkZimuku(
   if (!probe) {
     return {
       name: 'zimuku', ok: true, skip: true,
-      detail: '未配置(可选 provider,灰色站点条款风险自担)——设 ZIMUKU_ENABLED=true 启用',
+      detail: '未配置(可选 provider,灰色站点条款风险自担)——设置页开启 zimuku 开关启用',
     }
   }
   try {
@@ -68,7 +68,7 @@ export async function checkZimuku(
   } catch (e) {
     return {
       name: 'zimuku', ok: false, detail: `连接失败:${String(e)}`,
-      hint: '检查网络能否直连 zimuku.org(灰色站点,部分网络环境可能被墙或限速);确认 ZIMUKU_ENABLED 拼写正确(区分大小写,值必须是字符串 "true")。',
+      hint: '检查网络能否直连 zimuku.org(灰色站点,部分网络环境可能被墙或限速);确认设置页的 zimuku 开关处于开启状态。',
     }
   }
 }

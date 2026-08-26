@@ -67,11 +67,14 @@ describe('doctor 远端三项', () => {
 })
 
 describe('doctor zimuku (可选 provider,默认关闭)', () => {
-  it('未配置(probe=null) → skip 而非失败,hint 提到 ZIMUKU_ENABLED', async () => {
+  // provider 开关只读 settings 表(2026-08-20 收口),ZIMUKU_ENABLED 这条 env 路径已失效——
+  // detail 必须指向设置页,不能再教用户去设一个不生效的环境变量。
+  it('未配置(probe=null) → skip 而非失败,detail 指向设置页开关', async () => {
     const r = await checkZimuku(null)
     expect(r.skip).toBe(true)
     expect(r.ok).toBe(true)
-    expect(r.detail).toContain('ZIMUKU_ENABLED')
+    expect(r.detail).toContain('设置页')
+    expect(r.detail).not.toContain('ZIMUKU_ENABLED')
   })
   it('已启用且首页可达、未触发验证页 → ok', async () => {
     const r = await checkZimuku({ fetchHomepage: async () => ({ ok: true, challenged: false }) })

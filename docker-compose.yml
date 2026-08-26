@@ -1,4 +1,4 @@
-# v(next)：Jellyfin 不再是运行依赖——subtitle-scout 直接扫描磁盘 + TMDB 识别文件，
+# 自 0.1.0 起：Jellyfin 不再是运行依赖——subtitle-scout 直接扫描磁盘 + TMDB 识别文件，
 # 不再打任何媒体服务器的 API。若你之前跑过旧版本，可随时移除 jellyfin 容器/相关 env
 # （JELLYFIN_URL / JELLYFIN_API_KEY / MEDIA_PATH_MAPPINGS）——不影响 scout 继续工作。
 # 想同时用 Jellyfin 当播放器（和 scout 的字幕功能完全无关，纯粹图省事）？见 docker-compose.bundle.yml。

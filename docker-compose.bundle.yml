@@ -1,19 +1,17 @@
 # ⚠️  开源使用者注意
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 本文件通过环境变量透传所有 API 凭据（LLM_API_KEY, TMDB_API_KEY, ASSRT_TOKEN 等）。
-# 使用前必须：
-#   1. 复制 .env.example 为 .env
-#   2. 填写你自己的 API keys（见 README 获取方式）
-#   3. 确保 .env 在 .gitignore 中（已配置，勿删除该规则）
-#   4. 切勿将 .env 提交到版本控制或公开分享
+# 凭证不走环境变量（2026-08-20 起）。TMDB / LLM 三件套 / AI 翻译三件套 / ASSRT /
+# OpenSubtitles / jimaku / zimuku / subhd 的密钥与开关，一律在首次设置向导
+# （http://<主机>:8099）里配置，落库存储——往 .env 或本文件的 environment 里塞这些
+# 变量不会生效（daemon 运行态只读数据库）。.env 只放部署基建：端口 / 路径 / 时区 /
+# 网络代理，见 .env.example。
 #
 # 快速启动：
-#   cp .env.example .env
-#   # 编辑 .env 填写凭据
 #   docker compose -f docker-compose.bundle.yml up -d
+#   # 然后打开 http://<主机>:8099 走设置向导，填 TMDB 与大模型三件套
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #
-# v(next)：Jellyfin 不再是 subtitle-scout 的运行依赖——它直接扫描磁盘 + TMDB 识别文件，
+# 自 0.1.0 起：Jellyfin 不再是 subtitle-scout 的运行依赖——它直接扫描磁盘 + TMDB 识别文件，
 # 不再打任何媒体服务器的 API。这份"全家桶"因此不再有功能上的特殊性：下面的 jellyfin
 # 服务纯粹是"顺手给你一个播放器"的可选附赠，与 scout 找字幕/整理这条主线完全无关——
 # 只想跑 scout 本体，直接用 docker-compose.yml 即可，效果等价且少一个容器。
@@ -61,30 +59,14 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      LLM_BASE_URL: ${LLM_BASE_URL}
-      LLM_API_KEY: ${LLM_API_KEY}
-      LLM_MODEL: ${LLM_MODEL}
+      # ⚠️ 这里只放部署基建。凭证与字幕源开关（LLM_*/TMDB_API_KEY/ASSRT_TOKEN/
+      # OPENSUBTITLES_*/JIMAKU_API_KEY/TRANSLATE_*/ZIMUKU_ENABLED/SUBHD_ENABLED）
+      # 一律走设置向导落库，写在这里不生效——同主 compose 的论证。
+      # LLM 请求体附加参数（如厂商特有开关；不含凭证，故仍走 env）
       LLM_EXTRA_BODY: ${LLM_EXTRA_BODY:-}
-      ASSRT_TOKEN: ${ASSRT_TOKEN}
-      TMDB_API_KEY: ${TMDB_API_KEY}
-      OPENSUBTITLES_API_KEY: ${OPENSUBTITLES_API_KEY:-}
-      OPENSUBTITLES_USERNAME: ${OPENSUBTITLES_USERNAME:-}
-      OPENSUBTITLES_PASSWORD: ${OPENSUBTITLES_PASSWORD:-}
-      # 字幕源开关：默认关（各自需额外配置）
-      ZIMUKU_ENABLED: ${ZIMUKU_ENABLED:-false}
-      SUBHD_ENABLED: ${SUBHD_ENABLED:-false}
-      # TMDB 反代/代理（墙内直连常被墙时用）
+      # TMDB 反代/代理（墙内直连常被墙时用；网络层基建，key 本身在向导里配）
       TMDB_BASE_URL: ${TMDB_BASE_URL:-}
       TMDB_PROXY_URL: ${TMDB_PROXY_URL:-}
-      # jimaku 日字源(F2)
-      JIMAKU_API_KEY: ${JIMAKU_API_KEY:-}
-      # AI 翻译部署门:三件套缺一,daemon 自动翻译整体休眠
-      TRANSLATE_BASE_URL: ${TRANSLATE_BASE_URL:-}
-      TRANSLATE_API_KEY: ${TRANSLATE_API_KEY:-}
-      TRANSLATE_MODEL: ${TRANSLATE_MODEL:-}
-      TRANSLATE_CRITIC: ${TRANSLATE_CRITIC:-}
-      TRANSLATE_CRITIC_MODEL: ${TRANSLATE_CRITIC_MODEL:-}
-      TRANSLATE_TIMEOUT_MS: ${TRANSLATE_TIMEOUT_MS:-}
       # 目标字幕语言与扫描节奏(dashboard 设置页优先)
       TARGET_LANGUAGES: ${TARGET_LANGUAGES:-}
       SCAN_INTERVAL_MS: ${SCAN_INTERVAL_MS:-}

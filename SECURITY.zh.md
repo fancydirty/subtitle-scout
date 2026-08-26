@@ -17,7 +17,7 @@
 
 ## 部署
 
-- `.env` 与全部字幕源 / TMDB / LLM 凭据不得进入 Git
+- `.env` 不得进入 Git。字幕源 / TMDB / LLM 凭据由设置向导写入数据库而非环境变量，数据目录同样不要进 Git
 - dashboard 对他人可见时，只挂载需要的媒体路径
 - 首次启动后立即完成管理员向导
-- 未阅读并接受相关站点条款前，保持 `ZIMUKU_ENABLED` 与 `SUBHD_ENABLED` 关闭
+- 未阅读并接受相关站点条款前，请在设置页 Providers 中保持 SubHD 与 Zimuku 开关关闭

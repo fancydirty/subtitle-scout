@@ -1,11 +1,13 @@
-# v(next)：Jellyfin 不再是运行依赖——subtitle-scout 直接扫描磁盘 + TMDB 识别文件，
+# 自 0.1.0 起：Jellyfin 不再是运行依赖——subtitle-scout 直接扫描磁盘 + TMDB 识别文件，
 # 不再打任何媒体服务器的 API。这个本地测试栈相应地不再拉起 jellyfin 容器；
 # 旧版本留下的 jellyfin-config-local 卷可按需自行清理（docker volume rm）。
 # OrbStack 本地全链路测试栈：本地构建 scout + mock 媒体库。
+# 凭证不走 env：TMDB / LLM / 各字幕源的密钥与开关一律在设置向导（http://localhost:8099）里配置，
+# 落库存储。.env 只放部署基建（时区/代理/端口）。本地栈同样如此——别指望在这里塞 API key。
 # 用法：
 #   scripts/gen-mock-library.sh
-#   cp .env.example .env   # 填三把钥匙
 #   docker compose -f docker-compose.local.yml up -d --build
+#   # 然后打开 http://localhost:8099 走向导
 services:
   subtitle-scout:
     build: .
@@ -26,26 +28,10 @@ services:
     ports:
       - "8099:8099"
     environment:
-      LLM_BASE_URL: ${LLM_BASE_URL}
-      LLM_API_KEY: ${LLM_API_KEY}
-      LLM_MODEL: ${LLM_MODEL}
+      # 凭证与字幕源开关不在此处——设置向导落库（见文件头注释）。以下全是部署基建项。
       LLM_EXTRA_BODY: ${LLM_EXTRA_BODY:-}
-      ASSRT_TOKEN: ${ASSRT_TOKEN}
-      TMDB_API_KEY: ${TMDB_API_KEY}
-      OPENSUBTITLES_API_KEY: ${OPENSUBTITLES_API_KEY:-}
-      OPENSUBTITLES_USERNAME: ${OPENSUBTITLES_USERNAME:-}
-      OPENSUBTITLES_PASSWORD: ${OPENSUBTITLES_PASSWORD:-}
-      ZIMUKU_ENABLED: ${ZIMUKU_ENABLED:-false}
-      SUBHD_ENABLED: ${SUBHD_ENABLED:-false}
       TMDB_BASE_URL: ${TMDB_BASE_URL:-}
       TMDB_PROXY_URL: ${TMDB_PROXY_URL:-}
-      JIMAKU_API_KEY: ${JIMAKU_API_KEY:-}
-      TRANSLATE_BASE_URL: ${TRANSLATE_BASE_URL:-}
-      TRANSLATE_API_KEY: ${TRANSLATE_API_KEY:-}
-      TRANSLATE_MODEL: ${TRANSLATE_MODEL:-}
-      TRANSLATE_CRITIC: ${TRANSLATE_CRITIC:-}
-      TRANSLATE_CRITIC_MODEL: ${TRANSLATE_CRITIC_MODEL:-}
-      TRANSLATE_TIMEOUT_MS: ${TRANSLATE_TIMEOUT_MS:-}
       TARGET_LANGUAGES: ${TARGET_LANGUAGES:-}
       SCAN_INTERVAL_MS: ${SCAN_INTERVAL_MS:-}
       LOG_RETAIN_DAYS: ${LOG_RETAIN_DAYS:-}

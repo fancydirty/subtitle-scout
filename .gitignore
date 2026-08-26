@@ -45,6 +45,13 @@ sandbox-scratch/
 # 本地审计、截图和监控脚本（不随公开仓；本地保留）
 .cursor/
 PROJECT_AUDIT_2026.md
+# 内部审计快照：都是某个时点的过期快照（例：LICENSE_AUDIT 还在陈述早已修好的
+# 「package.json 声明为 MIT」），行号引用也已漂移。留在工作区供本地翻阅，但不对外陈列——
+# 公开仓里一份过期的许可证审计等于自曝一个不存在的问题。
+LICENSE_AUDIT.md
+OPENSOURCE_READINESS.md
+PRIVACY_AUDIT.md
+SECURITY_AUDIT_REPORT.md
 monitor-loop.sh
 monitor-iteration-*.png
 final.png

@@ -2,6 +2,8 @@
 
 [English](#quick-start-5-minutes) · [中文](#快速上手)
 
+**Website**: https://subtitlescout.com · **Live demo**: https://demo.subtitlescout.com （只读演示站 / read-only demo）
+
 subtitle-scout watches a media library, finds a matching Chinese subtitle, verifies it, and writes it next to the video. It scans filesystem roots; it does not depend on Jellyfin, Emby, or Plex.
 
 **What it does:** discover titles missing Chinese sidecars → search and rank candidates → install; season packs; optional directory repair against TMDB (reversible); a dashboard with an activity log.
@@ -22,7 +24,9 @@ Get subtitle-scout running from zero to dashboard in under 5 minutes.
 
 ### Step 1: Get API Keys
 
-The wizard can skip ASSRT, OpenSubtitles, and Jimaku. Configure all three. OpenSubtitles is useful for **both Chinese-speaking and non-Chinese-speaking users**—that is why it should not be skipped. ASSRT is the professional Chinese catalog (finished Chinese sidecars). Jimaku is not: it feeds the translation agent with Japanese source subtitles.
+Two credentials are required: **TMDB** (recognizes every file) and an **LLM** key set (judging and translation). The wizard is only complete once both are in place. Every subtitle source is optional.
+
+Of the five sources, three take keys and the wizard can skip all three — configure them anyway. OpenSubtitles is useful for **both Chinese-speaking and non-Chinese-speaking users**, which is why it should not be skipped. ASSRT is the professional Chinese catalog (finished Chinese sidecars). Jimaku is neither: it feeds the translation agent with Japanese source subtitles. The remaining two, **SubHD** and **Zimuku**, need no keys — they are Chinese-focused sources you enable with a toggle in Settings (off by default; see [SECURITY.md](./SECURITY.md) for the terms-of-service caveat).
 
 LLM (OpenAI-compatible) is a separate wizard step and is not covered here. One expectation to set now: **model tier matters more than any other setting.** The agent does long multi-step tool-calling; models below roughly the `deepseek-v4-flash` / mini tier do not fail loudly — they confidently fabricate, which shows up as misidentified media rather than an error. If matching quality is poor, suspect the model tier before filing a bug. Good value starting points: `deepseek-v4-flash` (api.deepseek.com), Qwen `qwen3.5-plus` (Alibaba DashScope), or any current mini/flash-class frontier model. Check current prices on each provider's official pricing page.
 
@@ -62,7 +66,7 @@ OpenSubtitles is an international source for Chinese-speaking and non-Chinese-sp
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-repo/subtitle-scout.git
+git clone https://github.com/fancydirty/subtitle-scout.git
 cd subtitle-scout
 
 # Create environment file
@@ -84,6 +88,13 @@ docker compose up -d
 ```
 
 Wait 10-20 seconds for the container to initialize.
+
+If `ghcr.io` is slow or blocked on your network, pull through a mirror and retag — it serves the same image digest:
+
+```bash
+docker pull ghcr.1ms.run/fancydirty/subtitle-scout:latest
+docker tag ghcr.1ms.run/fancydirty/subtitle-scout:latest ghcr.io/fancydirty/subtitle-scout:latest
+```
 
 ### Step 4: Complete Setup Wizard
 
@@ -129,7 +140,7 @@ Subtitle-scout automatically scans your media library every 15 minutes. To trigg
 2. Click **Full Library Reconcile** (or wait for the next auto-scan)
 3. Watch the **Activity** page for real-time progress
 
-That's it! Subtitle-scout is now monitoring your library and will automatically download Chinese subtitles for any media missing them.
+That's it. Subtitle-scout is now monitoring your library and will fetch subtitles for any media missing them, in whichever target language you set (Chinese by default — see [Target languages](#目标语言支持分层) for what each language actually gets).
 
 ### What's Next?
 
@@ -152,6 +163,13 @@ cp .env.example .env
 docker compose up -d
 ```
 
+若 `ghcr.io` 拉取缓慢或被墙，可走镜像源再改标签，digest 与上游一致：
+
+```bash
+docker pull ghcr.1ms.run/fancydirty/subtitle-scout:latest
+docker tag ghcr.1ms.run/fancydirty/subtitle-scout:latest ghcr.io/fancydirty/subtitle-scout:latest
+```
+
 然后按这个顺序操作：
 
 1. 打开 `http://<主机IP>:8099`，完成管理员向导
@@ -167,7 +185,7 @@ docker compose up -d
 
 ## 配置凭据
 
-subtitle-scout 需要三组凭据：ASSRT 字幕库、大模型、TMDB（识别文件用，硬性必填）。
+必填两类：TMDB（识别文件，硬性必填）与大模型三件套（`LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL`，甄别与翻译都要用）——这两项齐了向导才算完成。字幕源全部可选，但建议配置 ASSRT（专业中文字幕源，免费）与 OpenSubtitles，日文源用 Jimaku；SubHD 与 Zimuku 免密钥，在设置页开关即可启用。
 
 **全部在首次设置向导里填写**：容器起来后打开 `http://<主机>:8099`，向导会逐项引导；之后随时可在设置页修改。凭据落库存储在你自己的部署里——**`.env` 里塞凭证不生效**（daemon 只读数据库，2026-08-20 起这是唯一入口）。
 
@@ -323,7 +341,7 @@ scout.example.com {
 
 1. **自扫描发现**：程序周期性直接扫描媒体根目录（不依赖任何媒体服务器的播放/入库事件），把新出现或变化的路径解析出剧名/季集号并配上 TMDB，直接写自己的库（SQLite），判定这一集/这部片是否已有目标语言字幕
 2. **智能调度**：发现变化后派发一次编排判断——先核对这部剧实际的目录/命名排布是否跟 TMDB 季表对得上，对不上就先派"整理"任务把文件挪回该在的位置（多层安全校验：先出计划、留痕可回滚、失败不改一个字节），排布没问题才派"找字幕"任务
-3. **搜索候选**：大模型驱动的搜索 worker 自己规划搜索词（原名 + 中文译名 + 年份等组合），调用 ASSRT / OpenSubtitles 等字幕站 API
+3. **搜索候选**：大模型驱动的搜索 worker 自己规划搜索词（原名 + 中文译名 + 年份等组合），扇出搜索五个字幕源（ASSRT、SubHD、Zimuku、OpenSubtitles、Jimaku，各按其配置与语言门是否满足决定是否参与）
 4. **挑最靠谱**：候选逐个下载进一次性沙盒目录，结构性体检（cue 数量级、时间轴跨度是否匹配片长、简繁判定、编码可解码性等）之后，大模型看着这些证据终审"是/不是这一集"
 5. **验证写盘**：确认后把字幕写到视频同目录——你用的媒体服务器（Jellyfin/Emby/Plex 或者压根没有）该怎么发现这个新文件是它自己的事，scout 不参与也不需要参与
 
@@ -392,7 +410,7 @@ docker compose exec subtitle-scout node dist/cli/index.js translate-item "/hostr
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
 | `MEDIA_ROOTS` | 媒体根目录首启种子（逗号分隔，**容器内**路径 = `/hostroot` + 宿主机绝对路径，如 `/hostroot/mnt/media/Movies`；**首启播种一次**，之后以 dashboard 设置页为准）。留空即推荐做法——在设置页用目录浏览器点选 | 空 |
-| `TARGET_LANGUAGES` | 目标字幕语言（逗号分隔 BCP-47；设置页 target_languages 优先于此） | `zh` |
+| `TARGET_LANGUAGES` | 目标字幕语言（逗号分隔 BCP-47；设置页 target_languages 优先于此）。支持程度分层，见[目标语言支持分层](#目标语言支持分层) | `zh` |
 | `TMDB_BASE_URL` / `TMDB_PROXY_URL` | TMDB 反代/代理（墙内直连常被墙时用；网络层基建，key 本身在向导里配） | 空 |
 | `TZ` | 容器时区（影响日志与"今天"统计） | `Asia/Shanghai` |
 | `SKIP_CHINESE_ORIGIN` | 国产内容跳过处理 | `true` |
@@ -417,11 +435,10 @@ docker compose exec subtitle-scout node dist/cli/index.js translate-item "/hostr
 
 ```bash
 scripts/gen-mock-library.sh          # 生成 fixtures/media 下的 mock 媒体库
-cp .env.example .env                 # 只需 TZ=；密钥走 dashboard 向导
 docker compose -f docker-compose.local.yml up -d --build
 ```
 
-然后监控页在 `http://localhost:8099`。
+然后打开 `http://localhost:8099` 走设置向导填凭据（本地栈同样只读数据库，`.env` 塞密钥不生效）。
 
 fixtures 里混了几个负例（内嵌中字的、国产片）方便验证跳过逻辑。`fixtures/media/` 已加入 `.gitignore`，不会被提交。
 
@@ -454,7 +471,7 @@ subtitle-scout 不打任何媒体服务器的 API——它直接扫描磁盘、�
 
 ### Q: 升级后 doctor 显示"媒体根目录不可写" / 存量部署的挂载迁移
 
-**背景**：v(next) 起 compose 改挂宿主机根目录 `/:/hostroot`（用户目录结构千差万别，不再硬编码 `Movies/TV`）。存量部署数据库里 `media_roots` 表存的旧值（如 `/media/movies`）在新挂载下不存在 → doctor 报 media-roots 不可写。
+**背景**：自 0.1.0 起 compose 改挂宿主机根目录 `/:/hostroot`（用户目录结构千差万别，不再硬编码 `Movies/TV`）。存量部署数据库里 `media_roots` 表存的旧值（如 `/media/movies`）在新挂载下不存在 → doctor 报 media-roots 不可写。
 
 **迁移动作**（一次性，全在监控页里做，不需要碰数据库）：
 1. 打开监控页 Settings → Media，把旧的守备目录（`/media/movies`、`/media/tv` 这类）**删掉**
@@ -475,6 +492,18 @@ subtitle-scout 不打任何媒体服务器的 API——它直接扫描磁盘、�
   这类开关
 
 想看某次运行的处理结果和理由，见下面"怎么查某次运行的详细决策过程"。
+
+### 目标语言支持分层
+
+设置页的目标语言下拉给出十个选项（中英日韩西法德葡俄意），未设置时默认中文。但**十个选项不等于十种同等支持**——支持程度分三层：
+
+| 层级 | 语言 | 实际情况 |
+|------|------|----------|
+| 最厚 | 中文 `zh` | 磁盘 sidecar 形态十几种（`zh-Hans`/`zh-Hant`/`chs`/`cht`/`chi`/`zho` 等历史 tag + `zh-CN`/`zh-TW`/`zh-HK`/`zh-SG` 及其小写变体），另有 SubHD、Zimuku 两个中文专属源 |
+| 正式支持 | 英 `en`、日 `ja`、韩 `ko` | 有可读语言名（发给大模型的指令是 "target subtitle language: Japanese" 而非裸代码），sidecar 标签认二字母与 ISO 639-2 三字母两种形态（如 `.ja.srt` 与 `.jpn.srt`） |
+| 可配但基础 | 西 `es`、法 `fr`、德 `de`、葡 `pt`、俄 `ru`、意 `it` | 走 fallback：给大模型的指令退化成裸代码（"target subtitle language: fr"），sidecar 只认单一形态 `.fr.srt`。能配、能跑，但检测面窄 |
+
+代码依据：`src/agent/languages.ts` 的 `LANGUAGE_NAMES` 与 `LANGUAGE_TAGS` 只覆盖 zh/en/ja/ko 四种，其余语言由 `languageName()` / `tagsForLanguage()` 的 fallback 分支处理。
 
 ### Q: 为什么国产片被跳过
 
@@ -509,6 +538,14 @@ subtitle-scout 不打任何媒体服务器的 API——它直接扫描磁盘、�
 
 ---
 
+## Attribution
+
+This product uses the TMDB API but is not endorsed or certified by TMDB.
+
+本产品使用了 TMDB API，但未经 TMDB 认可或认证。
+
 ## License
 
-MIT
+GPL-3.0-only — see [LICENSE](./LICENSE).
+
+GPL-3.0-only，全文见 [LICENSE](./LICENSE) 文件。

@@ -20,7 +20,7 @@ What should have happened
 ## Environment
 - OS: [e.g. Ubuntu 22.04, macOS 14, Synology DSM 7.2]
 - Docker version: [e.g. 24.0.5]
-- Subtitle Scout version: [e.g. latest, commit hash]
+- Subtitle Scout version: [e.g. 0.1.0, latest, commit hash]
 
 ## Logs
 Paste relevant logs:

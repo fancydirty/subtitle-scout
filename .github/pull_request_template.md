@@ -8,7 +8,9 @@ Brief description of changes
 - [ ] Documentation update
 
 ## Checklist
-- [ ] Tests pass (`npm test`)
+- [ ] Backend tests pass (`npm test`)
+- [ ] Web tests pass (`npm test --prefix web`) — if you touched `web/`
+- [ ] Type check passes (`npm run check`)
 - [ ] Code follows project style
 - [ ] Commit messages are clear
 - [ ] Documentation updated (if needed)

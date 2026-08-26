@@ -17,7 +17,7 @@ Do not include real API keys, passwords, media paths, private hostnames, or pers
 
 ## Deployment safety
 
-- Keep `.env` and all provider credentials outside Git.
+- Keep `.env` outside Git. Provider credentials are stored in the database by the setup wizard, not in environment variables — keep the data directory out of Git too.
 - Bind only the media paths the container needs when the dashboard is exposed to other users.
 - Complete the administrator setup immediately after the first start.
-- Keep `ZIMUKU_ENABLED` and `SUBHD_ENABLED` disabled unless you have reviewed the relevant provider terms and accept the risk.
+- Keep the SubHD and Zimuku toggles (Settings → Providers) disabled unless you have reviewed the relevant provider terms and accept the risk.
