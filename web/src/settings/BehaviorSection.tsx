@@ -24,9 +24,8 @@ import type { Async } from '../api/hooks.js'
 import type { SettingsDTO, SettingsKey } from '../api/types.js'
 import { useT } from '../i18n/useT.js'
 import { localizeErrorValue } from '../lib/errorText.js'
-// 后端共享常量：目标语言选项集的唯一真值（论证见 src/agent/languages.ts 该常量的注释）。
-import { SELECTABLE_TARGET_LANGUAGES } from '../../../src/agent/languages.js'
 import {
+  SELECTABLE_TARGET_LANGUAGES,
   DEFAULT_TARGET_LANGUAGES, DEFAULT_HARDSUB_MODE,
   PLACEHOLDER_TRACE_RETENTION_DAYS, PLACEHOLDER_SCAN_INTERVAL_MINUTES, SCAN_INTERVAL_MS_PER_MINUTE,
 } from './text.js'
@@ -126,9 +125,10 @@ function TargetLanguagesRow({ settings, onUpdated }: RowProps) {
               Astryx 语义；改值时两条路径同拍各调一次 commit，第二次被 inFlightRef 同步闸挡掉）。
 
               C51（2026-08-26）：这十项原是十段手写 JSX，与后端 LANGUAGE_NAMES/LANGUAGE_TAGS 无任何
-              联系——pt 实案就是这么发生的（选项加了、码表没加、全程静默）。改为遍历后端共享常量
-              SELECTABLE_TARGET_LANGUAGES，加语言只需改那一处；data-lang 供对账守卫读取渲染出的实际
-              选项集（BehaviorSection.test.tsx 的 C51 那条），JSX 里偷加一项也会被测出来。 */}
+              联系——pt 实案就是这么发生的（选项加了、码表没加、全程静默）。改为遍历 text.ts 的
+              SELECTABLE_TARGET_LANGUAGES（后端同名常量的副本，为什么是副本见那边注释）；data-lang
+              供对账守卫读取渲染出的实际选项集（BehaviorSection.test.tsx 的 C51 那条），JSX 里偷加
+              一项、或两侧清单分叉，都会被测出来。 */}
           {SELECTABLE_TARGET_LANGUAGES.map((code) => (
             <SelectItem
               key={code}

@@ -6,7 +6,10 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
 import { I18nProvider } from '../i18n/useT.js'
 import { openRadixSelect } from '../testSupport/radix.js'
-import { SELECTABLE_TARGET_LANGUAGES } from '../../../src/agent/languages.js'
+import { SELECTABLE_TARGET_LANGUAGES } from './text.js'
+// 跨界只取类型，不取值：值 import 会断在 docker build（Dockerfile 第 7 行只 COPY web/）。
+// 这是 web/src/api/typeContract.ts 的既有跨界写法，编译期擦除、不进 bundle。
+import type { SELECTABLE_TARGET_LANGUAGES as BE_SELECTABLE } from '../../../src/agent/languages.js'
 import { BehaviorSection } from './BehaviorSection.js'
 import type { Async } from '../api/hooks.js'
 import type { SettingsDTO } from '../api/types.js'
@@ -115,6 +118,28 @@ describe('🔴 C51 BehaviorSection ↔ 后端语言码表对账', () => {
     const rendered = (await screen.findAllByRole('option', { hidden: true }))
       .map((el) => el.getAttribute('data-lang'))
     expect(rendered).toEqual([...SELECTABLE_TARGET_LANGUAGES])
+  })
+
+  // 闭环的第二环：上一条守「渲染 == web 侧清单」，这条守「web 侧清单 == 后端清单」。text.ts 的
+  // 清单是后端 SELECTABLE_TARGET_LANGUAGES 的副本（为什么必须是副本见 text.ts 注释：值 import
+  // 会断在 docker build）。副本就有分叉风险，所以在类型层钉死：两侧元组一旦不同——多一项、少
+  // 一项、顺序不同——下面的双向 extends 赋值就编译失败，npm run check 拦下。
+  it('web 侧清单与后端 SELECTABLE_TARGET_LANGUAGES 完全一致（类型层双向对账）', () => {
+    // 真正的对账发生在编译期：下面两个类型别名双向 extends，元组多一项/少一项/顺序不同都会让
+    // npm run check 失败（已验证：把 web 侧的 'it' 删掉，tsc 在这两行各报一个方向的 TS2322）。
+    // 运行时不构造后端那份值——web 侧代码不能 import 它（会断 docker build），所以这里只对真实
+    // 存在的副本做一次形状断言，把这条测试留在报告里当可见的守卫凭据。
+    type AssertExtends<A extends B, B> = A
+    type Bidirectional = [
+      AssertExtends<typeof SELECTABLE_TARGET_LANGUAGES, typeof BE_SELECTABLE>,
+      AssertExtends<typeof BE_SELECTABLE, typeof SELECTABLE_TARGET_LANGUAGES>,
+    ]
+    const _guard: Bidirectional | undefined = undefined
+    void _guard
+
+    expect([...SELECTABLE_TARGET_LANGUAGES]).toEqual(
+      ['zh', 'en', 'ja', 'ko', 'es', 'fr', 'de', 'pt', 'ru', 'it'],
+    )
   })
 })
 

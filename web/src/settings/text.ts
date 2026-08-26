@@ -9,6 +9,20 @@ import type { RemoveRootResultDTO } from '../api/types.js'
  *  这里只抄这一个事实作占位提示，不编造任何这份代码里没有的数字（DESIGN.md §8）。 */
 export const DEFAULT_TARGET_LANGUAGES = 'zh'
 
+/** 目标语言选项集——后端 src/agent/languages.ts 的 SELECTABLE_TARGET_LANGUAGES 的 web 侧副本。
+ *
+ *  为什么是副本而不是 import：Dockerfile 的 web 构建阶段只 COPY web/（第 7 行），后端 src/ 不在
+ *  那一阶段里，所以 web/ 的**运行时**代码跨界 import ../../../src/ 在生产构建里必然解析失败
+ *  （vitest 从仓库根解析，测试全绿也照样掩盖不住——C51 首版就是这么断在 docker build 上的）。
+ *  web/src/api/typeContract.ts 是被允许的跨界先例，但它清一色 `import type`，编译期擦除、不进
+ *  bundle；值 import 没有这个豁免。
+ *
+ *  所以重复由守卫消除、不由 import 消除：BehaviorSection.test.tsx 的 C51 那条用 `import type`
+ *  取后端常量做类型级对账，两侧一旦分叉就红。加语言仍然只需改后端那一处，然后被测试逼着改这里。 */
+export const SELECTABLE_TARGET_LANGUAGES = [
+  'zh', 'en', 'ja', 'ko', 'es', 'fr', 'de', 'pt', 'ru', 'it',
+] as const
+
 /** hardsub_mode 未设置时的真实运行期默认值——后端 cli/index.ts 的硬事实：未设置/脏值一律
  *  降级 'off'（最保守口径）。PM 审计发现的"spec 写 agent、UI 显示 agent、后端跑 off"三方
  *  打架以**后端为准**对齐（spec 文档为过时记述）。 */
