@@ -2473,6 +2473,95 @@ describe('🔴 R-F15 缺口③ · 换目标语言 → 全库重判（不重新�
   })
 })
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 🔴 C51 · 换目标语言后全库零派发（2026-08-26 生产实锤：zh→pt，446 个文件一条都没进队列，
+// 且**无任何错误日志**）。
+//
+// 判决列（needs_subtitle / skip_reason / sub_status）retarget 清得干干净净，但退避列
+// sub_recheck_at 没人碰——全库 446 行都停在 zh 时代排的「3.5 天后」（attempt=0 streak=0，
+// 是例行复查间隔，不是失败退避）。而 daemonV2 B 档轮转的谓词只看 `sub_recheck_at <= now`
+// （不带 sub_status 过滤，daemonV2.ts:2086），于是判决再干净也进不了取件名单。
+//
+// 同一个坑在装盘路径上已踩过并修好（subtitleScheduler.ts:546-570 的 IMMEDIATE_RECHECK
+// 血书注释 + 生产实测「sub_recheck_at 未来|61、sub_status (null)|61、磁盘实际字幕数 35」）。
+// retarget 路径没补同样的一刀，本组用例就是补它。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('🔴 C51 · 换目标语言 → 失去覆盖的行必须立刻可被 B 档取件（退避不许留在 zh 时代）', () => {
+  const V = '/media/Show/E01.mkv'
+
+  it('🔴 核心：covered→NULL 的行 sub_recheck_at 必须回到「已过期」，否则判决清了也进不了队列', () => {
+    const db = openDb(':memory:')
+    seedRow(db, V, { sub_status: 'covered' })   // seedRow 默认 sub_recheck_at = NOW + 5*DAY（未到点）
+    db.prepare("UPDATE files SET sidecar_langs = '[\"en\"]' WHERE path = ?").run(V)
+
+    retargetForLanguageChange(db, ['ja'], NOW + 1)
+
+    expect(subStatusOf(db, V)).toBeNull()       // 判决列已回退（既有行为）
+    // 真正的缺陷面：退避列。用 B 档自己的谓词做断言，而不是断言某个具体数值——
+    // 测的是「它进不进得了取件名单」这件事本身。
+    const due = db.prepare('SELECT path FROM files WHERE sub_recheck_at <= ?').all(NOW + 1) as Array<{ path: string }>
+    expect(due.map((r) => r.path)).toEqual([V])
+  })
+
+  it('🔴 时钟同源：写进去的值在**注入时钟**下也已过期（不许用 Date.now() 系的相对值）', () => {
+    // subtitleScheduler.ts:546-552 的血书：该列唯一读者 B 档喂的是可注入时钟 deps.now()，
+    // 而写入方拿的是真实 Date.now()，两个时钟不同源。注入 now=1e12（2001 年）时，
+    // `Date.now() - 1` 写出来是未来 25 年 → 谓词永不命中，而单元测试（真实时钟）仍全绿。
+    // 故此处显式用注入时钟 NOW 断言，把那个陷阱钉死。
+    const db = openDb(':memory:')
+    seedRow(db, V, { sub_status: 'covered' })
+    db.prepare("UPDATE files SET sidecar_langs = '[\"en\"]' WHERE path = ?").run(V)
+
+    retargetForLanguageChange(db, ['ja'], NOW + 1)
+
+    const at = recheckAtOf(db, V)
+    expect(at).not.toBeNull()              // D18：这一列不许为 NULL
+    expect(at!).toBeLessThanOrEqual(NOW)   // 在注入时钟下就已经到点
+  })
+
+  it('🔴 范围纪律：判成 covered 的行**不许**被拉——它已覆盖，拉它等于自排一次无用复核', () => {
+    const db = openDb(':memory:')
+    seedRow(db, V, { sub_status: null })
+    db.prepare("UPDATE files SET sidecar_langs = '[\"en\"]' WHERE path = ?").run(V)
+
+    retargetForLanguageChange(db, ['en'], NOW + 1)
+
+    expect(subStatusOf(db, V)).toBe('covered')
+    expect(recheckAtOf(db, V)).toBe(NOW + 5 * DAY)   // 原值原样，一列不动
+  })
+
+  it('🔴 sidecar_langs IS NULL 的存量行：判决不动（R24），但退避必须拉——否则它自愈无门', () => {
+    // 这批行是生产 446 个零派发的**主体**：sidecar_langs 为 NULL = 从未被 B 档观察过语言，
+    // 于是 retarget 拿不到证据、按 R24 一列不动（既有红线，本用例不动它）。
+    // 但它同时被停在未来的 sub_recheck_at 挡在 B 档之外 → 观察不了 → 永远拿不到证据。
+    // 死锁的唯一出口就是把退避拉回到点，让 B 档去 readdir 一次。
+    const db = openDb(':memory:')
+    seedRow(db, V, { sub_status: 'covered' })   // sidecar_langs 保持 NULL
+
+    retargetForLanguageChange(db, ['ja'], NOW + 1)
+
+    expect(subStatusOf(db, V)).toBe('covered')  // R24 红线：判决列一列不动
+    expect(recheckAtOf(db, V)!).toBeLessThanOrEqual(NOW)
+  })
+
+  it('🔴 计数：rechecked 与既有三个计数同款回报，供调用方/未来可观测性消费', () => {
+    const db = openDb(':memory:')
+    const A = '/media/Show/E01.mkv'
+    const B = '/media/Show/E02.mkv'
+    const C = '/media/Show/E03.mkv'
+    seedRow(db, A, { sub_status: 'covered' })   // en 在盘、目标 ja → 失去覆盖，要拉
+    db.prepare("UPDATE files SET sidecar_langs = '[\"en\"]' WHERE path = ?").run(A)
+    seedRow(db, B, { sub_status: null })        // ja 在盘 → 判成 covered，不拉
+    db.prepare("UPDATE files SET sidecar_langs = '[\"ja\"]' WHERE path = ?").run(B)
+    seedRow(db, C, { sub_status: 'covered' })   // sidecar_langs NULL → 判决不动，但要拉
+
+    const r = retargetForLanguageChange(db, ['ja'], NOW + 1)
+
+    expect(r.rechecked).toBe(2)                 // A + C
+    expect(recheckAtOf(db, B)).toBe(NOW + 5 * DAY)
+  })
+})
+
 describe('ScoutDaemonV2.scanOnce · D12/D18 A 档：新增/指纹变化全量检测', () => {
   const V = '/media/Show/E01.mkv'
 

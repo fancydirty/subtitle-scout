@@ -24,6 +24,8 @@ import type { Async } from '../api/hooks.js'
 import type { SettingsDTO, SettingsKey } from '../api/types.js'
 import { useT } from '../i18n/useT.js'
 import { localizeErrorValue } from '../lib/errorText.js'
+// 后端共享常量：目标语言选项集的唯一真值（论证见 src/agent/languages.ts 该常量的注释）。
+import { SELECTABLE_TARGET_LANGUAGES } from '../../../src/agent/languages.js'
 import {
   DEFAULT_TARGET_LANGUAGES, DEFAULT_HARDSUB_MODE,
   PLACEHOLDER_TRACE_RETENTION_DAYS, PLACEHOLDER_SCAN_INTERVAL_MINUTES, SCAN_INTERVAL_MS_PER_MINUTE,
@@ -121,37 +123,22 @@ function TargetLanguagesRow({ settings, onUpdated }: RowProps) {
         <SelectContent>
           {/* 同值重选提交：每个 SelectItem 额外挂 onClick 提交（对齐 HardsubModeRow 的既有模式：
               Radix Select 的 onValueChange 对同值重选去重不发，鼠标提交走 item onClick 对齐
-              Astryx 语义；改值时两条路径同拍各调一次 commit，第二次被 inFlightRef 同步闸挡掉）。 */}
-          <SelectItem value="zh" onClick={() => void commit('target_languages', 'zh')}>
-            {t('settings_target_language_zh')}
-          </SelectItem>
-          <SelectItem value="en" onClick={() => void commit('target_languages', 'en')}>
-            {t('settings_target_language_en')}
-          </SelectItem>
-          <SelectItem value="ja" onClick={() => void commit('target_languages', 'ja')}>
-            {t('settings_target_language_ja')}
-          </SelectItem>
-          <SelectItem value="ko" onClick={() => void commit('target_languages', 'ko')}>
-            {t('settings_target_language_ko')}
-          </SelectItem>
-          <SelectItem value="es" onClick={() => void commit('target_languages', 'es')}>
-            {t('settings_target_language_es')}
-          </SelectItem>
-          <SelectItem value="fr" onClick={() => void commit('target_languages', 'fr')}>
-            {t('settings_target_language_fr')}
-          </SelectItem>
-          <SelectItem value="de" onClick={() => void commit('target_languages', 'de')}>
-            {t('settings_target_language_de')}
-          </SelectItem>
-          <SelectItem value="pt" onClick={() => void commit('target_languages', 'pt')}>
-            {t('settings_target_language_pt')}
-          </SelectItem>
-          <SelectItem value="ru" onClick={() => void commit('target_languages', 'ru')}>
-            {t('settings_target_language_ru')}
-          </SelectItem>
-          <SelectItem value="it" onClick={() => void commit('target_languages', 'it')}>
-            {t('settings_target_language_it')}
-          </SelectItem>
+              Astryx 语义；改值时两条路径同拍各调一次 commit，第二次被 inFlightRef 同步闸挡掉）。
+
+              C51（2026-08-26）：这十项原是十段手写 JSX，与后端 LANGUAGE_NAMES/LANGUAGE_TAGS 无任何
+              联系——pt 实案就是这么发生的（选项加了、码表没加、全程静默）。改为遍历后端共享常量
+              SELECTABLE_TARGET_LANGUAGES，加语言只需改那一处；data-lang 供对账守卫读取渲染出的实际
+              选项集（BehaviorSection.test.tsx 的 C51 那条），JSX 里偷加一项也会被测出来。 */}
+          {SELECTABLE_TARGET_LANGUAGES.map((code) => (
+            <SelectItem
+              key={code}
+              value={code}
+              data-lang={code}
+              onClick={() => void commit('target_languages', code)}
+            >
+              {t(`settings_target_language_${code}`)}
+            </SelectItem>
+          ))}
         </SelectContent>
       </Select>
       <span className="text-[11px] leading-4 text-muted-foreground">

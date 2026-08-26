@@ -6,6 +6,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
 import { I18nProvider } from '../i18n/useT.js'
 import { openRadixSelect } from '../testSupport/radix.js'
+import { SELECTABLE_TARGET_LANGUAGES } from '../../../src/agent/languages.js'
 import { BehaviorSection } from './BehaviorSection.js'
 import type { Async } from '../api/hooks.js'
 import type { SettingsDTO } from '../api/types.js'
@@ -98,6 +99,22 @@ describe('BehaviorSection：null 值默认占位', () => {
   it('ai_translate 行已迁至 TranslateSection（Wave 3），BehaviorSection 不再渲染该开关', () => {
     renderSection(asyncOf(NULL_SETTINGS))
     expect(screen.queryByRole('switch', { name: 'AI subtitle translation' })).not.toBeInTheDocument()
+  })
+})
+
+// 🔴 C51 对账守卫（前端半边）：渲染出来的语言选项集必须**逐一等于**后端共享常量
+// SELECTABLE_TARGET_LANGUAGES。后端 languages.test.ts 那半边守「常量里的每个码都有名字与
+// 磁盘标签」，这半边守「设置页没有偷偷多出/少掉一个常量不知道的选项」——两边合起来才闭环。
+// 少了这半边，将来有人直接往 JSX 里加第 11 个 <SelectItem> 仍然静默（正是 2026-08-26 pt 实案
+// 的发生方式）。
+describe('🔴 C51 BehaviorSection ↔ 后端语言码表对账', () => {
+  it('渲染的目标语言选项集逐一等于 SELECTABLE_TARGET_LANGUAGES（不许 JSX 里偷加选项）', async () => {
+    renderSection(asyncOf(NULL_SETTINGS))
+    await openRadixSelect(screen.getByRole('combobox', { name: 'Target subtitle language' }))
+
+    const rendered = (await screen.findAllByRole('option', { hidden: true }))
+      .map((el) => el.getAttribute('data-lang'))
+    expect(rendered).toEqual([...SELECTABLE_TARGET_LANGUAGES])
   })
 })
 

@@ -1,5 +1,47 @@
 import { describe, it, expect } from 'vitest'
-import { languageName, tagsForLanguage, langOf } from './languages.js'
+import {
+  languageName, tagsForLanguage, langOf,
+  SELECTABLE_TARGET_LANGUAGES, LANGUAGE_NAMES, LANGUAGE_TAGS,
+} from './languages.js'
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🔴 C51 对账守卫 · 设置页选项集 ↔ 本文件两张码表
+//
+// 病根（opensubtitlesAdapter.ts:52-65 已点名，此处补上真正闭环的那一刀）：
+// 「设置页选项集与码表之间没有对账机制」。2026-08-26 zh→pt 实案里，设置页早就能选 pt，
+// 而 LANGUAGE_NAMES / LANGUAGE_TAGS 只有 zh/en/ja/ko 四条——两张表都**静默降级**
+// （languageName('pt') 返回 'pt' 喂给 worker prompt；tagsForLanguage('pt') 只探 `.pt.srt`，
+// 不认 por / pt-BR / pt-PT），于是既不报错也找不到字幕。
+//
+// 守卫的形状要求（用户裁决）：选项集必须是**共享常量**，本测试 import 它而不是重抄一份
+// 十元素字面量——本仓已因「留两份漂移实现」栽过（C30 两处标签集各漏一半），再抄一份
+// 只会让守卫守住抄本、守不住真值。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('🔴 C51 language codebook reconciliation guard', () => {
+  it('every selectable target language has a human-readable name (worker prompt 不许收到裸码)', () => {
+    for (const code of SELECTABLE_TARGET_LANGUAGES) {
+      expect(Object.keys(LANGUAGE_NAMES), `'${code}' is selectable in settings but missing from LANGUAGE_NAMES`)
+        .toContain(code)
+      expect(languageName(code)).not.toBe(code)
+    }
+  })
+
+  it('every selectable target language has on-disk sidecar tags (磁盘探测不许只认裸 2 字母码)', () => {
+    for (const code of SELECTABLE_TARGET_LANGUAGES) {
+      expect(Object.keys(LANGUAGE_TAGS), `'${code}' is selectable in settings but missing from LANGUAGE_TAGS`)
+        .toContain(code)
+      // 只有裸码 = 落进 tagsForLanguage 的 fallback，等于没配：ISO 639-2 三字母形态探不到。
+      expect(tagsForLanguage(code).length, `'${code}' only maps to its bare code — add its 3-letter form`)
+        .toBeGreaterThan(1)
+    }
+  })
+
+  it('两张码表不许有设置页选不到的孤儿键（反向对账，防码表堆积死条目）', () => {
+    const selectable = new Set<string>(SELECTABLE_TARGET_LANGUAGES)
+    for (const code of Object.keys(LANGUAGE_NAMES)) expect(selectable, `LANGUAGE_NAMES has orphan '${code}'`).toContain(code)
+    for (const code of Object.keys(LANGUAGE_TAGS)) expect(selectable, `LANGUAGE_TAGS has orphan '${code}'`).toContain(code)
+  })
+})
 
 describe('languageName', () => {
   it('resolves zh to Chinese', () => {
@@ -34,8 +76,11 @@ describe('tagsForLanguage', () => {
     expect(tagsForLanguage('en')).toEqual(['en', 'eng'])
   })
 
+  // C51（2026-08-26）：这条原来拿 'fr' 当「未登记语言」的样本，而 fr 从来就是设置页选项之一
+  // ——码表补齐后它当然不再走 fallback。改用 'xx'（同上面 languageName fallback 那条的口径）：
+  // 保险丝要挂在真正未登记的码上，否则「补齐一个设置页语言」这个正确动作会伪装成回归。
   it('falls back to [code] for an unregistered language', () => {
-    expect(tagsForLanguage('fr')).toEqual(['fr'])
+    expect(tagsForLanguage('xx')).toEqual(['xx'])
   })
 })
 

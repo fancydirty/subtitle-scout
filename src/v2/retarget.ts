@@ -38,10 +38,35 @@
 //     这条守卫与 observeSubtitle 那条逐字同源（`WHERE sub_status='covered'`）：扫描都没有被
 //     授权把停牌写回 NULL，一次配置变更更没有。
 //
-//  sidecar_langs IS NULL 的行（存量行 / 还没被观察过 / FUSE 抖动没读到）**一列都不动**：
+//  sidecar_langs IS NULL 的行（存量行 / 还没被观察过 / FUSE 抖动没读到）**判决列一列都不动**：
 //    没有任何新证据可据以重导，动它就是拿信息缺失当结论。它们会在下一轮扫描被观察到
 //    （A 档新增/指纹变化 + B 档 7 天轮转），届时 observeSubtitle 按新的 targetLanguage
 //    写出正确的 sub_status——通路是通的，只是慢一轮，这正是"证据不全时不臆断"的正确代价。
+//
+// ── C51（2026-08-26 生产实锤）：判决清干净了，但退避列把整库关在门外 ─────────────
+//  实案：用户把 target_languages 从 zh 改成 pt，446 个文件**零派发，且无任何错误日志**。
+//  上面三段论证的判决列全部正确执行了，卡住的是本模块当时完全没碰的第四列 sub_recheck_at：
+//  446 行都停在 zh 时代排的「3.5 天后」（attempt=0 streak=0 —— 是例行复查间隔，不是失败退避），
+//  而 B 档轮转的取件谓词只有 `sub_recheck_at <= now`（daemonV2.ts:2086，注释明写不带
+//  sub_status 过滤）。判决列再干净，行也进不了取件名单。
+//
+//  同一个坑在装盘路径上已踩过并修好（subtitleScheduler.ts:546-570 的 IMMEDIATE_RECHECK 血书 +
+//  生产实测「sub_recheck_at 未来|61、sub_status (null)|61、磁盘实际字幕数 35」）。取值口径**照抄
+//  它**：写字面 0，不写 now / now-1。理由是那段血书已论证过的时钟不同源——本模块的 now 是调用方
+//  注入的，B 档谓词喂的是 deps.now()，两者可以不同源；0 在任何时钟源下都已过期、非 NULL（满足
+//  D18），且被 B 档观察完就自动推回 now + SUB_RECHECK_INTERVAL_MS（daemonV2.ts:2192），自清除。
+//
+//  拉谁、不拉谁（范围纪律，与上面的重导方向一一对应）：
+//   · 方向② covered → NULL 的行：**拉**。它刚失去覆盖，正是要重新去找字幕的那批。
+//   · 方向① 判成 covered 的行：**不拉**。它已覆盖，拉它等于给自己排一次无用的全库复核——
+//     换语言本就不需要重新扫盘（本模块存在的全部价值），别在退避列上把这个价值还回去。
+//   · sidecar_langs IS NULL 且 sub_status 有值的行：**拉**，而这批正是生产 446 行的主体。
+//     这与上一段"一列都不动"不矛盾——不动的是**判决列**（我们确实没有证据去重导它），拉的是
+//     **取证时机**。这批行的处境是死锁：sub_status 带着旧语言口径的结论把它挡在字幕工作台外，
+//     而唯一能推翻该结论的 observeSubtitle 只能由 B 档触发，B 档又被停在未来的 sub_recheck_at
+//     挡住 → 它永远等不到那一轮观察。拉退避不是替扫描下结论，恰恰相反：是把结论权交回扫描。
+//   · sidecar_langs IS NULL 且 sub_status 也是 NULL 的行：**不拉**。它身上没有任何语言相关的
+//     陈旧排除项，判决列清空后就已经在 judge → 字幕工作台的正常通路上，无需 B 档介入。
 import type { ScoutDb } from './db.js'
 import { tagsForLanguage } from '../agent/languages.js'
 import { languageForTag } from '../files/sidecar.js'
@@ -53,6 +78,8 @@ export interface RetargetResult {
   covered: number
   /** sub_status 从 covered 回退成 NULL 的行数（旧目标语言的字幕不算数了）。 */
   uncovered: number
+  /** sub_recheck_at 被拉回「立即到点」的行数（C51：不拉就进不了 B 档取件名单）。 */
+  rechecked: number
 }
 
 /** 一组目标语言在 sidecar_langs 这一列的**记账值域**上的等价集合。
@@ -93,7 +120,7 @@ export function retargetForLanguageChange(
         .map((c) => c.name))
     } catch { return new Set<string>() }
   })()
-  if (!cols.has('needs_subtitle')) return { rejudged: 0, covered: 0, uncovered: 0 }
+  if (!cols.has('needs_subtitle')) return { rejudged: 0, covered: 0, uncovered: 0, rechecked: 0 }
 
   return db.transaction((): RetargetResult => {
     // ① 判决列清空 → 同一事务里的 judgePendingFiles 按新语言重算（谓词 `needs_subtitle IS NULL`）。
@@ -105,7 +132,24 @@ export function retargetForLanguageChange(
       + (cols.has('skip_reason') ? ` OR skip_reason IS NOT NULL` : ''),
     ).run(now).changes
 
-    if (!cols.has('sidecar_langs')) return { rejudged, covered: 0, uncovered: 0 }
+    // 取值口径照抄 subtitleScheduler.ts:553 的 IMMEDIATE_RECHECK（含它选 0 而非 now-1 的理由，
+    // 见头注释 C51 段）。写在事务内、与 sub_status 的重导同拍——两者必须同生共死：只落了
+    // sub_status=NULL 却没落退避，就退回本次 bug 的原状。
+    const IMMEDIATE_RECHECK = 0
+    // prepare 必须懒到 canRecheck 之后：语句文本里带 sub_recheck_at，缺列的老库上 prepare
+    // 本身就抛（不是 run 才抛），先建后判等于把这条早退守卫作废。
+    const canRecheck = cols.has('sub_recheck_at')
+    const pullRecheck = canRecheck
+      ? db.prepare('UPDATE files SET sub_recheck_at = ?, updated_at = ? WHERE path = ?')
+      : null
+    let nowRechecked = 0
+    const pull = (path: string): void => {
+      if (!pullRecheck) return
+      pullRecheck.run(IMMEDIATE_RECHECK, now, path)
+      nowRechecked++
+    }
+
+    if (!cols.has('sidecar_langs')) return { rejudged, covered: 0, uncovered: 0, rechecked: 0 }
 
     // ② sub_status 重导。**只看已观察到语言的行**（sidecar_langs IS NOT NULL）——
     //    NULL 的行没有新证据，一列不动（见头注释）。
@@ -129,8 +173,19 @@ export function retargetForLanguageChange(
         if (r.sub_status !== 'covered') { setCovered.run(now, r.path); nowCovered++ }
       } else if (r.sub_status === 'covered') {
         clearCovered.run(now, r.path); nowUncovered++
+        pull(r.path)
       }
     }
-    return { rejudged, covered: nowCovered, uncovered: nowUncovered }
+
+    // ③ 证据缺失 + 带着旧语言口径结论的行：判决列碰不了（无证据），但必须把取证时机拉回来，
+    //    否则 sub_status 挡住工作台、未来的退避挡住 B 档 → 死锁（生产 446 行的主体，见头注释）。
+    if (canRecheck) {
+      const stranded = db.prepare(
+        'SELECT path FROM files WHERE sidecar_langs IS NULL AND sub_status IS NOT NULL',
+      ).all() as Array<{ path: string }>
+      for (const r of stranded) pull(r.path)
+    }
+
+    return { rejudged, covered: nowCovered, uncovered: nowUncovered, rechecked: nowRechecked }
   })()
 }

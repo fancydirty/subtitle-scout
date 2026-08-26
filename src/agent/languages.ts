@@ -1,12 +1,34 @@
+/** 设置页目标语言下拉的**唯一真值**（web/src/settings/BehaviorSection.tsx 按此顺序渲染）。
+ *
+ *  为什么这个常量住在后端、由前端 import，而不是反过来：本文件的两张码表（LANGUAGE_NAMES /
+ *  LANGUAGE_TAGS）是消费方，二者都必须逐一覆盖它；前端只有一个渲染方。让真值靠近约束最强的
+ *  一侧，对账守卫才能从两头 import 同一份东西。
+ *
+ *  C51（2026-08-26 实案）：设置页早就能选 pt，而下面两张表只有 zh/en/ja/ko，两处都**静默降级**
+ *  —— languageName('pt') 返回裸码喂给 worker prompt，tagsForLanguage('pt') 只探 `.pt.srt`。
+ *  既不报错也找不到字幕。opensubtitlesAdapter.ts:52-65 已点名病根是「设置页选项集与码表之间没有
+ *  对账机制」，本常量 + languages.test.ts / BehaviorSection.test.tsx 的双向守卫是那一刀。
+ *  往这里加第 11 个语言而不补两张表 → 测试红，不再是运行时空集。 */
+export const SELECTABLE_TARGET_LANGUAGES = [
+  'zh', 'en', 'ja', 'ko', 'es', 'fr', 'de', 'pt', 'ru', 'it',
+] as const
+
 /** Tiny BCP-47 primary-language-code → human-readable name lookup, used to interpolate the
  *  find-subtitle worker's prompt with a readable target language (findSubtitleWorker.ts) instead
- *  of a bare code. Deliberately NOT exhaustive — unknown codes fall back to the code itself, which
- *  is still a legible instruction to the model (e.g. "target subtitle language: fr"). */
-const LANGUAGE_NAMES: Record<string, string> = {
+ *  of a bare code. Must cover SELECTABLE_TARGET_LANGUAGES exhaustively (guarded by
+ *  languages.test.ts) — the fallback below stays only for non-selectable codes reaching it from
+ *  origin-language signals, not as a license to leave a settings option unnamed. */
+export const LANGUAGE_NAMES: Record<string, string> = {
   zh: 'Chinese',
   en: 'English',
   ja: 'Japanese',
   ko: 'Korean',
+  es: 'Spanish',
+  fr: 'French',
+  de: 'German',
+  pt: 'Portuguese',
+  ru: 'Russian',
+  it: 'Italian',
 }
 
 export function languageName(code: string): string {
@@ -34,12 +56,25 @@ const CHINESE_BCP47_REGION_TAGS = ['zh-CN', 'zh-cn', 'zh-TW', 'zh-tw', 'zh-HK', 
  *  module was deleted in the old-pipeline retirement). Deliberately NOT an exhaustive ISO 639-2
  *  registry — just a cheap table for the languages already named in LANGUAGE_NAMES above, plus
  *  their common ISO 639-2/T 3-letter form. Unknown codes fall back to [code], which is still
- *  correct for the common case of a sidecar tagged with the bare 2-letter code. */
-const LANGUAGE_TAGS: Record<string, string[]> = {
+ *  correct for the common case of a sidecar tagged with the bare 2-letter code — but a code that is
+ *  selectable in settings must never rely on that fallback (guarded by languages.test.ts): a bare
+ *  2-letter probe alone misses every `.por.srt` / `.spa.srt` an existing library already has.
+ *
+ *  pt 额外枚举 pt-BR/pt-PT 两个地区形态（含小写）：同 zh 的 CHINESE_BCP47_REGION_TAGS 论证——
+ *  探测机制是「构造 `<base>.<tag><ext>` 后 fileExists」，大小写敏感 FS 上不存在机制性不分大小写。
+ *  巴西/欧洲葡语在真实字幕站是分开发布的（OS 码表里也根本没有裸 'pt'，见
+ *  opensubtitlesAdapter.ts:44-50 的 OS_LANGUAGE_MAP），落盘形态因此以地区码为主。 */
+export const LANGUAGE_TAGS: Record<string, string[]> = {
   zh: [...CHINESE_SIDECAR_TAGS, ...CHINESE_BCP47_REGION_TAGS],
   en: ['en', 'eng'],
   ja: ['ja', 'jpn'],
   ko: ['ko', 'kor'],
+  es: ['es', 'spa'],
+  fr: ['fr', 'fra', 'fre'],
+  de: ['de', 'deu', 'ger'],
+  pt: ['pt', 'por', 'pt-BR', 'pt-br', 'pt-PT', 'pt-pt'],
+  ru: ['ru', 'rus'],
+  it: ['it', 'ita'],
 }
 
 export function tagsForLanguage(code: string): string[] {
