@@ -9,8 +9,11 @@
 // 查询手法说明：侧栏 tab 项渲染成 <a href="#/xxx">（SideNavItem 传了 href），跟顶栏面包屑
 // 的同名当前项文字（纯 <span>）会重名——统一用 getByRole('link', {name}) 定位侧栏项，
 // 避免 getByText 因为"多处同名"报错。
+// 2026-08-27 追加：BottomTabBar 上线后整壳里同名导航链接有**两份**（侧栏 + 底部栏；jsdom
+// 无媒体查询，断点互斥由 shell/nav.contract.test.tsx 钉类名验）——涉及导航链接的断言一律
+// 先按 aria-label 定位 Side navigation 再 within 查询。
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, cleanup, within } from '@testing-library/react'
 import { App } from './App.js'
 
 function requestPath(input: RequestInfo | URL): string {
@@ -98,10 +101,11 @@ describe('App 外壳冒烟', () => {
     vi.stubGlobal('fetch', mockFetchRouted(standardHandlers()))
     render(<App />)
 
-    expect(await screen.findByRole('link', { name: 'Activity' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Notifications' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Media' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Settings' })).toBeInTheDocument()
+    const nav = await screen.findByRole('navigation', { name: 'Side navigation' })
+    expect(within(nav).getByRole('link', { name: 'Activity' })).toBeInTheDocument()
+    expect(within(nav).getByRole('link', { name: 'Notifications' })).toBeInTheDocument()
+    expect(within(nav).getByRole('link', { name: 'Media' })).toBeInTheDocument()
+    expect(within(nav).getByRole('link', { name: 'Settings' })).toBeInTheDocument()
     // 甄别项已下架（spec §5）：断言它不在场，这就是本轮的回归锁。
     expect(screen.queryByRole('link', { name: /^Triage/ })).not.toBeInTheDocument()
     // Task ⑦：旧两项已从侧栏摘掉（路由仍在，见 shell/nav.contract.test.tsx）。
@@ -115,21 +119,21 @@ describe('App 外壳冒烟', () => {
 
     // Task ⑦：未识别 hash 的落点从 library 改成 activity（library 已不在侧栏，
     // 继续落它会让用户停在一个没有任何高亮项的页面上）。
-    await screen.findByRole('link', { name: 'Activity' })
+    const nav = await screen.findByRole('navigation', { name: 'Side navigation' })
     // Task ⑨：活动页已填肉——判据从"施工中标记"换成真页面的标志物（两个 tab 的 tablist）。
     // ⚠️ 只把这一行删掉是不行的：那样默认落地页渲染成什么都不会有人管。
     expect(await screen.findByRole('tablist', { name: 'Workbenches' })).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('link', { name: 'Notifications' }))
+    fireEvent.click(within(nav).getByRole('link', { name: 'Notifications' }))
     await waitFor(() => expect(location.hash).toBe('#/notifications'))
 
-    fireEvent.click(screen.getByRole('link', { name: 'Media' }))
+    fireEvent.click(within(nav).getByRole('link', { name: 'Media' }))
     await waitFor(() => expect(location.hash).toBe('#/media'))
 
     // 原本这里还有一段"点 Triage → hash 变 #/triage → 待甄别箱空态"，随甄别页下架移除
     // （spec §5）；重启用时按上面的手法恢复。
 
-    fireEvent.click(screen.getByRole('link', { name: 'Settings' }))
+    fireEvent.click(within(nav).getByRole('link', { name: 'Settings' }))
     await waitFor(() => expect(location.hash).toBe('#/settings'))
     // 设置是真页面，不该出现占位标记
     await waitFor(() => expect(screen.queryByText('Under construction')).not.toBeInTheDocument())
@@ -141,10 +145,11 @@ describe('App 外壳冒烟', () => {
     ]))
     render(<App />)
 
-    expect(await screen.findByRole('link', { name: 'Activity' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Notifications' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Media' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Settings' })).toBeInTheDocument()
+    const nav = await screen.findByRole('navigation', { name: 'Side navigation' })
+    expect(within(nav).getByRole('link', { name: 'Activity' })).toBeInTheDocument()
+    expect(within(nav).getByRole('link', { name: 'Notifications' })).toBeInTheDocument()
+    expect(within(nav).getByRole('link', { name: 'Media' })).toBeInTheDocument()
+    expect(within(nav).getByRole('link', { name: 'Settings' })).toBeInTheDocument()
   })
 })
 
@@ -172,7 +177,8 @@ describe('App 鉴权门（A2 Task 11）', () => {
   it('authenticated:true → 渲染 Shell', async () => {
     vi.stubGlobal('fetch', mockFetchRouted(standardHandlers()))
     render(<App />)
-    expect(await screen.findByRole('link', { name: 'Activity' })).toBeInTheDocument()
+    const nav = await screen.findByRole('navigation', { name: 'Side navigation' })
+    expect(within(nav).getByRole('link', { name: 'Activity' })).toBeInTheDocument()
   })
 
   it('auth/status 探测失败（服务器不可达）→ 连接错误屏 + 重试，不误导为 LoginPage、不白屏', async () => {
@@ -240,8 +246,8 @@ describe('App 外壳无障碍契约（Task 28）', () => {
   it('skip-to-content 链接指向 #scout-app-main，role=main 主区同 id 在场', async () => {
     vi.stubGlobal('fetch', mockFetchRouted(standardHandlers()))
     render(<App />)
-    // 等 Shell 落地（侧栏链接出现）再断言，避开 auth/status 探测的空拍。
-    await screen.findByRole('link', { name: 'Activity' })
+    // 等 Shell 落地（侧栏出现）再断言，避开 auth/status 探测的空拍。
+    await screen.findByRole('navigation', { name: 'Side navigation' })
     expect(screen.getByRole('link', { name: /skip to content/i })).toHaveAttribute(
       'href',
       '#scout-app-main',

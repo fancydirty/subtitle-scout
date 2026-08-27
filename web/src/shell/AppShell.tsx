@@ -3,6 +3,7 @@
 import { useMediaLibraryDetail } from '../api/hooks.js'
 import { useShellRoute } from './route.js'
 import { Sidebar } from './Sidebar.js'
+import { BottomTabBar } from './BottomTabBar.js'
 import { Topbar } from './Topbar.js'
 import { EngineBanner } from './EngineBanner.js'
 import { PageBoundary } from './PageBoundary.js'
@@ -58,8 +59,12 @@ function ShellBody() {
             分页 max-width 收口（决策 A）在各页顶层容器上，main 只保滚动容器职责不动。
             ⚠️ Task ⑪：原先这里是 `route.tab === 'library' ? 'p-0' : 'p-4'` 条件类——
             p-0 是旧海报墙要的全宽出血。旧页面下架后条件恒假，连同 `cn()` 的 import
-            一起删掉（留着就是一条永不成立的分支 + 一个只为它存在的工具函数调用）。 */}
-        <main id="scout-app-main" role="main" className="flex-1 overflow-y-auto p-6 xl:p-8">
+            一起删掉（留着就是一条永不成立的分支 + 一个只为它存在的工具函数调用）。
+            max-md 的 pb 追加值：<768px 给 fixed 定位的 BottomTabBar 让位——56px 栏高
+            + 16px 呼吸 + iOS 安全区；≥md 底部栏不存在，回落 p-6/p-8 不受影响。
+            ⚠️ 注释里不要原样写出带方括号的类名字面——Tailwind v4 纯文本扫描会把它
+            当 utility 编进产物（实测中过一次）。 */}
+        <main id="scout-app-main" role="main" className="flex-1 overflow-y-auto p-6 xl:p-8 max-md:pb-[calc(4.5rem+env(safe-area-inset-bottom))]">
           {/* 引擎关闭 banner 压所有主屏顶（spec A §5.6）。 */}
           <EngineBanner />
           {/* ── 导航四页，每项一条分支 ─────────────────────────────────────
@@ -106,6 +111,9 @@ function ShellBody() {
           )}
         </main>
       </div>
+      {/* <768px 的导航形态（md:hidden，fixed 贴底）；≥md 由上面的 Sidebar 接管，
+          二者靠断点互斥、永不同屏。main 的 max-md 底部 padding 为它让位。 */}
+      <BottomTabBar tab={route.tab} />
     </div>
   )
 }

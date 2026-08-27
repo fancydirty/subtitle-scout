@@ -29,6 +29,7 @@ export const en = {
 
   // 外壳无障碍名与状态词（审计 P0-4/P1-0）。
   a11y_side_nav: 'Side navigation',
+  a11y_bottom_nav: 'Bottom navigation',
   a11y_breadcrumb: 'Breadcrumb',
   a11y_dialog_close: 'Close',
   a11y_skip_to_content: 'Skip to content',

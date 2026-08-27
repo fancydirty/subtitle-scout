@@ -114,11 +114,10 @@ describe('Shell 接线：#/media 与 #/media/:workId 渲染的是两个不同的
   it('侧栏高亮仍是 media（二级路由不改变当前 tab）', async () => {
     location.hash = '#/media/tmdb%3A1396'
     renderShell()
-    // ⚠️ 页面上有两个 navigation（Topbar 的面包屑 aria-label="Breadcrumb" + 侧栏）。
-    // getByRole('navigation') 会因多重命中而抛——按侧栏那个链接直接查更稳，
-    // 且判据本身就是"那个链接带 aria-current"。
-    const link = await screen.findByRole('link', { name: en.nav_media })
-    expect(link).toHaveAttribute('aria-current', 'page')
+    // ⚠️ 2026-08-27 起同名导航链接有两份（侧栏 + BottomTabBar；jsdom 无媒体查询，断点
+    // 互斥由 nav.contract.test.tsx 钉类名验）——按 aria-label 先定位侧栏再查链接。
+    const nav = await screen.findByRole('navigation', { name: en.a11y_side_nav })
+    expect(within(nav).getByRole('link', { name: en.nav_media })).toHaveAttribute('aria-current', 'page')
   })
 
   it('详情页的返回链接指回 #/media（不是旧的 #/library）', async () => {

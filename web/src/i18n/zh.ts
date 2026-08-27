@@ -32,6 +32,7 @@ export const zh = {
 
   // 外壳无障碍名与状态词（审计 P0-4/P1-0）。
   a11y_side_nav: '侧边导航',
+  a11y_bottom_nav: '底部导航',
   a11y_breadcrumb: '面包屑',
   a11y_dialog_close: '关闭',
   a11y_skip_to_content: '跳到主要内容',

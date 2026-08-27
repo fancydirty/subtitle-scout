@@ -15,9 +15,7 @@ import { useT } from '../i18n/useT.js'
 import { TABS } from './tabs.js'
 import type { Tab } from './route.js'
 import { api, UNAUTHORIZED_EVENT } from '../api/client.js'
-import {
-  SettingsIcon, ActivityIcon, NotificationsIcon, MediaIcon,
-} from './NavIcons.js'
+import { TAB_ICONS } from './NavIcons.js'
 
 /** 登出：POST /auth/logout 清 cookie，无论成败都派发 scout:unauthorized——AuthGate 据此重探
  *  auth/status（cookie 已清 → authenticated:false → LoginPage）。finally 保证服务器宕了也切回
@@ -32,17 +30,8 @@ interface Props {
   tab: Tab
 }
 
-/** tab → 图标组件映射（2026-08-06：极简点线风格）。
- *  **`Record<Tab, …>` 是穷尽的**——少一个键 TS 就报错，多一个键也报错（多余属性）。
- *  Task ⑪ 起 `Tab` 就是导航四项（旧 library/workflow 随页面移入 `_legacy/`，它们的
- *  两个键与 import 在本次一并删除；`NavIcons.tsx` 里的 LibraryIcon/WorkflowIcon 组件
- *  本体保留——同 TriageIcon 的既有处置，图标是无依赖的纯 SVG，重启用时不必重画）。 */
-const TAB_ICONS: Record<Tab, React.ComponentType> = {
-  activity: ActivityIcon,
-  notifications: NotificationsIcon,
-  media: MediaIcon,
-  settings: SettingsIcon,
-}
+// TAB_ICONS（tab → 图标映射）2026-08-27 起移居 NavIcons.tsx 共享——BottomTabBar 成为
+// 第二个消费者；Record<Tab,…> 穷尽性论证随定义一起搬过去，本处不重抄。
 
 export function Sidebar({ tab }: Props) {
   const { t } = useT()

@@ -2,6 +2,7 @@
 // 每个图标 18×18 视口，笔画 1.8px，圆点半径 1.5px，继承 currentColor 以跟随选中态色变。
 // 设计原则：最少笔画 + 最多留白，呼应 DESIGN.md §3 简洁主义。
 import type { SVGProps } from 'react'
+import type { Tab } from './route.js'
 
 type IconProps = SVGProps<SVGSVGElement>
 
@@ -154,4 +155,13 @@ export function MediaIcon(props: IconProps) {
       />
     </svg>
   )
+}
+
+/** tab → 图标映射。原在 Sidebar.tsx；BottomTabBar 成为第二个消费者后抽到这里共享，
+ *  Record<Tab,…> 穷尽——加 tab 少键/多键 TS 都报错（Sidebar 头注释的既有论证）。 */
+export const TAB_ICONS: Record<Tab, React.ComponentType> = {
+  activity: ActivityIcon,
+  notifications: NotificationsIcon,
+  media: MediaIcon,
+  settings: SettingsIcon,
 }

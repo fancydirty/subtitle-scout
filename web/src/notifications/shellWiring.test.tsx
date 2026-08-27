@@ -123,8 +123,10 @@ describe('Shell 接线：#/notifications 渲染的是真页面（不是占位、
   it('侧栏高亮的是 notifications', async () => {
     location.hash = '#/notifications'
     renderShell()
-    const link = await screen.findByRole('link', { name: en.nav_notifications })
-    expect(link).toHaveAttribute('aria-current', 'page')
+    // 2026-08-27 起同名导航链接有两份（侧栏 + BottomTabBar；jsdom 无媒体查询）——
+    // 按 aria-label 先定位侧栏再查链接。
+    const nav = await screen.findByRole('navigation', { name: en.a11y_side_nav })
+    expect(within(nav).getByRole('link', { name: en.nav_notifications })).toHaveAttribute('aria-current', 'page')
   })
 
   it('通知页与媒体库页的主区内容互不相同（渲染成同一个组件时红）', async () => {

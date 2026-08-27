@@ -14,6 +14,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { render, screen, cleanup, within } from '@testing-library/react'
 import { I18nProvider } from '../i18n/useT.js'
 import { Sidebar } from './Sidebar.js'
+import { BottomTabBar } from './BottomTabBar.js'
 import { TABS } from './tabs.js'
 import { parseShellHash, legacyRedirectTarget } from './route.js'
 import { en } from '../i18n/en.js'
@@ -149,5 +150,41 @@ describe('侧栏链接与选中态', () => {
     const { container } = render(<I18nProvider initialLang="en"><Sidebar tab="activity" /></I18nProvider>)
     const shapes = [...container.querySelectorAll('nav a svg')].map((s) => s.innerHTML)
     expect(new Set(shapes).size).toBe(TABS.length)
+  })
+})
+
+describe('🔴 移动端底部 tab bar 契约', () => {
+  // ⚠️ initialLang 显式锁 zh（不用裸 <I18nProvider>）：默认语言按 navigator.language 猜，
+  // jsdom 环境下是隐式依赖——本文件既有 harness 的纪律，见上方各用例。
+  it('渲染的 tab 集合逐一等于 TABS 注册表（禁止另抄清单）', () => {
+    render(<I18nProvider initialLang="zh"><BottomTabBar tab="activity" /></I18nProvider>)
+    const links = screen.getAllByRole('link')
+    expect(links.map((a) => a.getAttribute('href'))).toEqual(TABS.map((m) => `#/${m.id}`))
+    for (const m of TABS) {
+      const label = zh[m.labelKey]
+      expect(label).toBeTruthy()
+      expect(screen.getByText(label)).toBeInTheDocument()
+    }
+  })
+
+  it('选中项走 aria-current="page"，其余无', () => {
+    render(<I18nProvider initialLang="zh"><BottomTabBar tab="media" /></I18nProvider>)
+    const current = screen.getAllByRole('link').filter((a) => a.getAttribute('aria-current') === 'page')
+    expect(current).toHaveLength(1)
+    expect(current[0]).toHaveAttribute('href', '#/media')
+  })
+
+  // jsdom 无媒体查询——钉响应类名即钉断点行为（spec §测试 2）。下面两条合起来保证
+  // 底部栏与侧栏靠 md 断点互斥、永不同屏。
+  it('底部栏容器带 md:hidden（桌面不出现）', () => {
+    render(<I18nProvider initialLang="zh"><BottomTabBar tab="activity" /></I18nProvider>)
+    expect(screen.getByRole('navigation').className).toContain('md:hidden')
+  })
+
+  it('侧栏 nav 带 hidden md:flex（移动端不出现）', () => {
+    render(<I18nProvider initialLang="en"><Sidebar tab="activity" /></I18nProvider>)
+    const sideNavEl = screen.getByRole('navigation')
+    expect(sideNavEl.className).toMatch(/\bhidden\b/)
+    expect(sideNavEl.className).toContain('md:flex')
   })
 })
