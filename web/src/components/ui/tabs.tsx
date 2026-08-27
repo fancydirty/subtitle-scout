@@ -11,7 +11,16 @@ function TabsList({ className, ...props }: React.ComponentProps<typeof TabsPrimi
   return (
     <TabsPrimitive.List
       data-slot="tabs-list"
-      className={cn('inline-flex h-10 w-fit items-center justify-center gap-1 rounded-control bg-stage-track p-1', className)}
+      // 窄屏溢出走 Material 的 scrollable tabs 口径（tabs.overflow.test.tsx 钉着）：
+      // max-w-full + overflow-x-auto 横滚，末尾被裁一半的 tab 本身就是"还有更多"的暗示。
+      // justify-start 而非 center：flex 居中 + 溢出会把左端裁到滚不回来；w-fit 下不溢出时
+      // 列表宽度=内容宽度，两种 justify 视觉完全相同，所以这不是取舍而是白捡的正确。
+      // 滚动条藏掉（两个引擎各一条），tab 条上出现滚动条比裁切更丑。
+      className={cn(
+        'inline-flex h-10 w-fit max-w-full items-center justify-start gap-1 overflow-x-auto rounded-control bg-stage-track p-1',
+        '[scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
+        className,
+      )}
       {...props}
     />
   )
@@ -22,7 +31,9 @@ function TabsTrigger({ className, ...props }: React.ComponentProps<typeof TabsPr
     <TabsPrimitive.Trigger
       data-slot="tabs-trigger"
       className={cn(
-        'inline-flex items-center justify-center gap-1.5 rounded-[6px] px-3 py-1.5 text-[13px] font-medium leading-5 text-muted-foreground transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50',
+        // shrink-0 + whitespace-nowrap：trigger 永不被压缩折行（2026-08-27 实案：390px 下
+        // 「字幕源」被压成每字一行的竖排）。溢出由 TabsList 的横滚承接，不在 trigger 层吸收。
+        'inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-[6px] px-3 py-1.5 text-[13px] font-medium leading-5 text-muted-foreground transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50',
         'data-[state=active]:bg-secondary data-[state=active]:text-foreground data-[state=active]:shadow-sm',
         className,
       )}
