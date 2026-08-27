@@ -61,7 +61,7 @@ describe('BootstrapWizard 外壳', () => {
   it('渲染首步 title/desc（走 t()）与步数对应的步进点', () => {
     const { container } = renderWizard()
     expect(screen.getByRole('heading', { name: 'Subtitle language' })).toBeInTheDocument()
-    expect(screen.getByText(/first pick also sets the UI language/)).toBeInTheDocument()
+    expect(screen.getByText(/pick also sets the UI language/)).toBeInTheDocument()
     expect(container.querySelectorAll('[role="img"] > span')).toHaveLength(2)
   })
 

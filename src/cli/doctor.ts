@@ -58,12 +58,19 @@ export async function checkZimuku(
   }
   try {
     const r = await probe.fetchHomepage()
+    // 判定优先级 challenged > ok（2026-08-27 实测）：云锁会把挑战页连同 HTTP 404 一起发，
+    // 只看状态码会把「活着但设防」误报成「不可达」。挑战页是 zimuku 自己的 WAF 发的——
+    // 它在场就是站点活着的铁证；状态码是云锁的姿态，不是站点的死活。
+    if (r.challenged) {
+      return {
+        name: 'zimuku', ok: true,
+        detail: 'zimuku.org 可达(命中云锁验证页,属预期——运行时会自动破解)',
+      }
+    }
     if (!r.ok) throw new Error('homepage did not return HTTP 200')
     return {
       name: 'zimuku', ok: true,
-      detail: r.challenged
-        ? 'zimuku.org 可达(命中云锁验证页,属预期——运行时会自动破解)'
-        : 'zimuku.org 可达,未触发验证页',
+      detail: 'zimuku.org 可达,未触发验证页',
     }
   } catch (e) {
     return {

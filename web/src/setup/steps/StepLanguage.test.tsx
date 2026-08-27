@@ -1,12 +1,13 @@
 // web/src/setup/steps/StepLanguage.test.tsx：步 1 门禁与联动——空选择禁 Continue；
-// 首选 zh 即时切中文 UI（spec §5.2 步 1 的现场证明）；自定义码 BCP-47 校验；
+// 首选 zh 即时切中文 UI（spec §5.2 步 1 的现场证明）；预设全集与设置页清单对账；
 // Continue PUT target_languages（选择顺序即 join 顺序）后 onAdvance；PUT 失败行内报错不前进。
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react'
 import { I18nProvider } from '../../i18n/useT.js'
 import { api } from '../../api/client.js'
 import type { SetupStatusDTO } from '../../api/types.js'
 import { StepLanguage } from './StepLanguage.js'
+import { SELECTABLE_TARGET_LANGUAGES } from '../../settings/text.js'
 import type { WizardStepProps } from './types.js'
 
 afterEach(() => {
@@ -70,16 +71,14 @@ describe('StepLanguage', () => {
     expect(screen.getByRole('button', { name: 'Save & continue' })).toBeEnabled()
   })
 
-  it('自定义码：非法报 BCP-47 行；合法进选中集', () => {
+  it('十个预设即语言全集——与设置页 SELECTABLE_TARGET_LANGUAGES 逐一对应，无自由输入框', () => {
+    // 2026-08-27 用户裁决：自由输入框删除（pt 静默降级实案的入口形态）。向导只给
+    // 有码表落地保障的选项；预设集 = 设置页同一份清单，两处不许各自为政。
     renderStep()
-    const input = screen.getByPlaceholderText('Add another — e.g. fr, pt-BR')
-    fireEvent.change(input, { target: { value: 'x' } })
-    fireEvent.keyDown(input, { key: 'Enter' })
-    expect(screen.getByText(/BCP-47/)).toBeInTheDocument()
-    fireEvent.change(input, { target: { value: 'pt-BR' } })
-    fireEvent.keyDown(input, { key: 'Enter' })
-    expect(screen.queryByText(/BCP-47/)).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'pt-BR' })).toBeInTheDocument()
+    const group = screen.getByRole('group')
+    const buttons = within(group).getAllByRole('button')
+    expect(buttons).toHaveLength(SELECTABLE_TARGET_LANGUAGES.length)
+    expect(screen.queryByRole('textbox')).toBeNull()
   })
 
   it('Continue → PUT target_languages（单选）→ onAdvance', async () => {

@@ -91,6 +91,15 @@ describe('doctor zimuku (可选 provider,默认关闭)', () => {
     expect(r.ok).toBe(false)
     expect(r.hint).toContain('zimuku.org')
   })
+  // 🔴 2026-08-27 真实向导实测：云锁把挑战页连同 HTTP 404 一起发（此前是 200+挑战页），
+  // validate 只看 res.ok 就误报「不可达——保持开启，运行时自动重试」，而 challenged=true
+  // 本身就是 zimuku 活着的铁证（挑战页是它的 WAF 发的）。判定优先级必须是
+  // challenged > ok：挑战在场即可达，状态码是云锁的姿态不是站点的死活。
+  it('非 200 但命中云锁挑战页 → 仍然 ok（挑战页即活证，状态码是云锁的姿态）', async () => {
+    const r = await checkZimuku({ fetchHomepage: async () => ({ ok: false, challenged: true }) })
+    expect(r.ok).toBe(true)
+    expect(r.detail).toContain('验证页')
+  })
 })
 
 describe('doctor 本地两项', () => {

@@ -328,7 +328,7 @@ export const en = {
   wizard_retest: 'Re-test',
 
   wizard_step_language_title: 'Subtitle language',
-  wizard_step_language_desc: 'Which languages should Scout fetch subtitles in? Your first pick also sets the UI language.',
+  wizard_step_language_desc: 'Which language should Scout fetch subtitles in? Your pick also sets the UI language.',
   wizard_step_tmdb_title: 'TMDB',
   wizard_step_tmdb_desc: 'Scout identifies your shows and movies with TMDB.',
   wizard_step_llm_title: 'Language model',
@@ -342,9 +342,6 @@ export const en = {
   wizard_step_launch_title: 'Launch',
   wizard_step_launch_desc: 'Review your setup and start the engine.',
 
-  wizard_language_custom_placeholder: 'Add another — e.g. fr, pt-BR',
-  wizard_language_add: 'Add',
-  wizard_language_invalid: 'Use a BCP-47 code, like "fr" or "pt-BR".',
 
   wizard_tmdb_label: 'API key',
   wizard_tmdb_placeholder: 'TMDB API key or read access token',

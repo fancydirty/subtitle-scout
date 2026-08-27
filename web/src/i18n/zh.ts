@@ -270,7 +270,7 @@ export const zh = {
   wizard_retest: '重新测试',
 
   wizard_step_language_title: '字幕语言',
-  wizard_step_language_desc: 'Scout 要抓哪些语言的字幕？首选语言同时决定界面语言。',
+  wizard_step_language_desc: 'Scout 要抓哪种语言的字幕？首选语言同时决定界面语言。',
   wizard_step_tmdb_title: 'TMDB',
   wizard_step_tmdb_desc: 'Scout 用 TMDB 识别你的剧集与电影。',
   wizard_step_llm_title: '语言模型',
@@ -284,9 +284,6 @@ export const zh = {
   wizard_step_launch_title: '点火',
   wizard_step_launch_desc: '确认配置，点火发动。',
 
-  wizard_language_custom_placeholder: '添加其他——如 fr、pt-BR',
-  wizard_language_add: '添加',
-  wizard_language_invalid: '请输入 BCP-47 代码，如 "fr" 或 "pt-BR"。',
 
   wizard_tmdb_label: 'API 密钥',
   wizard_tmdb_placeholder: 'TMDB API key 或 read access token',
