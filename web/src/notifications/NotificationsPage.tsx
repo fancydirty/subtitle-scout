@@ -71,7 +71,7 @@ export function NotificationsPage() {
 
   if (loading && !data) {
     return (
-      <Section>
+      <Section className="mx-auto w-full max-w-page">
         <LoadingRows />
       </Section>
     )
@@ -79,7 +79,7 @@ export function NotificationsPage() {
 
   if (error && !data) {
     return (
-      <Section>
+      <Section className="mx-auto w-full max-w-page">
         <EmptyState
           title={t('notif_error_title')}
           description={localizeError(error, lang)}
@@ -96,7 +96,7 @@ export function NotificationsPage() {
   const groups = data ?? []
   if (groups.length === 0) {
     return (
-      <Section>
+      <Section className="mx-auto w-full max-w-page">
         <div className="flex flex-col gap-3">
           {liveBanner}
           <EmptyState title={t('notif_empty_title')} description={t('notif_empty_desc')} />
@@ -108,7 +108,7 @@ export function NotificationsPage() {
   const buckets = bucketByDay(groups, Date.now())
 
   return (
-    <Section>
+    <Section className="mx-auto w-full max-w-page">
       <div className="flex flex-col gap-3">
         {liveBanner}
         <span className="font-mono text-[11px] leading-4 text-muted-foreground">

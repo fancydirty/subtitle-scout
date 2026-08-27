@@ -132,4 +132,24 @@
   --color-fn-amber-muted: #e2a4003f;
   --color-stage-track: rgba(255, 255, 255, 0.09);
   --color-fn-blue: #2694fe;
+
+  /* ── 2026-08-27 SPA 布局体系（spa-layout-redesign spec）────────────────────
+     A. 分页收口宽度：--container-* 命名空间让 Tailwind 生成 max-w-page/form/detail/wide，
+        各页顶层容器配 mx-auto w-full 消费。**不做全局一刀切**：媒体库海报墙 8 列封顶
+        逻辑健康、吃得下宽度，故它拿 1600 而不是共用 1440。
+        值即裁决：1440 默认（活动页等数据密集页）/ 880 表单可读横距（设置）/
+        1200 详情 / 1600 媒体库（8 列 ≈1600px 给足）。 */
+  --container-page: 1440px;
+  --container-form: 880px;
+  --container-detail: 1200px;
+  --container-wide: 1600px;
+
+  /* D. 结构层字号刻度：**只应用于标题层级**（页标题/区块标题/卡片标题/辅助说明行），
+        styles.css 的 10/11px 正文密度值不迁——那是密度设计不是事故，spec 明令不动。
+        body/caption 两档是刻度的下锚点（现值 13/11px 与其重合），标题层今天先走
+        page-title 与 section 两档（详情页 h1、季标题、.wb-section-head）。 */
+  --text-page-title: 18px;
+  --text-section: 14px;
+  --text-body: 13px;
+  --text-caption: 11px;
 }

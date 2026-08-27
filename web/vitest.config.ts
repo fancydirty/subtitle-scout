@@ -24,11 +24,17 @@ const STYLES_CSS = readFileSync(resolve(__dirname, 'src/styles.css'), 'utf8')
 // 真的存在」。
 const TW_CSS = readFileSync(resolve(__dirname, 'src/tw.css'), 'utf8')
 
+// AppShell.tsx 同样注入（2026-08-27 布局体系）：main 的留白档位（p-6 xl:p-8）是布局
+// spec 的计算值裁决，真身是 className 字符串。走 define 与上面同一条理由——tsx 用
+// `?raw` 得给 tsconfig 的 types 白名单开例外，define 不碰任何运行时模块。
+const APPSHELL_TSX = readFileSync(resolve(__dirname, 'src/shell/AppShell.tsx'), 'utf8')
+
 export default defineConfig({
   plugins: [react()],
   define: {
     __STYLES_CSS__: JSON.stringify(STYLES_CSS),
     __TW_CSS__: JSON.stringify(TW_CSS),
+    __APPSHELL_TSX__: JSON.stringify(APPSHELL_TSX),
   },
   test: {
     environment: 'jsdom',

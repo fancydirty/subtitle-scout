@@ -621,7 +621,7 @@ export function ActivityPage() {
   // ⚠️ 但状态条照常渲染：它读的是 /health，与本端点是两条独立的路，
   // 一条挂了不该把另一条的信息一起藏起来。
   return (
-    <Section>
+    <Section className="mx-auto w-full max-w-page">
       <div className="flex flex-col gap-3">
         <StatusBar health={health} current={current} status={status} reloadHealth={reloadHealth} />
 

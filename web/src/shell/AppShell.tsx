@@ -53,11 +53,13 @@ function ShellBody() {
       <Topbar tab={route.tab} />
       <div className="flex flex-1 overflow-hidden">
         <Sidebar tab={route.tab} />
-        {/* contentPadding 4 → p-4（Astryx --spacing-4=16px=Tailwind 4）。
+        {/* 2026-08-27 布局 spec 决策 B：留白从 p-4（16px，Astryx contentPadding 4 的遗值）
+            升到 p-6 基线 + xl:p-8 宽屏档。**仅此一处**——各页内部间距不跟着连坐。
+            分页 max-width 收口（决策 A）在各页顶层容器上，main 只保滚动容器职责不动。
             ⚠️ Task ⑪：原先这里是 `route.tab === 'library' ? 'p-0' : 'p-4'` 条件类——
             p-0 是旧海报墙要的全宽出血。旧页面下架后条件恒假，连同 `cn()` 的 import
             一起删掉（留着就是一条永不成立的分支 + 一个只为它存在的工具函数调用）。 */}
-        <main id="scout-app-main" role="main" className="flex-1 overflow-y-auto p-4">
+        <main id="scout-app-main" role="main" className="flex-1 overflow-y-auto p-6 xl:p-8">
           {/* 引擎关闭 banner 压所有主屏顶（spec A §5.6）。 */}
           <EngineBanner />
           {/* ── 导航四页，每项一条分支 ─────────────────────────────────────

@@ -112,8 +112,10 @@ export function SettingsTabsPage() {
   const providerBadgeVariant = configuredCount === 8 ? 'success' : configuredCount === 0 ? 'destructive' : 'warning'
   const mediaUnconfigured = (roots.data?.length ?? 0) === 0
 
+  // 布局 spec 决策 A：设置页收口 --container-form（880px 表单可读横距）。四个 tab
+  // 共用这一个顶层 Tabs，不像其他页要在每个 Section 分支上重复。
   return (
-    <Tabs defaultValue="general" className="w-full">
+    <Tabs defaultValue="general" className="mx-auto w-full max-w-form">
       <TabsList>
         <TabsTrigger value="general">{t('settings_tab_general')}</TabsTrigger>
         <TabsTrigger value="providers">

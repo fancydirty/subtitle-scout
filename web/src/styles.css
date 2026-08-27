@@ -873,6 +873,20 @@
   outline-offset: -2px;
 }
 
+/* ── 断点：deploy 行上下叠（2026-08-27 布局 spec 决策 C-3）───────────────────
+   key 列 220px 定宽 + 横排在 640px 以下把值列挤到没法读（ellipsis 只是兜底不是版式）。
+   上下叠后 key 回归内容宽，值行拿整行。<640px 只承诺不破版，不承诺移动端可用性。 */
+@media (max-width: 640px) {
+  .settings-deploy-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+  .settings-deploy-key {
+    min-width: 0;
+  }
+}
+
 /* ── 鉴权 A2/A3（AuthShell + auth 表单）：setup 向导 / 一次性 API key 屏 / 登录页 / Security 区。
    auth 界面是脱离常规 dashboard chrome 的独立面，输入框用原生 <input>（Astryx TextInput 不透传
    autocomplete，而密码管理器契约不可谈判——见 design-recon）。所有配色一律读 tw.css @theme
@@ -2209,8 +2223,12 @@
   color: var(--color-weak);
 }
 .wb-section-head {
-  font-size: 12px;
-  line-height: 18px;
+  /* 2026-08-27 布局 spec 决策 D：区块标题层从 tw.css 字号刻度走（12px weak 无重
+     → 14px/600），整页扫读时「正在进行 / 排队中」的结构才立得起来。颜色仍 weak——
+     刻度只管字号与字重，不动配色。 */
+  font-size: var(--text-section);
+  line-height: 20px;
+  font-weight: 600;
   color: var(--color-weak);
   margin-bottom: 8px;
 }
@@ -2364,6 +2382,35 @@
    ⚠️ 只降到 0.72——**不许降到看不清**：这条读数仍然是用户此刻唯一有的信息，
    把它糊掉等于用另一种方式撒谎（"这里没东西"）。 */
 .wb-run-card[data-stale='true'] { opacity: 0.72; }
+
+/* ── 断点：B 切分叠单栏（2026-08-27 布局 spec 决策 C-1）──────────────────────
+   61% 海报 + 39% 绝对定位右栏在窄视口会把右栏（进度条 + 步骤 + 5 行 log）挤死，
+   1100px 以下叠成单栏：海报全宽在上，右栏回归 normal flow 排在下面。
+   · 选择器全部带 .wb-run-card 前缀：排队卡共用 .wb-run-img/.wb-run-body 类名，
+     但它是 96px 恒定高小卡（海报 ≈171px），窄屏本来就放得下，**不许被本块波及**。
+   · 溶接方向跟着版式转：叠放后海报下面才是实色栏，to right 会把全宽海报的右半边
+     溶成透明（右边已没有东西接住它），改 to bottom 往下融进右栏。40%/100% 两个
+     锚点沿用横版的裁决值，不另起一套。
+   · 断点在 media query 里改值、不改组件——移动端那一轮立下的留路，恪守不 clamp()。 */
+@media (max-width: 1100px) {
+  .wb-run-card {
+    flex-direction: column;
+  }
+  .wb-run-card .wb-run-img {
+    width: 100%;
+    -webkit-mask-image: linear-gradient(to bottom, #000 40%, transparent 100%);
+            mask-image: linear-gradient(to bottom, #000 40%, transparent 100%);
+  }
+  .wb-run-card .wb-run-body {
+    position: relative;
+    inset: auto;
+    left: auto;
+    top: auto;
+    right: auto;
+    bottom: auto;
+    text-align: left;
+  }
+}
 
 
 /* ══════════════════════════════════════════════════════════════════════════════

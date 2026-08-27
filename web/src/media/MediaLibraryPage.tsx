@@ -195,7 +195,7 @@ export function MediaLibraryPage() {
 
   if (loading && !data) {
     return (
-      <Section>
+      <Section className="mx-auto w-full max-w-wide">
         <LoadingGrid />
       </Section>
     )
@@ -204,7 +204,7 @@ export function MediaLibraryPage() {
   // 错误态**绝不显示空态文案**（§4.4：那是谎报——"库里没有东西"与"我没能问到"是两件事）。
   if (error && !data) {
     return (
-      <Section>
+      <Section className="mx-auto w-full max-w-wide">
         <EmptyState
           title={t('media_error_title')}
           description={localizeError(error, lang)}
@@ -221,7 +221,7 @@ export function MediaLibraryPage() {
   const items = data ?? []
   if (items.length === 0) {
     return (
-      <Section>
+      <Section className="mx-auto w-full max-w-wide">
         <div className="flex flex-col gap-3">
           {/* 🔴 空态下这条**尤其**要出：「库里什么都没有」与「守备目录读不到，所以我
               什么都没看见」是两件事，而空态文案自己说不出后者。这正是 §4.4「错误态绝不
@@ -235,7 +235,7 @@ export function MediaLibraryPage() {
   }
 
   return (
-    <Section>
+    <Section className="mx-auto w-full max-w-wide">
       <div className="flex flex-col gap-3">
         <div className="root-health-strip"><RootHealthNote roots={health?.roots} /></div>
         <span className="font-mono text-[11px] leading-4 text-muted-foreground">

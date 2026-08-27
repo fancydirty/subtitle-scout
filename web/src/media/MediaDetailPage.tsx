@@ -78,7 +78,7 @@ function SeasonBlock({ season }: { season: MediaLibrarySeasonDTO }) {
   const tally = seasonTally(season)
   return (
     <div className="flex flex-col gap-2">
-      <h2 className="text-[13px] font-medium leading-5 text-foreground">
+      <h2 className="text-section font-semibold leading-5 text-foreground">
         {t('media_season_prefix')} {season.season}
         <span className="ml-2 font-mono text-[11px] font-normal text-muted-foreground">
           {t('media_card_ondisk')} {tally.onDisk}
@@ -104,7 +104,7 @@ function MovieBlock({ movie }: { movie: MediaLibraryMovieDTO }) {
   const label = t(EPISODE_STATE_LABEL[movie.episodeState])
   return (
     <div className="flex flex-col gap-2">
-      <h2 className="text-[13px] font-medium leading-5 text-foreground">{t('media_movie_heading')}</h2>
+      <h2 className="text-section font-semibold leading-5 text-foreground">{t('media_movie_heading')}</h2>
       <div role="list">
         <div
           className="media-movie-row"
@@ -145,7 +145,7 @@ export function MediaDetailPage({ detail }: { detail: Async<MediaLibraryDetailDT
 
   if (detail.loading && !detail.data) {
     return (
-      <Section>
+      <Section className="mx-auto w-full max-w-detail">
         <DetailSkeleton />
       </Section>
     )
@@ -154,7 +154,7 @@ export function MediaDetailPage({ detail }: { detail: Async<MediaLibraryDetailDT
   if (detail.error && !detail.data) {
     if (isNotFoundError(detail.error)) {
       return (
-        <Section>
+        <Section className="mx-auto w-full max-w-detail">
           <EmptyState
             title={t('media_detail_not_found_title')}
             description={t('media_detail_not_found_desc')}
@@ -168,7 +168,7 @@ export function MediaDetailPage({ detail }: { detail: Async<MediaLibraryDetailDT
       )
     }
     return (
-      <Section>
+      <Section className="mx-auto w-full max-w-detail">
         <EmptyState
           title={t('media_error_title')}
           description={localizeError(detail.error, lang)}
@@ -196,7 +196,7 @@ export function MediaDetailPage({ detail }: { detail: Async<MediaLibraryDetailDT
       : null
 
   return (
-    <Section>
+    <Section className="mx-auto w-full max-w-detail">
       <div className="flex flex-col gap-6">
         <a className="text-[13px] text-muted-foreground hover:underline" href="#/media">
           {t('media_back')}
@@ -209,7 +209,7 @@ export function MediaDetailPage({ detail }: { detail: Async<MediaLibraryDetailDT
             </AspectRatio>
           </div>
           <div className="flex flex-col gap-1">
-            <h1 className="text-[17px] font-semibold leading-6 text-foreground">{title}</h1>
+            <h1 className="text-page-title font-semibold leading-6 text-foreground">{title}</h1>
             {originalTitle ? (
               <span className="text-[13px] leading-5 text-muted-foreground">{originalTitle}</span>
             ) : null}
