@@ -374,6 +374,9 @@ export const en = {
   wizard_zimuku_captcha_not_ready: 'Captcha solver needs the LLM from step 3.',
 
   wizard_roots_skip_note: 'Library will stay empty until you add a media folder — you can do this later in Settings.',
+  // 2026-08-27 实测：用户不知道该填宿主机路径还是容器路径。契约（deployContract）：
+  // 容器把宿主机根挂成 /hostroot，故按机器真实路径填 + /hostroot 前缀。
+  wizard_roots_hostroot_note: 'Use the real path on the machine running the container, prefixed with /hostroot — for example, /mnt/media on the host is /hostroot/mnt/media here.',
 
   wizard_launch_configured: 'Configured',
   wizard_launch_skipped: 'Skipped',
@@ -649,11 +652,13 @@ export const en = {
   // 措辞纪律（与 root_health_* 同源，且多一条）：
   //  ① **说后果，不说过程**。用户关心的不是"识别流程失败了"，而是"这些东西我不会处理"
   //     ——因为后者才推得出他该干什么。
-  //  ② **必须带上那句该干的事**（`title (year)`）。这是 R-F1 的下半句
-  //     「未识别资源不给用户改（底线是按 title (year) 命名）」——界面上没有任何按钮，
-  //     用户唯一的动作在他自己的文件管理器里。不说清格式，这条提示就只是在报忧。
+  //  ② **带上那句该干的事**（`title (year)`），但作为建议而非必需——2026-08-27 实测改写：
+  //     旧文案「rename them to "title (year)" and they'll be picked up」在撒谎：该格式不是
+  //     必需（裸 title 也能认），真实底线是"目录名能让人认出是哪部片"；且实测案例目录
+  //     本来就是 title (year) 只是括号全角，照旧提示改无从改起。诚实版说 helps 不说包好，
+  //     并交代改名后下轮自动检查会重试。
   //  ③ 不出现 park / parked / work_id / TMDB / agent / 404 / 退避 这类实现词。
-  unidentified_note: "Can't recognise these folders — rename them to “title (year)” and they'll be picked up",
+  unidentified_note: "Still can't recognise these folders. A clearly recognisable name (like “title (year)”) helps most; after renaming, the next automatic check will retry them",
   /** 截断时的尾巴。`dirs` 只给前 8 个，总数一律读 dirCount（绝不用 dirs.length）。 */
   unidentified_more: 'and {n} more',
   // 🔴-4: work recorded as failed that has not been retried since. States the fact only —

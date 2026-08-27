@@ -15,6 +15,25 @@ describe('titleFromDir（目录名 → 标题）', () => {
   it('中文剧：绝命毒师 (2008) → 绝命毒师', () => {
     expect(titleFromDir('绝命毒师 (2008)')).toBe('绝命毒师')
   })
+  // 2026-08-27 实测（用户第一次真人跑 setup）：中文环境的文件管理器常产出全角括号，
+  // 半角字符类认不出 U+FF08/U+FF09，目录整体识别失败。混用（一半全角一半半角）更糟：
+  // 只吞掉一半，留下孤儿括号。
+  it('全角括号：Invasion（2021）→ Invasion', () => {
+    expect(titleFromDir('Invasion（2021）')).toBe('Invasion')
+  })
+  it('混用括号：Invasion（2021) → Invasion（不留孤儿括号）', () => {
+    expect(titleFromDir('Invasion（2021)')).toBe('Invasion')
+    expect(titleFromDir('Invasion (2021）')).toBe('Invasion')
+  })
+  it('中文标题 + 全角括号：流浪地球（2019）→ 流浪地球', () => {
+    expect(titleFromDir('流浪地球（2019）')).toBe('流浪地球')
+  })
+  it('全角方括号【】（[] 的中文形态）：流浪地球【2019】→ 流浪地球', () => {
+    expect(titleFromDir('流浪地球【2019】')).toBe('流浪地球')
+  })
+  it('全角括号 + tmdb 标签：标签剥离不受影响', () => {
+    expect(titleFromDir('后室（2026）{tmdb-1083381}')).toBe('后室')
+  })
 })
 
 // 2026-08-13 补：`searchCandidates` 此前被 import 却**零断言**（清理时由 noUnusedLocals

@@ -53,6 +53,15 @@ describe('StepRoots', () => {
     expect(onAdvance).toHaveBeenCalledTimes(1)
   })
 
+  // 2026-08-27 实测：用户在这一步不知道该填宿主机路径还是容器路径（容器把宿主机根
+  // 挂成 /hostroot，deployContract 钉死的契约）。加一行说明：按机器上的真实路径填，
+  // 前面加 /hostroot 前缀，并给一个例子。
+  it('带 /hostroot 路径说明（按宿主机真实路径 + /hostroot 前缀，含例子）', () => {
+    renderStep()
+    expect(screen.getByText(/\/hostroot/)).toBeInTheDocument()
+    expect(screen.getByText(/\/hostroot\/mnt\/media/)).toBeInTheDocument()
+  })
+
   it('加一个目录 → Continue 解锁 + patchStatus 同步计数', () => {
     const patchStatus = vi.fn()
     renderStep({ patchStatus })

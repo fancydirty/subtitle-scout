@@ -316,6 +316,9 @@ export const zh = {
   wizard_zimuku_captcha_not_ready: '验证码求解需要第 3 步的 LLM。',
 
   wizard_roots_skip_note: '添加媒体目录前媒体库为空——之后可以在设置里加。',
+  // 2026-08-27 实测：用户不知道该填宿主机路径还是容器路径。契约（deployContract）：
+  // 容器把宿主机根挂成 /hostroot，故按机器真实路径填 + /hostroot 前缀。
+  wizard_roots_hostroot_note: '路径按运行容器那台机器的真实路径填写，前面加 /hostroot 前缀——例如宿主机的 /mnt/media 在这里是 /hostroot/mnt/media。',
 
   wizard_launch_configured: '已配置',
   wizard_launch_skipped: '已跳过',
@@ -566,10 +569,12 @@ export const zh = {
   root_health_unknown: '最近没有检查过',
 
   // ── 🔴 认不出来的目录（病 A 第 7 例的可见形态）──────────────────────────
-  // 措辞纪律同 en 侧：说后果不说过程；必须带上「按 title (year) 改名」这句
-  // （R-F1 的下半句，界面上没有按钮，用户唯一的动作在他自己的文件管理器里）；
-  // 不出现 park / work_id / TMDB / agent / 404 / 退避 这类实现词。
-  unidentified_note: '这些目录认不出来，改成「片名 (年份)」就能处理了',
+  // 措辞纪律同 en 侧：说后果不说过程；不出现 park / work_id / TMDB / agent / 404 /
+  // 退避 这类实现词。2026-08-27 实测改写：旧文案「改成『片名 (年份)』就能处理了」
+  // 在撒谎——该格式不是必需（裸片名也能认），真实底线是"目录名能让人认出是哪部片"；
+  // 且实测案例目录本来就是 片名 (年份) 只是括号全角，照旧提示改无从改起。
+  // 诚实版：格式只是"最有帮助"，并交代改名后下轮巡检会重试。
+  unidentified_note: '这些目录试过了还是认不出来。目录名清晰可辨（如「片名 (年份)」）最有帮助；改名后下轮巡检会重试',
   unidentified_more: '另外还有 {n} 个',
   // 🔴-4：记着失败、却再也没被重试的活。措辞纪律同上：不出现 job/queue/claim/
   // next_retry_at 这类内部词；也**不承诺**「它会重试」（那是假的），

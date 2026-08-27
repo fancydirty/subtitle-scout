@@ -22,6 +22,9 @@ export function StepRoots({ status, patchStatus, onAdvance, onBack }: WizardStep
 
   return (
     <div className="flex flex-col gap-5">
+      {/* 2026-08-27 实测：用户不知道该填宿主机路径还是容器路径（容器把宿主机根挂成
+          /hostroot，deployContract 钉死）。说明放在输入框上方——填之前就要知道。 */}
+      <p className="text-sm text-weak">{t('wizard_roots_hostroot_note')}</p>
       <RootPathInput onAdded={onAdded} />
       <p className="text-sm text-weak">{t('wizard_roots_skip_note')}</p>
       <StepFooter onBack={onBack}>

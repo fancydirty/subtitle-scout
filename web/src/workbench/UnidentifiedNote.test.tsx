@@ -50,6 +50,19 @@ describe('UnidentifiedNote · 说什么（信息量边界：R-F9/R-F10 排障不
     expect(screen.getByTestId('wb-unidentified-line').textContent).toMatch(/title.*year/i)
   })
 
+  // 2026-08-27 实测（用户第一次真人跑 setup）：旧文案「rename them to "title (year)" and
+  // they'll be picked up」在两处撒谎——① 识别是 agent 做的，title (year) 不是必需格式
+  // （裸 title 也能认），说"改成这个格式就能处理"对着一个本来就是 title (year) 只是括号
+  // 全角的目录，用户无从照办；② "就能处理"是没有的承诺。诚实版：格式只是"最有帮助"，
+  // 且说清改名之后发生什么（下轮自动检查会重试）。
+  it('🔴 文案说真话：格式是建议不是必需（helps，不承诺 picked up），且交代改名后下轮会重试', () => {
+    renderNote({ dirCount: 1, dirs: [{ dirName: 'x', fileCount: 1 }] })
+    const text = screen.getByTestId('wb-unidentified-line').textContent ?? ''
+    expect(text).not.toMatch(/rename them to .+ and they'll be picked up/i)
+    expect(text).toMatch(/helps/i)
+    expect(text).toMatch(/retr/i) // retry / retried
+  })
+
   it('多个目录逗号分隔，同前缀的两个也能区分', () => {
     renderNote({ dirCount: 2, dirs: [
       { dirName: 'Show S01', fileCount: 3 },
@@ -113,6 +126,19 @@ describe('Carbon 双通道：形状 + 文字，颜色只是第三重', () => {
     const bare = (__STYLES_CSS__ as string).replace(/\/\*[\s\S]*?\*\//g, '')
     expect(/\.root-health-mark\s*\{/.test(bare), '.root-health-mark 规则不存在').toBe(true)
     expect(/\.root-health-mark-hollow\s*\{/.test(bare), '.root-health-mark-hollow 规则不存在').toBe(true)
+  })
+
+  // 2026-08-27 实测截图：说明文字与目录名列表贴太近，人眼费力分辨哪里是话的结尾、
+  // 哪里是名单的开头。目录名单前要有明确间距（跟随状态条的 12px 列距刻度）。
+  it('🔴 CSS 侧：目录名单与说明文字之间有明确间距（wb-unidentified-paths 规则存在且元素挂着它）', () => {
+    const { container } = renderNote({ dirCount: 1, dirs: [{ dirName: 'x', fileCount: 1 }] })
+    const paths = container.querySelector('[data-testid="wb-unidentified-line"] .root-health-paths')
+    expect(paths).not.toBeNull()
+    expect(paths!.className).toContain('wb-unidentified-paths')
+    const bare = (__STYLES_CSS__ as string).replace(/\/\*[\s\S]*?\*\//g, '')
+    const m = bare.match(/\.wb-unidentified-paths\s*\{([^}]*)\}/)
+    expect(m, '.wb-unidentified-paths 规则不存在').not.toBeNull()
+    expect(m![1]).toMatch(/margin-left\s*:/)
   })
 
   it('🔴 文字是主通道：去掉全部 CSS 之后信息量一个字不少', () => {

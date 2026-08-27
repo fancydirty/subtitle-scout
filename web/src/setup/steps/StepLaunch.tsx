@@ -33,6 +33,10 @@ export function StepLaunch({ status, onBack, onComplete }: WizardStepProps) {
     setSaveError(null)
     try {
       await api.updateSettings({ engine_enabled: String(engineOn) })
+      // 点火即开扫（2026-08-27 实测）：bootstrapComplete 是推导态，没有这一脚新用户要
+      // 干等 24h 时间闸或自己找到「现在跑」。fire-and-forget + 静默容错——inspect 失败
+      // 自有 24h 闸兜底，不值得为它挡用户进主界面。
+      api.triggerInspect().catch(() => {})
       onComplete()
     } catch (e) {
       setSaveError(localizeErrorValue(e, lang))

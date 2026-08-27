@@ -98,4 +98,37 @@ describe('StepLaunch', () => {
     await waitFor(() => expect(onComplete).toHaveBeenCalledTimes(1))
     expect(update).toHaveBeenCalledTimes(1)
   })
+
+  // 2026-08-27 实测：向导过完用户预期立刻开扫，但 bootstrapComplete 只是推导态，
+  // 没有点火动作——新用户要干等 24h 时间闸或自己找到「现在跑」。故 Launch 成功后
+  // fire-and-forget 触发首次巡检（POST /api/v2/library/inspect，即「现在跑」那个端点）。
+  it('Launch 成功 → 触发首次巡检（POST /api/v2/library/inspect）', async () => {
+    vi.spyOn(api, 'updateSettings').mockResolvedValue({} as never)
+    const inspect = vi.spyOn(api, 'triggerInspect').mockResolvedValue({ ok: true })
+    const onComplete = vi.fn()
+    renderStep({ onComplete })
+    fireEvent.click(screen.getByRole('button', { name: 'Launch' }))
+    await waitFor(() => expect(onComplete).toHaveBeenCalledTimes(1))
+    expect(inspect).toHaveBeenCalledTimes(1)
+  })
+
+  it('巡检触发失败不阻塞完成（24h 闸自会兜底，不值得为它挡用户进主界面）', async () => {
+    vi.spyOn(api, 'updateSettings').mockResolvedValue({} as never)
+    vi.spyOn(api, 'triggerInspect').mockRejectedValue(new Error('inspect down'))
+    const onComplete = vi.fn()
+    renderStep({ onComplete })
+    fireEvent.click(screen.getByRole('button', { name: 'Launch' }))
+    await waitFor(() => expect(onComplete).toHaveBeenCalledTimes(1))
+    // 静默容错：不出现行内错误
+    expect(screen.queryByText(/inspect down/)).toBeNull()
+  })
+
+  it('PUT 失败 → 不触发巡检（引擎态没写成，点火无意义）', async () => {
+    vi.spyOn(api, 'updateSettings').mockRejectedValue(new Error('boom'))
+    const inspect = vi.spyOn(api, 'triggerInspect').mockResolvedValue({ ok: true })
+    renderStep()
+    fireEvent.click(screen.getByRole('button', { name: 'Launch' }))
+    expect(await screen.findByText(/boom/)).toBeInTheDocument()
+    expect(inspect).not.toHaveBeenCalled()
+  })
 })

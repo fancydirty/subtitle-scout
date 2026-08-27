@@ -81,8 +81,10 @@ export function UnidentifiedNote({ unidentified }: { unidentified: UnidentifiedH
       {/* 目录名走 mono——同守备目录路径那套"技术性读数"的排印语言。
           **必须列出来**：用户有好几个目录认不出来时，只说"有 3 个"等于让他挨个去猜。
           这不是排障细节，这是这条提示唯一可操作的部分（同 root-health-paths 的裁决）。
-          ⚠️ 出的是**目录名**（后端已剥掉挂载点前缀），不是绝对路径。 */}
-      <span className="root-health-paths">
+          ⚠️ 出的是**目录名**（后端已剥掉挂载点前缀），不是绝对路径。
+          wb-unidentified-paths：与说明文字之间的间距（2026-08-27 实测截图：贴太近，
+          人眼费力分辨话的结尾和名单的开头）。 */}
+      <span className="root-health-paths wb-unidentified-paths">
         {dirs.map((d) => d.dirName).join(', ')}
       </span>
       {/* 截断尾巴。`dirs` 只有前 8 个，总数一律读 dirCount——拿 dirs.length 当总数

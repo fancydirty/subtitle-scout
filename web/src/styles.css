@@ -2472,6 +2472,12 @@
    免得海报墙上方凭空多出 4px 的空档。 */
 .root-health-strip:empty { display: none; }
 
+/* 认不出来的目录：说明文字与目录名单之间的间距。2026-08-27 实测截图：两段贴太近，
+   人眼费力分辨话的结尾和名单的开头。12px 取自状态条的列距刻度（.wb-statusbar gap 8px 12px）。
+   只加在 UnidentifiedNote 这一处：root-health-paths 在 RootHealthNote 里跟的是短标签 +
+   冒号，不存在同样的分辨负担。 */
+.wb-unidentified-paths { margin-left: 12px; }
+
 /* 🟡-3 海报卡上的缺集数（missingEpisodeCount 的第一个读取方，终局审计）。
    ── 为什么单独一行、且不是 mono ────────────────────────────────────────────
    上面那串（`subtitled 12 · on disk 30 · expected 62`）是**读数**，走 mono；
