@@ -46,12 +46,14 @@ import { buttonVariants } from '../components/ui/button.js'
 import { formatClock, formatEpisodes } from './notifText.js'
 
 /** via → 文案键。**穷尽 Record**：后端将来加第四种来路时 tsc 立刻红
- *  （写成 if/else 链的话新来路会静默渲染成空白）。 */
+ *  （写成 if/else 链的话新来路会静默渲染成空白）。
+ *  2026-08-27 用户裁决：fetch 是压倒性默认来路，逐行标「抓取」是噪音 → 映射 null 不渲染；
+ *  translate/mixed 保留——机翻字幕的质量预期不同，这是信息不是装饰。 */
 const VIA_LABEL = {
-  fetch: 'notif_via_fetch',
+  fetch: null,
   translate: 'notif_via_translate',
   mixed: 'notif_via_mixed',
-} as const satisfies Record<FoundGroupDTO['via'], string>
+} as const satisfies Record<FoundGroupDTO['via'], string | null>
 
 /** 这一条该画成哪种形状。**三态，不是布尔**——见文件头对 `season === null` 二义性的论证。
  *
@@ -114,8 +116,12 @@ export function NotificationRow({ group }: { group: FoundGroupDTO }) {
             )}
           </>
         )}
-        <span className="text-faint">·</span>
-        <span>{t(VIA_LABEL[group.via])}</span>
+        {VIA_LABEL[group.via] && (
+          <>
+            <span className="text-faint">·</span>
+            <span>{t(VIA_LABEL[group.via]!)}</span>
+          </>
+        )}
       </div>
       <span className={`notif-row-cta ${buttonVariants({ variant: 'ghost', size: 'sm' })}`}>
         {t('notif_open_library')}

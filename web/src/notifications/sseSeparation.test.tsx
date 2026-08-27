@@ -259,7 +259,7 @@ describe('列表内容全部来自端点（DOM 逐条核对）', () => {
     // S01 + 集号 3/5/7（formatEpisodes 的离散形态）+ via=fetch
     expect(within(bb).getByText('S01')).toBeInTheDocument()
     expect(bb.textContent).toContain('3 / 5 / 7')
-    expect(bb.textContent).toContain(en.notif_via_fetch)
+    expect(bb.textContent).not.toContain(en.notif_via_fetch)  // fetch 不渲染后缀（2026-08-27 裁决）
     expect(bb).toHaveAttribute('data-via', 'fetch')
 
     const got = screen.getByRole('link', { name: 'Game of Thrones' })

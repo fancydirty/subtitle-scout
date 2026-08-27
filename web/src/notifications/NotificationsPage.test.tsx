@@ -671,7 +671,9 @@ describe('行的三种形状（电影 / 剧集 / 无集号）', () => {
     ]))
     renderPage()
     await screen.findByText('A')
-    expect(screen.getByRole('link', { name: 'A' }).textContent).toContain(en.notif_via_fetch)
+    // 2026-08-27 用户裁决：fetch 是压倒性默认来路，逐行标注是噪音——不渲染后缀；
+    // translate/mixed 是质量预期不同的信息，保留。断言 A（fetch）不含来路词。
+    expect(screen.getByRole('link', { name: 'A' }).textContent).not.toContain(en.notif_via_fetch)
     expect(screen.getByRole('link', { name: 'B' }).textContent).toContain(en.notif_via_translate)
     const c = screen.getByRole('link', { name: 'C' })
     expect(c.textContent).toContain(en.notif_via_mixed)
