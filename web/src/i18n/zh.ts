@@ -277,7 +277,7 @@ export const zh = {
   wizard_retest: '重新测试',
 
   wizard_step_language_title: '字幕语言',
-  wizard_step_language_desc: 'Scout 要抓哪种语言的字幕？首选语言同时决定界面语言。',
+  wizard_step_language_desc: 'Scout 要抓哪种语言的字幕？',
   wizard_step_tmdb_title: 'TMDB',
   wizard_step_tmdb_desc: 'Scout 用 TMDB 识别你的剧集与电影。',
   wizard_step_llm_title: '语言模型',
@@ -323,9 +323,10 @@ export const zh = {
   wizard_zimuku_captcha_not_ready: '验证码求解需要第 3 步的 LLM。',
 
   wizard_roots_skip_note: '添加媒体目录前媒体库为空——之后可以在设置里加。',
-  // 2026-08-27 实测：用户不知道该填宿主机路径还是容器路径。契约（deployContract）：
-  // 容器把宿主机根挂成 /hostroot，故按机器真实路径填 + /hostroot 前缀。
-  wizard_roots_hostroot_note: '路径按运行容器那台机器的真实路径填写，前面加 /hostroot 前缀——例如宿主机的 /mnt/media 在这里是 /hostroot/mnt/media。',
+  // 2026-08-28 用户实测纠偏：初版这里教用户手动加 /hostroot 前缀，与 hostrootPath.ts 的
+  // 设计契约打架（用户写宿主机真实路径、前缀内部处理、界面永不显示 /hostroot；三个消费点
+  // 全走 toContainerPath 且幂等）。文案改为按机器真实样子填——与设置页 placeholder 同口径。
+  wizard_roots_hostroot_note: '路径按运行容器那台机器上的真实样子填写——例如宿主机的 /mnt/media 就填 /mnt/media，容器内部的挂载前缀由 Scout 自动处理。',
 
   wizard_launch_configured: '已配置',
   wizard_launch_skipped: '已跳过',

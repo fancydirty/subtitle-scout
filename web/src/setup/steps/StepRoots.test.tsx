@@ -54,12 +54,16 @@ describe('StepRoots', () => {
   })
 
   // 2026-08-27 实测：用户在这一步不知道该填宿主机路径还是容器路径（容器把宿主机根
-  // 挂成 /hostroot，deployContract 钉死的契约）。加一行说明：按机器上的真实路径填，
-  // 前面加 /hostroot 前缀，并给一个例子。
-  it('带 /hostroot 路径说明（按宿主机真实路径 + /hostroot 前缀，含例子）', () => {
+  // 挂成 /hostroot，deployContract 钉死的契约）。2026-08-28 用户实测纠偏：初版说明教用户
+  // 手动加 /hostroot 前缀，与系统设计打架——toContainerPath/toHostPath 的契约本来就是
+  // 「用户写宿主机真实路径，前缀内部处理，界面永不显示 /hostroot」（hostrootPath.ts 注释原文
+  // "users see host paths, never /hostroot"；添加/删除/daemon 消费三处全走 toContainerPath，
+  // 幂等所以老的带前缀写法也不炸）。说明改为：按你机器上的真实样子填，前缀 Scout 自动处理。
+  it('路径说明：按宿主机真实路径填（不教 /hostroot 前缀——那是内部实现），含例子', () => {
     renderStep()
-    expect(screen.getByText(/\/hostroot/)).toBeInTheDocument()
-    expect(screen.getByText(/\/hostroot\/mnt\/media/)).toBeInTheDocument()
+    // 说明里出现 /mnt/media 例子、且**不出现**教用户手写 /hostroot 前缀的指令。
+    expect(screen.getByText(/\/mnt\/media/)).toBeInTheDocument()
+    expect(screen.queryByText(/\/hostroot\/mnt\/media/)).toBeNull()
   })
 
   it('加一个目录 → Continue 解锁 + patchStatus 同步计数', () => {

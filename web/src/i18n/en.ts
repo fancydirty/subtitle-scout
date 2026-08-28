@@ -335,7 +335,7 @@ export const en = {
   wizard_retest: 'Re-test',
 
   wizard_step_language_title: 'Subtitle language',
-  wizard_step_language_desc: 'Which language should Scout fetch subtitles in? Your pick also sets the UI language.',
+  wizard_step_language_desc: 'Which language should Scout fetch subtitles in?',
   wizard_step_tmdb_title: 'TMDB',
   wizard_step_tmdb_desc: 'Scout identifies your shows and movies with TMDB.',
   wizard_step_llm_title: 'Language model',
@@ -383,7 +383,7 @@ export const en = {
   wizard_roots_skip_note: 'Library will stay empty until you add a media folder — you can do this later in Settings.',
   // 2026-08-27 实测：用户不知道该填宿主机路径还是容器路径。契约（deployContract）：
   // 容器把宿主机根挂成 /hostroot，故按机器真实路径填 + /hostroot 前缀。
-  wizard_roots_hostroot_note: 'Use the real path on the machine running the container, prefixed with /hostroot — for example, /mnt/media on the host is /hostroot/mnt/media here.',
+  wizard_roots_hostroot_note: 'Write the path exactly as it appears on the machine running the container — /mnt/media on the host is just /mnt/media here; Scout handles the container mount prefix internally.',
 
   wizard_launch_configured: 'Configured',
   wizard_launch_skipped: 'Skipped',

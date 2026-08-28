@@ -61,7 +61,9 @@ describe('BootstrapWizard 外壳', () => {
   it('渲染首步 title/desc（走 t()）与步数对应的步进点', () => {
     const { container } = renderWizard()
     expect(screen.getByRole('heading', { name: 'Subtitle language' })).toBeInTheDocument()
-    expect(screen.getByText(/pick also sets the UI language/)).toBeInTheDocument()
+    // 2026-08-28 用户裁决：desc 删掉「首选语言同时决定界面语言」一句（联动行为保留，只删文案）。
+    expect(screen.getByText(/Which language should Scout fetch subtitles in\?/)).toBeInTheDocument()
+    expect(screen.queryByText(/sets the UI language/)).toBeNull()
     expect(container.querySelectorAll('[role="img"] > span')).toHaveLength(2)
   })
 
