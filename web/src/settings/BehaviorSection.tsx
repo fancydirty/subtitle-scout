@@ -4,8 +4,10 @@
 // 这份状态的唯一写手——settings hook 的 data 只作首载种子，之后每次单键 PUT 成功都直接拿响应体
 // 覆盖 local，不需要重新 GET。
 //
-// 已知债务如实标注（DESIGN.md §8）：target_languages/scan_interval_ms/trace_retention_days 已真
-// 消费；hardsub_mode 由 find-subtitle worker 消费。特典排除走 judge 规则 0，设置页不再有开关。
+// 消费真相如实标注（DESIGN.md §8）：target_languages/trace_retention_days daemon 已真消费；
+// scan_interval_ms 于 2026-08-28 才真接线（inspectEveryMs getter 化 + index.ts 接线 + clampInterval
+// 防呆），此前 NumberSettingRow 的分钟输入框存了值但 daemon 从不读——本次一并换成五档分段。
+// hardsub_mode 由 find-subtitle worker 消费。特典排除走 judge 规则 0，设置页不再有开关。
 // ai_translate_enabled 行已迁至 TranslateSection.tsx（Wave 3）。
 //
 // 控件栈（Plan C Task 25 迁移）：Astryx Switch/TextInput/Selector/NumberInput/Button 全卸——
@@ -17,6 +19,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Button } from '../components/ui/button.js'
 import { EmptyState } from '../components/ui/empty-state.js'
 import { Input } from '../components/ui/input.js'
+import { Segmented } from '../components/ui/segmented.js'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select.js'
 import { Switch } from '../components/ui/switch.js'
 import { api } from '../api/client.js'
@@ -27,7 +30,7 @@ import { localizeErrorValue } from '../lib/errorText.js'
 import {
   SELECTABLE_TARGET_LANGUAGES,
   DEFAULT_TARGET_LANGUAGES, DEFAULT_HARDSUB_MODE,
-  PLACEHOLDER_TRACE_RETENTION_DAYS, PLACEHOLDER_SCAN_INTERVAL_MINUTES, SCAN_INTERVAL_MS_PER_MINUTE,
+  PLACEHOLDER_TRACE_RETENTION_DAYS,
 } from './text.js'
 
 interface RowProps {
@@ -276,6 +279,69 @@ function NumberSettingRow({
   )
 }
 
+// 巡检频率五档（存 ms）。方向 A 安全档位；daemon 侧 clampInterval 兜底越界（[1h,7d]）。
+// 2026-08-28：这五档的值就是 daemon inspectEveryMs 每轮现取的那个 scan_interval_ms。
+const SCAN_FREQ_OPTIONS = [
+  { value: String(6 * 3600_000), labelKey: 'settings_scan_freq_6h' },
+  { value: String(12 * 3600_000), labelKey: 'settings_scan_freq_12h' },
+  { value: String(24 * 3600_000), labelKey: 'settings_scan_freq_24h' },
+  { value: String(48 * 3600_000), labelKey: 'settings_scan_freq_48h' },
+  { value: String(7 * 24 * 3600_000), labelKey: 'settings_scan_freq_weekly' },
+] as const
+
+/** 库存值落到最近档（老用户手输过分钟数也不炸，值仍合法，daemon 侧 clamp 兜底）。
+ *  空/NaN/0 → 默认每天（24h）。 */
+function nearestFreq(ms: string | null): string {
+  const n = Number(ms)
+  if (!Number.isFinite(n) || n <= 0) return SCAN_FREQ_OPTIONS[2].value
+  return SCAN_FREQ_OPTIONS.reduce(
+    (best, o) => (Math.abs(Number(o.value) - n) < Math.abs(Number(best) - n) ? o.value : best),
+    SCAN_FREQ_OPTIONS[2].value,
+  )
+}
+
+/** 巡检频率行：五档分段（即存单键 PUT scan_interval_ms）+「立即巡检」按钮（复用
+ *  api.triggerInspect → POST /api/v2/library/inspect，与 wizard 完成即扫、活动页「现在跑」同一端点）。 */
+function ScanFrequencyRow({ settings, onUpdated }: RowProps) {
+  const { t, lang } = useT()
+  const { error, commit } = useFieldCommit(onUpdated)
+  const [inspecting, setInspecting] = useState(false)
+  const [inspectMsg, setInspectMsg] = useState<string | null>(null)
+
+  const runInspectNow = async () => {
+    setInspecting(true)
+    setInspectMsg(null)
+    try {
+      await api.triggerInspect()
+      setInspectMsg(t('settings_scan_inspect_done'))
+    } catch (e) {
+      setInspectMsg(localizeErrorValue(e, lang))
+    } finally {
+      setInspecting(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <span className="text-[13px] font-medium leading-5 text-foreground">{t('settings_scan_freq_label')}</span>
+      <div className="flex items-center gap-3 flex-wrap">
+        <Segmented
+          label={t('settings_scan_freq_label')}
+          items={SCAN_FREQ_OPTIONS.map((o) => ({ value: o.value, label: t(o.labelKey) }))}
+          value={nearestFreq(settings.scan_interval_ms)}
+          onChange={(v) => void commit('scan_interval_ms', v)}
+        />
+        <Button variant="secondary" size="sm" disabled={inspecting} onClick={() => void runInspectNow()}>
+          {t('settings_scan_inspect_now')}
+        </Button>
+      </div>
+      <span className="text-[11px] leading-4 text-muted-foreground">{t('settings_scan_freq_note')}</span>
+      {inspectMsg ? <span className="text-[11px] leading-4 text-fn-green">{inspectMsg}</span> : null}
+      {error ? <p role="alert" className="text-[11px] leading-4 text-fn-red">{error}</p> : null}
+    </div>
+  )
+}
+
 interface Props {
   settings: Async<SettingsDTO>
 }
@@ -334,15 +400,7 @@ export function BehaviorSection({ settings }: Props) {
           placeholder={PLACEHOLDER_TRACE_RETENTION_DAYS}
           note={t('settings_trace_retention_note')}
         />
-        <NumberSettingRow
-          settings={local}
-          onUpdated={setLocal}
-          settingKey="scan_interval_ms"
-          label={t('settings_scan_interval_label')}
-          placeholder={PLACEHOLDER_SCAN_INTERVAL_MINUTES}
-          unitDivisor={SCAN_INTERVAL_MS_PER_MINUTE}
-          note={t('settings_scan_interval_note')}
-        />
+        <ScanFrequencyRow settings={local} onUpdated={setLocal} />
       </div>
     </section>
   )

@@ -54,6 +54,15 @@ import {
 
 export const INSPECT_INTERVAL_MS = 24 * 60 * 60 * 1000
 
+const MIN_INTERVAL_MS = 60 * 60 * 1000          // 1h 安全下限（方向 A 防呆）
+const MAX_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000 // 7d 上限
+/** settings.scan_interval_ms → 生效巡检间隔。空/NaN/0 回默认 24h；越界钳回 [1h,7d]。
+ *  钳制是防呆不是防炸：单飞行主循环下「跑不完就顺延」本不报错（见 spec）。 */
+export function clampInterval(ms: number): number {
+  if (!Number.isFinite(ms) || ms <= 0) return INSPECT_INTERVAL_MS
+  return Math.min(MAX_INTERVAL_MS, Math.max(MIN_INTERVAL_MS, ms))
+}
+
 /** 翻译车道的空闲节拍（2026-08-20 用户裁决：翻译改为独立车道持续排干，见 translateLoop）。
  *
  *  只在**空闲**（无候选 / 全在退避 / 开关关闭）时睡这一拍；有活时背靠背连续领。
@@ -191,8 +200,10 @@ export interface DaemonV2Deps {
   /** 只读根缓存（115 测试目录——字幕派发会 ENOENT，识别照常）。检测一次缓存。 */
   writableRoots?: Map<string, boolean>
   log: (msg: string) => void
-  /** 测试注入：距上次巡检满这个时间才算到点。默认 INSPECT_INTERVAL_MS。 */
-  inspectEveryMs?: number
+  /** 距上次巡检满这个时间才算到点。默认 INSPECT_INTERVAL_MS。
+   *  getter 而非静态值（同 targetLanguage/traceRetentionDays 口径）：每轮巡检现取，
+   *  设置页改 scan_interval_ms 下一轮即生效、不重启容器。生产接线见 cli/index.ts。 */
+  inspectEveryMs?: () => number
   /** 巡检失败后的重试退避（D4）。默认 INSPECT_FAILURE_BACKOFF_MS。 */
   inspectFailureBackoffMs?: number
   /** 维护循环的节拍（测试注入）。默认 MAINTENANCE_TICK_MS(5min)。
@@ -690,7 +701,7 @@ export class ScoutDaemonV2 {
 
       const now = this.deps.now?.() ?? Date.now()
       const lastInspectAt = this.readLastInspectAt()
-      const everyMs = this.deps.inspectEveryMs ?? INSPECT_INTERVAL_MS
+      const everyMs = this.deps.inspectEveryMs?.() ?? INSPECT_INTERVAL_MS
       const permitted = this.deps.workPermitted?.() ?? true
 
       // 手动点火取件：必须在 24h 闸之前。闸关死 / 失败短退避都挡不住这次。

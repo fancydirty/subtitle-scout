@@ -4,7 +4,7 @@ import { openDb } from './db.js'
 // 真实探针（不是替身）：FFPROBE_PATH 空串那组回归必须跨过 streamProbe.ts 的二进制解析那一档
 // ——本次事故就坏在那里，而 C12 那组全用假 probe，从不经过它。
 import { probeEmbeddedSubtitles, probeDurationSec } from '../files/streamProbe.js'
-import { ScoutDaemonV2, INSPECT_INTERVAL_MS } from './daemonV2.js'
+import { ScoutDaemonV2, INSPECT_INTERVAL_MS, clampInterval } from './daemonV2.js'
 // C48：解析器版本常量。测试**必须**import 真常量而不是手抄一个字面量——手抄的话，
 // 递增版本那天这组用例仍按旧值建模，测的是一个已经不存在的系统（同 INSPECT_INTERVAL_MS
 // 那次的教训，见 mkDeps 里 inspectEveryMs 的注释）。
@@ -54,7 +54,7 @@ function mkDeps(db: ReturnType<typeof openDb>, overrides: TestDeps = {}) {
     // INSPECT_INTERVAL_MS 一直被 import 却从未使用（清理时由 noUnusedLocals 抓出）——
     // 而这里手抄的字面量恰好就是它的值。抄一份的后果是：生产改巡检周期那天，这个文件里
     // 所有"距上次巡检不足/已满一个周期"的用例仍按旧值建模，测的是一个已经不存在的系统。
-    inspectEveryMs: INSPECT_INTERVAL_MS,
+    inspectEveryMs: () => INSPECT_INTERVAL_MS,
     now: () => 1_000_000_000_000,
     ...overrides,
   } as any
@@ -6630,7 +6630,7 @@ describe('ScoutDaemonV2.requestScan · 带外扫描（"加根后立刻扫"的真
       ...fakeFs({ '/media': ['/media/Show/E01.mkv', '/media/Show/E02.mkv'] }),
       // 巡检闸关死（inspectEveryMs 极大 + 已巡检过），确保写进 files 的**只可能**是
       // 带外扫描那一次——否则自然巡检会顺手扫一遍，这条就成了假绿。
-      inspectEveryMs: Number.MAX_SAFE_INTEGER,
+      inspectEveryMs: () => Number.MAX_SAFE_INTEGER,
       maintenanceTickMs: 1,
       sleep: undefined,
     }))
@@ -6661,7 +6661,7 @@ describe('ScoutDaemonV2.requestScan · 带外扫描（"加根后立刻扫"的真
     const daemon = new ScoutDaemonV2(mkDeps(db, {
       roots: ['/media'],
       ...fakeFs({ '/media': ['/media/Show/E01.mkv'] }),
-      inspectEveryMs: Number.MAX_SAFE_INTEGER,
+      inspectEveryMs: () => Number.MAX_SAFE_INTEGER,
       maintenanceTickMs: 30_000,   // 不唤醒就得等 30 秒 → 用例超时/断言空
       sleep: undefined,
     }))
@@ -6689,7 +6689,7 @@ describe('ScoutDaemonV2.requestScan · 带外扫描（"加根后立刻扫"的真
       listVideoFiles: (root: string) => { walks.push(root); return ['/media/Show/E01.mkv'] },
       fileExists: () => true,
       statFile: () => ({ mtimeMs: 1000, size: BIG }),
-      inspectEveryMs: Number.MAX_SAFE_INTEGER,
+      inspectEveryMs: () => Number.MAX_SAFE_INTEGER,
       maintenanceTickMs: 1,
       sleep: undefined,
     }))
@@ -6723,7 +6723,7 @@ describe('ScoutDaemonV2.requestScan · 带外扫描（"加根后立刻扫"的真
       listVideoFiles: () => ['/media/Show/E01.mkv'],
       statFile: () => { throw new Error('boom') },
       fileExists: () => true,
-      inspectEveryMs: Number.MAX_SAFE_INTEGER,
+      inspectEveryMs: () => Number.MAX_SAFE_INTEGER,
       maintenanceTickMs: 1,
       sleep: undefined,
       log: (m: string) => logs.push(m),
@@ -6807,7 +6807,7 @@ describe('ScoutDaemonV2.requestScan · 带外扫描（"加根后立刻扫"的真
       targetLanguage: 'zh',
       // 巡检闸关死：确保 covered **只可能**由带外扫描写出来，否则自然巡检顺手扫一遍
       // 就成了假绿（同本组第一条的论证）。
-      inspectEveryMs: Number.MAX_SAFE_INTEGER,
+      inspectEveryMs: () => Number.MAX_SAFE_INTEGER,
       maintenanceTickMs: 1,
       sleep: undefined,
     }))
@@ -6890,7 +6890,7 @@ describe('ScoutDaemonV2.requestInspect · 手动点火', () => {
     }))
     const daemon = new ScoutDaemonV2(mkDeps(db, {
       ...backoffMedia(subtitleWorker),
-      inspectEveryMs: Number.MAX_SAFE_INTEGER,
+      inspectEveryMs: () => Number.MAX_SAFE_INTEGER,
       maintenanceTickMs: 1,
       sleep: undefined,
       now: () => now,
@@ -6976,7 +6976,7 @@ describe('ScoutDaemonV2.requestInspect · 手动点火', () => {
       roots: ['/media'],
       ...fakeFs({ '/media': ['/media/Show/E01.mkv'] }),
       identify: { db, runIdentify: identifySpy, worker: {} as any },
-      inspectEveryMs: Number.MAX_SAFE_INTEGER,
+      inspectEveryMs: () => Number.MAX_SAFE_INTEGER,
       maintenanceTickMs: 30_000,
       sleep: undefined,
     }))
@@ -6999,7 +6999,7 @@ describe('ScoutDaemonV2.requestInspect · 手动点火', () => {
   it('🔴 空闲时 requestInspect() 返回 queued', async () => {
     const db = openDb(':memory:')
     const daemon = new ScoutDaemonV2(mkDeps(db, {
-      inspectEveryMs: Number.MAX_SAFE_INTEGER,
+      inspectEveryMs: () => Number.MAX_SAFE_INTEGER,
     }))
     expect(daemon.requestInspect()).toBe('queued')
     db.close()
@@ -7014,7 +7014,7 @@ describe('ScoutDaemonV2.requestInspect · 手动点火', () => {
     const daemon = new ScoutDaemonV2(mkDeps(db, {
       roots: ['/media'],
       rootsProvider: () => { throw new Error('roots exploded') },
-      inspectEveryMs: Number.MAX_SAFE_INTEGER,
+      inspectEveryMs: () => Number.MAX_SAFE_INTEGER,
       maintenanceTickMs: 1,
       sleep: undefined,
       now: () => now,
@@ -7047,7 +7047,7 @@ describe('ScoutDaemonV2.requestInspect · 手动点火', () => {
       ...fakeFs({ '/media': ['/media/Show/E01.mkv'] }),
       identify: { db, runIdentify: identifySpy, worker: {} as any },
       workPermitted: () => false,
-      inspectEveryMs: Number.MAX_SAFE_INTEGER,
+      inspectEveryMs: () => Number.MAX_SAFE_INTEGER,
       maintenanceTickMs: 1,
       sleep: undefined,
       now: () => now,
@@ -7077,7 +7077,7 @@ describe('ScoutDaemonV2.requestInspect · 手动点火', () => {
     const daemon = new ScoutDaemonV2(mkDeps(db, {
       ...backoffMedia(subtitleWorker),
       // 周期缩到 1s：clock 往前挪一小步就够触发自然闸，16h 退避窗还在。
-      inspectEveryMs: 1_000,
+      inspectEveryMs: () => 1_000,
       maintenanceTickMs: 1,
       sleep: undefined,
       now: () => clock,
@@ -7099,6 +7099,58 @@ describe('ScoutDaemonV2.requestInspect · 手动点火', () => {
 
     expect(pathsInDb(db), '前提：第二轮扫描没把退避行删掉').toEqual([VIDEO])
     expect(subtitleWorker, 'C26：同一实例的自然巡检仍须滤退避').toHaveBeenCalledTimes(1)
+    db.close()
+  })
+})
+
+// 巡检频率可配置（2026-08-28）：clampInterval 防呆 + inspectEveryMs getter 化。
+// 死设置 scan_interval_ms 复活的两块单元证据；接线（index.ts/watchWiring）由 tsc + 集成守。
+describe('clampInterval（settings.scan_interval_ms → 生效间隔的防呆钳制）', () => {
+  const H = 3600_000, D = 24 * H
+  it('空/NaN/0 → 默认 24h（INSPECT_INTERVAL_MS）', () => {
+    for (const v of [NaN, 0, undefined as unknown as number]) {
+      expect(clampInterval(v)).toBe(INSPECT_INTERVAL_MS)
+    }
+  })
+  it('低于安全下限 1h → 钳到 1h（防超大库自伤）', () => {
+    expect(clampInterval(30 * 60_000)).toBe(H)
+  })
+  it('高于上限 7d → 钳到 7d', () => {
+    expect(clampInterval(10 * D)).toBe(7 * D)
+  })
+  it('合法档位原样返回（6h/12h/24h/48h/7d）', () => {
+    for (const v of [6 * H, 12 * H, D, 2 * D, 7 * D]) expect(clampInterval(v)).toBe(v)
+  })
+})
+
+describe('inspectEveryMs getter 化（改设置下一轮巡检即生效，不重启容器）', () => {
+  it('主循环每轮求值 deps.inspectEveryMs()（两轮之间改值 → 出现过两个不同间隔）', async () => {
+    const db = openDb(':memory:')
+    // 时间闸恒关：now 与 last_inspect_at 相等 → 任何 everyMs 都不满足，巡检不真跑，
+    // 我们只观测「getter 被每拍求值」这一件事（不牵扯 runInspection 的副作用）。
+    const now = 1_000_000_000_000
+    db.prepare(`INSERT INTO meta (key, value) VALUES ('last_inspect_at', ?)`).run(String(now))
+    const calls: number[] = []
+    let every = 6 * 3600_000
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      // getter：每拍现取。第一拍后把 every 改成 12h，断言 calls 里出现过两个不同值。
+      inspectEveryMs: () => { calls.push(every); return every },
+      maintenanceTickMs: 1,
+      sleep: undefined,
+      now: () => now,
+    }))
+    const ctrl = new AbortController()
+    const p = daemon.run(ctrl.signal)
+    await new Promise(r => setTimeout(r, 15))
+    every = 12 * 3600_000
+    await new Promise(r => setTimeout(r, 30))
+    ctrl.abort()
+    await p
+
+    expect(calls.length).toBeGreaterThan(1)
+    expect(new Set(calls).size).toBe(2)
+    expect(calls).toContain(6 * 3600_000)
+    expect(calls).toContain(12 * 3600_000)
     db.close()
   })
 })

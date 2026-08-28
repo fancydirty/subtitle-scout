@@ -3,7 +3,7 @@
 // 注入（同 workflow/PendingLane.test.tsx 的既有先例：组件本身只认 Async<T> 形状，不关心数据
 // 从 hook 还是从测试构造），只有单键 PUT 走真的 fetch mock。
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react'
 import { I18nProvider } from '../i18n/useT.js'
 import { openRadixSelect } from '../testSupport/radix.js'
 import { SELECTABLE_TARGET_LANGUAGES } from './text.js'
@@ -11,6 +11,7 @@ import { SELECTABLE_TARGET_LANGUAGES } from './text.js'
 // 这是 web/src/api/typeContract.ts 的既有跨界写法，编译期擦除、不进 bundle。
 import type { SELECTABLE_TARGET_LANGUAGES as BE_SELECTABLE } from '../../../src/agent/languages.js'
 import { BehaviorSection } from './BehaviorSection.js'
+import { api } from '../api/client.js'
 import type { Async } from '../api/hooks.js'
 import type { SettingsDTO } from '../api/types.js'
 
@@ -67,8 +68,9 @@ describe('BehaviorSection：null 值默认占位', () => {
 
     const traceDays = screen.getByRole('spinbutton', { name: 'Trace retention (days)' })
     expect(traceDays).toHaveAttribute('placeholder', '30')
-    const scanInterval = screen.getByRole('spinbutton', { name: 'Scan interval (minutes)' })
-    expect(scanInterval).toHaveAttribute('placeholder', '15')
+    // scan_interval_ms 未设 → 五档分段落到默认档（每天/24h），不再是分钟输入框。
+    const freq = screen.getByRole('radiogroup', { name: 'Scan frequency' })
+    expect(within(freq).getByRole('radio', { name: 'Daily' })).toHaveAttribute('aria-checked', 'true')
 
     expect(
       screen.getAllByText('Takes effect on the next library scan.'),
@@ -78,9 +80,6 @@ describe('BehaviorSection：null 值默认占位', () => {
     ).toBeInTheDocument()
     expect(
       screen.getByText('Takes effect at the daily trace cleanup.'),
-    ).toBeInTheDocument()
-    expect(
-      screen.getByText('Takes effect on the next scan tick.'),
     ).toBeInTheDocument()
   })
 
@@ -96,7 +95,9 @@ describe('BehaviorSection：null 值默认占位', () => {
     expect(screen.getByRole('combobox', { name: 'Target subtitle language' }).textContent).toBe('English')
     expect(screen.getByRole('combobox', { name: 'Hardsub assumption' }).textContent).toContain('Aggressive')
     expect(screen.getByRole('spinbutton', { name: 'Trace retention (days)' })).toHaveValue(14)
-    expect(screen.getByRole('spinbutton', { name: 'Scan interval (minutes)' })).toHaveValue(10)
+    // scan_interval_ms=600000（=10min，老用户手输过的非档位值）→ 落到最近档（6h）并高亮，不报错。
+    const freq = screen.getByRole('radiogroup', { name: 'Scan frequency' })
+    expect(within(freq).getByRole('radio', { name: 'Every 6 hours' })).toHaveAttribute('aria-checked', 'true')
   })
 
   it('ai_translate 行已迁至 TranslateSection（Wave 3），BehaviorSection 不再渲染该开关', () => {
@@ -171,29 +172,32 @@ describe('BehaviorSection：单键即时 PUT', () => {
     expect(JSON.parse(String(init.body))).toEqual({ hardsub_mode: 'off' })
   })
 
-  it('scan_interval 已设置值未改动时失焦不重复 PUT（换算后与存储值比较）', async () => {
-    const fetchMock = mockPut(200, { ...NULL_SETTINGS, scan_interval_ms: '600000' })
+  it('巡检频率是五档 radiogroup，选中即以对应 ms 单键 PUT scan_interval_ms', async () => {
+    renderSection(asyncOf({ ...NULL_SETTINGS, scan_interval_ms: String(24 * 3600_000) }))
+    const group = screen.getByRole('radiogroup', { name: 'Scan frequency' })
+    const radios = within(group).getAllByRole('radio')
+    expect(radios).toHaveLength(5)
+    // 默认档（24h）当前高亮。
+    expect(within(group).getByRole('radio', { name: 'Daily' })).toHaveAttribute('aria-checked', 'true')
+
+    const fetchMock = mockPut(200, { ...NULL_SETTINGS, scan_interval_ms: String(6 * 3600_000) })
     vi.stubGlobal('fetch', fetchMock)
-    renderSection(asyncOf({ ...NULL_SETTINGS, scan_interval_ms: '600000' }))
-
-    const input = screen.getByRole('spinbutton', { name: 'Scan interval (minutes)' })
-    expect(input).toHaveValue(10)
-    fireEvent.blur(input)
-    await waitFor(() => expect(fetchMock).not.toHaveBeenCalled())
-  })
-
-  it('scan_interval 按分钟显示、提交时换算成后端毫秒', async () => {
-    const fetchMock = mockPut(200, { ...NULL_SETTINGS, scan_interval_ms: '1200000' })
-    vi.stubGlobal('fetch', fetchMock)
-    renderSection(asyncOf(NULL_SETTINGS))
-
-    const input = screen.getByRole('spinbutton', { name: 'Scan interval (minutes)' })
-    fireEvent.change(input, { target: { value: '20' } })
-    fireEvent.keyDown(input, { key: 'Enter' })
+    fireEvent.click(within(group).getByRole('radio', { name: 'Every 6 hours' }))
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
     const [, init] = fetchMock.mock.calls[0] as [RequestInfo, RequestInit]
-    expect(JSON.parse(String(init.body))).toEqual({ scan_interval_ms: '1200000' })
+    expect(init.method).toBe('PUT')
+    expect(JSON.parse(String(init.body))).toEqual({ scan_interval_ms: String(6 * 3600_000) })
+  })
+
+  it('立即巡检按钮 → POST /api/v2/library/inspect（复用 api.triggerInspect）', async () => {
+    const inspect = vi.spyOn(api, 'triggerInspect').mockResolvedValue({ ok: true })
+    renderSection(asyncOf(NULL_SETTINGS))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Scan now' }))
+
+    await waitFor(() => expect(inspect).toHaveBeenCalledTimes(1))
+    expect(await screen.findByText('Scan triggered')).toBeInTheDocument()
   })
 
   it('trace_retention_days 回车提交单键 PUT', async () => {
@@ -271,7 +275,7 @@ describe('BehaviorSection：迁移锁', () => {
     expect(screen.getByRole('combobox', { name: 'Hardsub assumption' })).toBeInTheDocument()
     expect(screen.queryByRole('switch', { name: 'Exclude extras' })).toBeNull()
     expect(screen.getByRole('spinbutton', { name: 'Trace retention (days)' })).toBeInTheDocument()
-    expect(screen.getByRole('spinbutton', { name: 'Scan interval (minutes)' })).toBeInTheDocument()
+    expect(screen.getByRole('radiogroup', { name: 'Scan frequency' })).toBeInTheDocument()
   })
 
   it('DOM 里不再有 astryx-* 类名', () => {

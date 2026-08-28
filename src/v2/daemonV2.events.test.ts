@@ -31,7 +31,7 @@ function mkDeps(db: ReturnType<typeof openDb>, overrides: Record<string, any> = 
     log: () => {},
     // 同 daemonV2.test.ts 的既有约定：测试永远不真的等（R8 重试退避 1s+3s 会把每条用例拖慢）。
     sleep: async () => {},
-    inspectEveryMs: 24 * 60 * 60 * 1000,
+    inspectEveryMs: () => 24 * 60 * 60 * 1000,
     now: () => NOW,
     ...overrides,
   } as any

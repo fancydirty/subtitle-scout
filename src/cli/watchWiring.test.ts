@@ -27,6 +27,7 @@ function mkArgs(over: Record<string, any> = {}) {
       identifyProvider: () => ({} as any),
       subtitleWorker: (async () => ({ installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [] })) as any,
       targetLanguage: () => 'zh',
+      inspectEveryMs: () => 24 * 60 * 60 * 1000,
       log: () => {},
       now: () => 1_000,
       gcOrphans: vi.fn(() => 0),
@@ -121,6 +122,19 @@ describe('buildDaemonV2Deps · D5 四个运维器官全部接上', () => {
     expect(deps.traceRetentionDays!()).toBe(7)
     deps.runs!.pruneTraces(123)
     expect(args.runs.pruneTraces).toHaveBeenCalledWith(123)
+    db.close()
+  })
+
+  // 2026-08-28 死设置复活：inspectEveryMs 此前只有测试注入、生产从不接线（settings.scan_interval_ms
+  // 到 daemon 之间断线）。现在它是 WatchWiringArgs 必填字段（同 4 运维器官/翻译流的手法：漏接不报错、
+  // 只是巡检频率永远吃硬编码 24h），且惰性——设置页改完下一轮巡检即生效，不用重启容器。
+  it('🔴 inspectEveryMs 被接上且惰性（改 scan_interval_ms 下一轮即生效）', () => {
+    let every = 6 * 3600_000
+    const { db, args } = mkArgs({ inspectEveryMs: () => every })
+    const deps = buildDaemonV2Deps(args)
+    expect(deps.inspectEveryMs!()).toBe(6 * 3600_000)
+    every = 12 * 3600_000
+    expect(deps.inspectEveryMs!()).toBe(12 * 3600_000)
     db.close()
   })
 

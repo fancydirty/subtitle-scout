@@ -16,7 +16,7 @@ function mkDeps(db: ReturnType<typeof openDb>, over: Record<string, unknown> = {
     probeDuration: async () => null,
     log: () => {},
     sleep: async () => {},
-    inspectEveryMs: INSPECT_INTERVAL_MS,
+    inspectEveryMs: () => INSPECT_INTERVAL_MS,
     now: () => 1_000_000_000_000,
     emit: () => {},
     ...over,

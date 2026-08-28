@@ -58,7 +58,13 @@ describe('SettingsTabsPage', () => {
     mockHooks()
     renderPage()
     expect(screen.queryByRole('switch', { name: 'AI subtitle translation' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument()
+    // 通用 tab 上唯一的 radiogroup 是巡检频率五档（2026-08-28 新接线，非翻译控件）——
+    // 早先这里裸断言"无 radiogroup"是拿它当"无翻译控件"的粗代理；scan-frequency 落到
+    // 通用 tab 后代理失真。改为精确钉：radiogroup 恰一个且可及名是 Scan frequency，
+    // 既确认翻译控件没漏进来，也确认新档位控件确实在位。
+    const radiogroups = screen.queryAllByRole('radiogroup')
+    expect(radiogroups).toHaveLength(1)
+    expect(radiogroups[0]).toHaveAccessibleName('Scan frequency')
   })
 
   // ── setup/status 的 providers 契约（后端 buildSetupStatus 保证非可选） ──────────

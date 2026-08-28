@@ -57,7 +57,7 @@ import { makeMaintenanceState, runDbMaintenance } from '../v2/dbMaintenance.js'
 //   2. 把 TriagePage 挂回 AppShell。
 // 那一天在这里重新 import 是一行的事——而在此之前，这里不该有任何东西。
 
-import { ScoutDaemonV2 } from '../v2/daemonV2.js'
+import { ScoutDaemonV2, clampInterval } from '../v2/daemonV2.js'
 import { buildDaemonV2Deps } from './watchWiring.js'
 import { runIdentify } from '../agent/identifyWorker.js'
 import type { IdentifySchedulerDeps } from '../v2/identifyScheduler.js'
@@ -626,6 +626,10 @@ async function cmdWatch() {
     },
     // 债务D5 的既有口径：settings.target_languages 行为级优先，每次求值。
     targetLanguage: () => languagesNow().targetLanguages[0],
+    // 债务D5 口径：设置页改 scan_interval_ms 下一轮巡检即生效（getter 每轮求值），不重启容器。
+    // clampInterval 防呆：空/NaN/0 回默认 24h，越界钳回 [1h,7d]。BehaviorSection 的五档写的就是这个键。
+    // 2026-08-28：这一行是死设置复活的接线终点——此前 scan_interval_ms 到 daemon 之间无任何一根线。
+    inspectEveryMs: () => clampInterval(Number(settingsRepo.get('scan_interval_ms'))),
     log,
     now: () => Date.now(),
     // ── D5 的 4 个运维器官（C16：切换入口不得静默丢失既有能力）──

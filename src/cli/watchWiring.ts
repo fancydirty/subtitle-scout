@@ -32,6 +32,11 @@ export interface WatchWiringArgs {
 
   /** 惰性目标语言（settings.target_languages 行为级 > env 部署级，债务D5 的既有口径）。 */
   targetLanguage: () => string
+  /** 惰性巡检间隔（settings.scan_interval_ms → clampInterval，债务D5 同口径）。
+   *  **必填**，与 4 运维器官/翻译流同一手法：此前它只有测试注入、生产从不接线，于是
+   *  scan_interval_ms 设置到 daemon 之间断线、巡检频率永远吃硬编码 24h（本次修的正是这根断线）。
+   *  漏接不报错、只是死设置——让类型层强制每个构造点都想一次，比事后靠断言追要可靠。 */
+  inspectEveryMs: () => number
   log: (msg: string) => void
   now: () => number
 
@@ -98,6 +103,9 @@ export function buildDaemonV2Deps(args: WatchWiringArgs): DaemonV2Deps {
     // getter：设置页改 target_languages 后下一轮巡检即生效，不用重启容器（债务D5 口径）。
     // 用 get 访问器而不是求值一次——后者会把 watch 启动那一刻的语言冻死在进程里。
     get targetLanguage() { return args.targetLanguage() },
+    // 透传函数本身（不求值）：daemonV2 每轮巡检现取 → 改 scan_interval_ms 下一轮即生效。
+    // 死设置复活的接线终点（2026-08-28）——此前这里没有这一行，settings 到 daemon 断线。
+    inspectEveryMs: args.inspectEveryMs,
     log: args.log,
     now: args.now,
 

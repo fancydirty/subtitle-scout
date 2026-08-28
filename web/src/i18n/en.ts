@@ -236,8 +236,15 @@ export const en = {
 
   settings_trace_retention_label: 'Trace retention (days)',
   settings_trace_retention_note: 'Takes effect at the daily trace cleanup.',
-  settings_scan_interval_label: 'Scan interval (minutes)',
-  settings_scan_interval_note: 'Takes effect on the next scan tick.',
+  settings_scan_freq_label: 'Scan frequency',
+  settings_scan_freq_note: 'One scan pass = walk the library + identify + find subtitles, all at this frequency. On a large library this is a floor: if a pass has not finished, the next one is deferred — no error, no overlap. Saved instantly, takes effect on the next pass.',
+  settings_scan_freq_6h: 'Every 6 hours',
+  settings_scan_freq_12h: 'Every 12 hours',
+  settings_scan_freq_24h: 'Daily',
+  settings_scan_freq_48h: 'Every 2 days',
+  settings_scan_freq_weekly: 'Weekly',
+  settings_scan_inspect_now: 'Scan now',
+  settings_scan_inspect_done: 'Scan triggered',
 
   settings_save_error_prefix: "Couldn't save: ",
 

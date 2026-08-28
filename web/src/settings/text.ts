@@ -28,14 +28,11 @@ export const SELECTABLE_TARGET_LANGUAGES = [
  *  打架以**后端为准**对齐（spec 文档为过时记述）。 */
 export const DEFAULT_HARDSUB_MODE = 'off'
 
-/** trace_retention_days / scan_interval_ms 未设置时的占位数字——这两个 settings 键已被
- *  daemon 行为级消费（cli/index.ts: 债务D5 惰性读），此处数字是部署层兜底/缺省的真实参考
- *  （cli/index.ts 的 LOG_RETAIN_DAYS 兜底 30；src/daemon/selfScan.ts 的
- *  SELF_SCAN_DEFAULT_INTERVAL_MS=900000），只作占位参考。 */
+/** trace_retention_days 未设置时的占位数字——该 settings 键已被 daemon 行为级消费
+ *  （cli/index.ts: 债务D5 惰性读），此处数字是部署层兜底/缺省的真实参考
+ *  （cli/index.ts 的 LOG_RETAIN_DAYS 兜底 30），只作占位参考。
+ *  （scan_interval_ms 的分钟占位/换算常量已随 2026-08-28 五档分段改造删除——不再有分钟输入框。） */
 export const PLACEHOLDER_TRACE_RETENTION_DAYS = '30'
-export const PLACEHOLDER_SCAN_INTERVAL_MINUTES = '15'
-/** 后端仍存毫秒（scan_interval_ms），只在设置页边界换算成分钟给人类看。 */
-export const SCAN_INTERVAL_MS_PER_MINUTE = 60_000
 
 /** 删根确认对话框标题——把目标路径亮出来，用户在点下确认前清楚知道删的是哪一个。 */
 export function removeRootConfirmTitle(path: string, lang: Lang): string {

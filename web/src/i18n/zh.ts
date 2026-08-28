@@ -188,8 +188,15 @@ export const zh = {
 
   settings_trace_retention_label: '痕迹保留天数',
   settings_trace_retention_note: '每日痕迹清理时生效。',
-  settings_scan_interval_label: '扫描间隔（分钟）',
-  settings_scan_interval_note: '保存后，下一轮扫描生效。',
+  settings_scan_freq_label: '巡检频率',
+  settings_scan_freq_note: '一轮巡检 = 扫盘 + 识别 + 找字幕，三者同频。库很大时这是下限：上一轮没跑完，下一轮顺延，不会报错也不会并发。改动即存，下一轮生效。',
+  settings_scan_freq_6h: '每 6 小时',
+  settings_scan_freq_12h: '每 12 小时',
+  settings_scan_freq_24h: '每天',
+  settings_scan_freq_48h: '每 2 天',
+  settings_scan_freq_weekly: '每周',
+  settings_scan_inspect_now: '立即巡检',
+  settings_scan_inspect_done: '已触发巡检',
 
   settings_save_error_prefix: '保存失败：',
 
