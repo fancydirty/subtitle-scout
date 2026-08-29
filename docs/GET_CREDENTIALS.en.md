@@ -185,8 +185,57 @@ Store it on the wizard subtitle-sources step or the Settings Jimaku card.
 
 ---
 
+## 5. r3sub account (email + password)
+
+r3sub.com hosts official Traditional Chinese subtitle tracks from Taiwan releases (iTunes / Blu-ray rips). Chinese-target users only — the wizard and settings hide it for other target languages.
+
+### URLs
+
+```
+https://r3sub.com/
+https://forum.r3sub.com/entry/register
+```
+
+### Register
+
+1. Register on the forum with your email
+2. **Verify the email** — unverified accounts cannot log in
+3. Come back to Scout and enter the **same email and password**
+
+### Into Scout
+
+Settings / wizard subtitle sources · r3sub: email + password (both required). The test button performs a real login; only a passing pair is stored.
+
+Note: some releases there ship Blu-ray bitmap subtitles (`.sup`) only — Scout works with text subtitles and will honestly skip those.
+
+---
+
+## 6. SubDL API key
+
+SubDL is the practical successor to Subscene (shut down 2024) — an international catalog, strongest in English and European languages. Useful for every target language; for Chinese it mostly serves as the translation agent's English source.
+
+### URLs
+
+```
+https://subdl.com/
+https://subdl.com/panel/api
+```
+
+### Register
+
+1. Register a **free** account (email verification)
+2. Copy the API key from the account panel ([https://subdl.com/panel/api](https://subdl.com/panel/api))
+
+The free key is all you need: search quota 2000/day, downloads go through the anonymous pool of 300/day per IP. The paid "Pro" tier only matters for multi-IP server integrations (account-level download pool).
+
+### Into Scout
+
+Settings / wizard subtitle sources · SubDL: one API key field. Only a passing test is stored.
+
+---
+
 ## Security
 
 - Do not commit secrets to git, issues, screenshots, or chat
 - `.env` is not where these keys live
-- If leaked, rotate at ASSRT [usercp](https://assrt.net/usercp.php), TMDB [API](https://www.themoviedb.org/settings/api), OpenSubtitles [consumers](https://www.opensubtitles.com/en/consumers), Jimaku [account](https://jimaku.cc/account)
+- If leaked, rotate at ASSRT [usercp](https://assrt.net/usercp.php), TMDB [API](https://www.themoviedb.org/settings/api), OpenSubtitles [consumers](https://www.opensubtitles.com/en/consumers), Jimaku [account](https://jimaku.cc/account), SubDL [panel](https://subdl.com/panel/api); for r3sub change the account password on the forum

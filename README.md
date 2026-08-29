@@ -28,7 +28,7 @@ Get subtitle-scout running from zero to dashboard in under 5 minutes.
 
 Two credentials are required: **TMDB** (recognizes every file) and an **LLM** key set (judging and translation). The wizard is only complete once both are in place. Every subtitle source is optional.
 
-Of the five sources, three take keys and the wizard can skip all three — configure them anyway. OpenSubtitles is useful for **both Chinese-speaking and non-Chinese-speaking users**, which is why it should not be skipped. ASSRT is the professional Chinese catalog (finished Chinese sidecars). Jimaku is neither: it feeds the translation agent with Japanese source subtitles. The remaining two, **SubHD** and **Zimuku**, need no keys — they are Chinese-focused sources you enable with a toggle in Settings (off by default; see [SECURITY.md](./SECURITY.md) for the terms-of-service caveat).
+Of the seven sources, five take keys and the wizard can skip them all — configure the ones for your language anyway (the wizard and Settings only show sources relevant to your target language). OpenSubtitles and **SubDL** are international catalogs useful for **every target language** — don't skip them. ASSRT is the professional Chinese catalog (finished Chinese sidecars); **r3sub** carries official Traditional Chinese tracks from Taiwan releases (email + password of your r3sub.com account). Jimaku feeds the translation agent with Japanese source subtitles. The remaining two, **SubHD** and **Zimuku**, need no keys — they are Chinese-focused sources you enable with a toggle in Settings (off by default; see [SECURITY.md](./SECURITY.md) for the terms-of-service caveat).
 
 LLM (OpenAI-compatible) is a separate wizard step and is not covered here. One expectation to set now: **model tier matters more than any other setting.** The agent does long multi-step tool-calling; models below roughly the `deepseek-v4-flash` / mini tier do not fail loudly — they confidently fabricate, which shows up as misidentified media rather than an error. If matching quality is poor, suspect the model tier before filing a bug. Good value starting points: `deepseek-v4-flash` (api.deepseek.com), Qwen `qwen3.5-plus` (Alibaba DashScope), or any current mini/flash-class frontier model. Check current prices on each provider's official pricing page.
 
@@ -171,7 +171,7 @@ For detailed configuration, troubleshooting, and development setup, see the sect
 
 ![Subtitle Scout——详情页](docs/screenshots/app-detail-zh.png)
 
-凭证说明（中文 / English）：[docs/GET_CREDENTIALS.md](docs/GET_CREDENTIALS.md) · [docs/GET_CREDENTIALS.en.md](docs/GET_CREDENTIALS.en.md)。ASSRT 是专业中文源；OpenSubtitles 对中外用户都有用，不要省；Jimaku 给翻译 agent 当日文源字幕。
+凭证说明（中文 / English）：[docs/GET_CREDENTIALS.md](docs/GET_CREDENTIALS.md) · [docs/GET_CREDENTIALS.en.md](docs/GET_CREDENTIALS.en.md)。ASSRT 是专业中文源；r3sub 收录台版官方繁中字幕轨（填 r3sub.com 账号邮箱+密码）；OpenSubtitles 与 SubDL 是国际源、任何目标语言都有用，不要省；Jimaku 给翻译 agent 当日文源字幕。向导和设置页只展示与你目标语言相关的源。
 
 启动后通过监控页完成配置：
 

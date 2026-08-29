@@ -185,8 +185,57 @@ https://jimaku.cc/api/docs
 
 ---
 
+## 5. r3sub 账号（邮箱 + 密码）
+
+r3sub.com 收录台版官方繁体中文字幕轨（iTunes / 蓝光提取）。仅对中文目标用户展示——其他目标语言的向导和设置页会隐藏它。
+
+### URLs
+
+```
+https://r3sub.com/
+https://forum.r3sub.com/entry/register
+```
+
+### 注册
+
+1. 用邮箱在论坛注册
+2. **完成邮箱验证**——未验证的账号无法登录
+3. 回到 Scout 填入**同一套邮箱和密码**
+
+### 写入 Scout
+
+Settings / 向导字幕源 · r3sub：邮箱 + 密码（两项都必填）。测试按钮做真实登录，只有测通的账密才落库。
+
+注意：站上部分资源只有蓝光位图字幕（`.sup`）——Scout 只处理文本字幕，会如实跳过这类资源。
+
+---
+
+## 6. SubDL API key
+
+SubDL 是 Subscene（2024 年关站）事实上的接班者——国际化片库，英语与欧洲语言最强。所有目标语言都用得上；对中文用户主要充当翻译 agent 的英文底稿来源。
+
+### URLs
+
+```
+https://subdl.com/
+https://subdl.com/panel/api
+```
+
+### 注册
+
+1. 注册**免费**账号（需邮箱验证）
+2. 在账号面板复制 API key（[https://subdl.com/panel/api](https://subdl.com/panel/api)）
+
+免费 key 即可用：搜索配额 2000/天，下载走匿名池每 IP 300/天。付费 "Pro" 档只在多 IP 服务器集成（账号级下载池）时才有意义。
+
+### 写入 Scout
+
+Settings / 向导字幕源 · SubDL：单个 API key 字段。只有测通的 key 才落库。
+
+---
+
 ## 安全
 
 - 不要将密钥提交到 git、issue、截图或聊天
 - `.env` 不是这些键的存放处
-- 泄露后在对应站点重置：ASSRT [usercp](https://assrt.net/usercp.php)、TMDB [API](https://www.themoviedb.org/settings/api)、OpenSubtitles [consumers](https://www.opensubtitles.com/en/consumers)、Jimaku [account](https://jimaku.cc/account)
+- 泄露后在对应站点重置：ASSRT [usercp](https://assrt.net/usercp.php)、TMDB [API](https://www.themoviedb.org/settings/api)、OpenSubtitles [consumers](https://www.opensubtitles.com/en/consumers)、Jimaku [account](https://jimaku.cc/account)、SubDL [panel](https://subdl.com/panel/api)；r3sub 在论坛改账号密码
