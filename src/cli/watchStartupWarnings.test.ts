@@ -73,10 +73,19 @@ describe('watchStartupWarnings', () => {
   })
 
   describe('setupModeWarningLine（setup 模式警告）', () => {
-    it('setupModeWarningLine：含 dashboard 指路 + gated 事实', () => {
-      const line = setupModeWarningLine()
+    it('setup 模式 + dashboard 已起：指路 wizard + gated 事实', () => {
+      const line = setupModeWarningLine(true)
       expect(line).toContain('SETUP MODE')
+      expect(line).toContain('dashboard is up')
       expect(line).toContain('setup wizard')
+      expect(line).toContain('gated')
+    })
+
+    it('setup 模式 + dashboard 未起：不说谎，指路 DASHBOARD_PORT（NAS 实测发现①：旧版无条件说 dashboard is up）', () => {
+      const line = setupModeWarningLine(false)
+      expect(line).toContain('SETUP MODE')
+      expect(line).not.toContain('dashboard is up')
+      expect(line).toContain('DASHBOARD_PORT')
       expect(line).toContain('gated')
     })
   })

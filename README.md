@@ -12,6 +12,8 @@ subtitle-scout 盯着媒体库，自动找到、验证并放好最合适的中�
 
 ---
 
+![Subtitle Scout — media detail page](docs/screenshots/app-detail-en.png)
+
 ## Quick Start (5 Minutes)
 
 Get subtitle-scout running from zero to dashboard in under 5 minutes.
@@ -117,6 +119,14 @@ docker tag ghcr.1ms.run/fancydirty/subtitle-scout:latest ghcr.io/fancydirty/subt
      - Host path `/Users/yourname/Media` → select `/hostroot/Users/yourname/Media`
    - Click **Add** to save
 
+> **Same-filesystem rule for the archive dir**: when subtitle-scout reorganizes a media
+> folder (realign), it moves it with atomic `rename` and deliberately never falls back to
+> copying — no half-moved libraries. If the archive directory (`REALIGN_ARCHIVE_ROOT`,
+> default: parent of the library root) is on a different filesystem, the move is skipped
+> (`abandon`) and logged. Synology note: every *shared folder* is its own btrfs subvolume,
+> so cross-shared-folder moves always fail with `EXDEV` — keep the archive dir inside the
+> same shared folder as the library it serves.
+
 ### Step 5: Verify Setup
 
 Run the health check:
@@ -154,6 +164,8 @@ For detailed configuration, troubleshooting, and development setup, see the sect
 
 ## 快速上手
 
+![Subtitle Scout——详情页](docs/screenshots/app-detail-zh.png)
+
 凭证说明（中文 / English）：[docs/GET_CREDENTIALS.md](docs/GET_CREDENTIALS.md) · [docs/GET_CREDENTIALS.en.md](docs/GET_CREDENTIALS.en.md)。ASSRT 是专业中文源；OpenSubtitles 对中外用户都有用，不要省；Jimaku 给翻译 agent 当日文源字幕。
 
 启动后通过监控页完成配置：
@@ -178,6 +190,11 @@ docker tag ghcr.1ms.run/fancydirty/subtitle-scout:latest ghcr.io/fancydirty/subt
 4. 等待首轮扫描完成
 
 **关于媒体目录**：默认 compose 把宿主机根目录挂到 `/hostroot`，目录选择器因此可以访问任意宿主机路径。这个挂载权限较高，只适合你信任所有能访问监控页的用户的环境。更严格的部署可以修改 compose，只挂载媒体目录，例如 `./media:/media`，然后把 `MEDIA_ROOTS` 设为 `/media`；此时不要在设置页选择 `/hostroot` 路径。
+
+> **归档目录同盘规则**：整理（realign）用原子 `rename` 搬媒体目录，绝不退化为拷贝——宁可不搬，
+> 不留半成品库。归档目录（`REALIGN_ARCHIVE_ROOT`，默认库根上一级）与媒体库不在同一文件系统时
+> 会跳过搬移（abandon）并留日志。群晖注意：每个**共享文件夹**是独立 btrfs 子卷，跨共享文件夹
+> 的搬移必然 `EXDEV`——归档目录请放在它服务的库的同一共享文件夹内。
 
 想同时跑一个 Jellyfin 当播放器（和 scout 的字幕功能完全无关，纯粹图省事）？见 `docker-compose.bundle.yml`。
 
@@ -423,7 +440,7 @@ docker compose exec subtitle-scout node dist/cli/index.js translate-item "/hostr
 | `TRUST_PROXY` | 反代部署下信任 `x-forwarded-for`（登录限流按真实客户端 IP 而不是反代 IP）。⚠️ 只有在你**自己控制**反向代理时才设 `true`；否则任何人都能伪造 XFF 绕过限流。不设时，所有请求共享反代 IP 一个限流桶：任何人 5 次失败会锁死所有管理员 1 分钟 | `false` |
 | `SUBTITLE_SCOUT_CACHE_DIR` | 缓存目录 | `~/.subtitle-scout/cache` |
 | `LOG_RETAIN_DAYS` | daemon 日志文件保留天数 | `30` |
-| `REALIGN_ARCHIVE_ROOT` | 整理（realign）归档根——旧目录搬到这里可回滚。默认库根上一级。`/hostroot` 挂载形态下通常无需配（库根上一级与库同属一个 bind mount，rename 合法）；想集中存放时配一个 `/hostroot` 下、与媒体库同一文件系统的路径 | 空（=库根上一级） |
+| `REALIGN_ARCHIVE_ROOT` | 整理（realign）归档根——旧目录搬到这里可回滚。默认库根上一级。`/hostroot` 挂载形态下通常无需配（库根上一级与库同属一个 bind mount，rename 合法）；想集中存放时配一个 `/hostroot` 下、与媒体库同一文件系统的路径。群晖：每个共享文件夹是独立 btrfs 子卷，跨共享文件夹必 `EXDEV`→搬移被放弃 | 空（=库根上一级） |
 | `LLM_EXTRA_BODY` | （高级）强制注入 LLM 请求体的 JSON（provider 专属参数逃生舱），通常无需配置 | 空 |
 | `FFPROBE_PATH` | 内嵌字幕探针用的 ffprobe 二进制路径；官方镜像已内置（apt 装的 ffmpeg），无需配置——只有源码直装且 PATH 上没有 ffmpeg 时才需要手动指定，探测退化为仅靠 sidecar 字幕文件判定 | 空（回退到 `ffprobe-static`） |
 

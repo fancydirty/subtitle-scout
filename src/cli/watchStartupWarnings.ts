@@ -75,8 +75,12 @@ export function zeroSubtitleSourcesWarningLine(sources: SubtitleSourceState): st
   return '[watch] ⚠️ 没有任何字幕源可用——所有找字幕任务都会落空。请到设置页配置至少一个字幕源'
 }
 
-/** setup 模式警告（spec A §4.7 步 2）：零 key 首启时 dashboard 已起、引擎闸全关，指路 wizard——
- *  进程不 exit，这行是用户能在日志里找到的唯一路标。 */
-export function setupModeWarningLine(): string {
-  return '[watch] SETUP MODE: TMDB and LLM are not configured — dashboard is up, finish the setup wizard there; engine stays gated (no scanning, no dispatch) until both are configured'
+/** setup 模式警告（spec A §4.7 步 2）：零 key 首启时引擎闸全关，这行是用户在日志里能找到的
+ *  唯一路标。dashboardUp 由调用方传真实状态——NAS 实测发现①（2026-08-26）：DASHBOARD_PORT
+ *  未设时旧文案仍无条件说 "dashboard is up"，用户会去找一个不存在的页面。 */
+export function setupModeWarningLine(dashboardUp: boolean): string {
+  if (dashboardUp) {
+    return '[watch] SETUP MODE: TMDB and LLM are not configured — dashboard is up, finish the setup wizard there; engine stays gated (no scanning, no dispatch) until both are configured'
+  }
+  return '[watch] SETUP MODE: TMDB and LLM are not configured and no dashboard is running — set DASHBOARD_PORT=8099 and restart to open the setup wizard; engine stays gated (no scanning, no dispatch) until both are configured'
 }

@@ -520,6 +520,7 @@ export const en = {
   media_detail_kind_series: 'Series',
   // 季数单位（与季数拼成「Series · 3 seasons」）。英文不做单复数区分（"1 seasons" 可接受）。
   media_detail_seasons_unit: 'seasons',
+  media_detail_season_unit_one: 'season',
   // 简介截断后的展开/收起链接（--color-fn-purple 链接色）。原地展开，非弹窗。
   media_detail_overview_more: 'More',
   media_detail_overview_less: 'Less',

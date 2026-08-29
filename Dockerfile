@@ -36,5 +36,12 @@ COPY --from=build /app/dist ./dist
 COPY --from=web /web/dist ./web/dist
 ARG IMAGE_REVISION=unknown
 LABEL org.opencontainers.image.revision=$IMAGE_REVISION
+# 裸 `docker run`（绕过 compose、不带 -e）的安全默认（NAS 实测发现②，2026-08-26）：不设
+# CACHE_DIR 时 DB 落容器层 /root/.subtitle-scout（`docker rm` 即丢数据且外部不可见）；不设
+# DASHBOARD_PORT 则 wizard 不可达、SETUP MODE 只能看日志。默认 /cache + 8099，配合
+# `-v <host>:/cache -p 8099:8099` 即为最小可用命令；compose 用户显式传值优先，不受影响。
+# 刻意不用 VOLUME 指令：匿名卷比容器层更难被用户发现，不如让数据留在可见处 + 文档指路显式 -v。
+ENV DASHBOARD_PORT=8099
+ENV SUBTITLE_SCOUT_CACHE_DIR=/cache
 ENV NODE_ENV=production
 CMD ["node", "--enable-source-maps", "dist/cli/index.js", "watch"]

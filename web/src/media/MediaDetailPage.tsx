@@ -161,7 +161,8 @@ function DetailHero({ detail, title, originalTitle }: {
     const n = seasons.length
     facts.push(
       n > 0
-        ? `${t('media_detail_kind_series')} · ${n} ${t('media_detail_seasons_unit')}`
+        // 英文单复数（1 season / 2 seasons）；中文两键同为「季」，无分叉。
+        ? `${t('media_detail_kind_series')} · ${n} ${t(n === 1 ? 'media_detail_season_unit_one' : 'media_detail_seasons_unit')}`
         : t('media_detail_kind_series'),
     )
   }

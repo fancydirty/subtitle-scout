@@ -478,6 +478,8 @@ async function cmdWatch() {
   // spec A §4.7 步 1：dashboard 先于门禁评估与 worker 装配启动——顺序即语义，容器健康检查
   // 从此在零 key 首启下也转绿，bootstrap wizard 在密钥落库前就可达。
   const dashPort = Number(process.env.DASHBOARD_PORT) || 0
+  // setup 模式警告要按 dashboard 实态措辞（NAS 实测发现①：未起时不许说 "dashboard is up"）。
+  let dashboardUp = false
   if (dashPort > 0) {
     // fileURLToPath 而非 .pathname:file:// URL 的 .pathname 会百分号编码(路径含空格/非 ASCII 时
     // `/Users/My Projects/...`→`/Users/My%20Projects/...`),导致 existsSync 找不到 web/dist、SPA 全 404
@@ -522,6 +524,7 @@ async function cmdWatch() {
       events: scoutEvents,
     })
     if (dashServer.listening) {
+      dashboardUp = true
       // 鉴权 A4 Task 15：启动播报三态（裸奔告警退役）。DASHBOARD_TOKEN 现在只是 legacy 兼容
       // 输入；是否已建账号由 settings.auth_password_hash 决定。后缀与逐行播报都据这两态给。
       const tokenSet = Boolean(process.env.DASHBOARD_TOKEN)
@@ -543,8 +546,8 @@ async function cmdWatch() {
     }
   }
 
-  // spec A §4.7 步 2：setup 模式不 exit——dashboard 已起，引擎闸全关，日志里留唯一路标。
-  if (!setupSatisfied(cfg)) console.warn(setupModeWarningLine())
+  // spec A §4.7 步 2：setup 模式不 exit——引擎闸全关，日志里留唯一路标（措辞按 dashboard 实态）。
+  if (!setupSatisfied(cfg)) console.warn(setupModeWarningLine(dashboardUp))
 
   // spec A §4.2：secrets_version watcher（daemon preTick 每 tick 比对）与点火日志追踪，二者在
   // daemonV2 接线之前定义——rebuild 整体换 clients.current，satisfaction tracker 记 engine live。

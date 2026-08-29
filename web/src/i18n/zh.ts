@@ -454,6 +454,7 @@ export const zh = {
   media_detail_kind_series: '剧集',
   // 季数单位（拼成「剧集 · 3 季」）。
   media_detail_seasons_unit: '季',
+  media_detail_season_unit_one: '季',
   // 简介截断后的展开/收起（紫链接色，原地展开非弹窗）。
   media_detail_overview_more: '更多',
   media_detail_overview_less: '收起',

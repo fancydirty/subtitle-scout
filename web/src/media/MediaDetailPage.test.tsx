@@ -593,6 +593,14 @@ describe('Hero D：metadata 行（就绪进度条 + N/M + 年份 + 类型）', (
     expect(screen.getByText(new RegExp(`${en.media_detail_kind_series}\\s*·\\s*2\\s*${en.media_detail_seasons_unit}`))).toBeInTheDocument()
   })
 
+  it('🔴 英文单数：1 季显示 "1 season" 不是 "1 seasons"（开源门面 README 截图实拍揪出）', () => {
+    renderDetail(asyncOf(detail({
+      seasons: [{ season: 1, episodes: [ep({ episode: 1 })] }],
+    })))
+    expect(screen.getByText(new RegExp(`${en.media_detail_kind_series}\\s*·\\s*1\\s*${en.media_detail_season_unit_one}(?!s)`))).toBeInTheDocument()
+    expect(screen.queryByText(/1\s*seasons/)).toBeNull()
+  })
+
   it('年份出现在 metadata 行', () => {
     renderDetail(asyncOf(detail({ seasons: [{ season: 1, episodes: [ep({ episode: 1 })] }] })))
     expect(screen.getByText(/2008/)).toBeInTheDocument()
