@@ -1,0 +1,32 @@
+{
+  "status": true,
+  "results": [
+    { "sd_id": 3197651, "type": "movie", "name": "Inception", "imdb_id": "tt1375666", "tmdb_id": 27205, "year": 2010 }
+  ],
+  "subtitles": [
+    {
+      "release_name": "Inception.2010.1080p.BluRay.x264-SECTOR7",
+      "name": "Inception (2010)",
+      "lang": "chinese_simplified",
+      "language": "ZH",
+      "author": "someone",
+      "url": "/subtitle/3197651-3213944.zip",
+      "subtitlePage": "/subtitle/inception-2010/chinese_simplified/3213944",
+      "season": null,
+      "episode": null,
+      "hi": false
+    },
+    {
+      "release_name": "Inception.2010.720p.BluRay.x264-REFiNED",
+      "name": "Inception (2010)",
+      "lang": "english",
+      "language": "EN",
+      "author": "another",
+      "url": "/subtitle/3197651-9999999.zip",
+      "subtitlePage": "/subtitle/inception-2010/english/9999999",
+      "season": null,
+      "episode": null,
+      "hi": true
+    }
+  ]
+}
