@@ -103,6 +103,27 @@ describe('R3subClient.download（两跳）', () => {
     expect(String(fetchImpl.mock.calls[0][1].body)).toContain('lang=zh')
     expect(String(fetchImpl.mock.calls[2][1].body)).toContain('lang=cn')
   })
+
+  it('🔴 门票 cookie：跳1 的 Set-Cookie（aa=1）必须并进跳2 的 Cookie（2026-08-30 实勘——jpdown1 校验它，缺席则 200 空体）', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response(interstitialHtml, {
+        status: 200,
+        headers: { 'set-cookie': 'aa=1; expires=Sun, 30 Aug 2026 13:51:18 GMT; Max-Age=72000' },
+      }))
+      .mockImplementationOnce(async (_url: string, init: RequestInit) => {
+        // 复刻站方行为：带 aa=1 给 zip，不带给 200 空体
+        const cookie = String((init.headers as Record<string, string>).Cookie ?? '')
+        if (!/(^|; )aa=1(;|$)/.test(cookie)) return new Response('', { status: 200, headers: { 'content-type': 'text/html' } })
+        return new Response(FAKE_ZIP, { status: 200, headers: { 'content-type': 'application/octet-stream' } })
+      })
+    const client = new R3subClient({ email: 'a@b.com', password: 'pw', sessionStore: loggedInStore(), fetchImpl })
+    const out = await client.download('S8g2H021493', 'Dune.Part.Two.2024.zip')
+    expect(new Uint8Array(out.bytes.subarray(0, 4))).toEqual(new Uint8Array([0x50, 0x4b, 0x03, 0x04]))
+    // 跳2 的 Cookie 里既有登录会话也有门票
+    const cookie2 = String(fetchImpl.mock.calls[1][1].headers.Cookie)
+    expect(cookie2).toContain('R3_Vid=1087')
+    expect(cookie2).toContain('aa=1')
+  })
 })
 
 describe('parseSigninForm（Vanilla 登录页隐藏域）', () => {

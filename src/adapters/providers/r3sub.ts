@@ -252,7 +252,7 @@ export class R3subClient {
    *  （末跳返回非 zip）自动落 lang=cn 镜像重试一次。返回 zip bytes + 文件名。 */
   async download(providerId: string, filename: string): Promise<{ bytes: Buffer; filename: string }> {
     for (const lang of ['zh', 'cn'] as const) {
-      const cookie = await this.cookie()
+      let cookie = await this.cookie()
       // 跳1：download.php 取中转页
       const interRes = await this.call('https://r3sub.com/download.php', {
         method: 'POST',
@@ -264,6 +264,10 @@ export class R3subClient {
         },
         body: new URLSearchParams({ id: providerId, lang, filename }).toString(),
       })
+      // 门票 cookie（2026-08-30 实勘）：download.php 会 Set-Cookie `aa=1`（约 20h 有效），
+      // jpdown1.php 校验它——不带则 200 空体（不是 4xx，极易误判成"文件没了"）。
+      // 上一轮勘站用的是浏览器 cookie（天然带票）所以没暴露；两跳之间必须合并。
+      cookie = mergeSetCookies(cookie, interRes)
       const interHtml = await interRes.text()
       if (isLoginWall(interHtml)) {
         this.store.invalidate()
