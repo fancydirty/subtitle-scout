@@ -40,6 +40,10 @@ export interface FindSubtitleWorkerDeps {
   stepCap?: number
   timeoutMs?: number
   fetchImpl?: typeof fetch
+  /** r3sub 下载旁路（2026-08-29）：r3sub 两跳下载不经 runResolve，download_candidate 用它
+   *  拿 zip bytes。有 R3SUB_EMAIL/R3SUB_PASSWORD 凭据时由上游（cli/index.ts 装配 worker 处）
+   *  构造 R3subClient 注入；无则 r3sub 候选下载报错（不静默）。 */
+  r3subClient?: { download: (providerId: string, filename: string) => Promise<{ bytes: Buffer; filename: string }> }
   /** 管线拆分（2026-07-28 事故裁决：一晚 446 文件全量批，agent 烧 ~450/500 步在识别上——
    *  424 次 write_identified_media 对 7 次 search_source——步数见底后凭空编造 384 条
    *  no_safe_match、242 集被假 unavailable。裁决：识别归识别，找字幕归找字幕，DB 为状态机）。
@@ -226,6 +230,7 @@ export function makeFindSubtitleWorker(deps: FindSubtitleWorkerDeps) {
         targetItemIds: task.targets.map(t => t.itemId),
         targetLanguage: task.targetLanguage, fetchImpl: deps.fetchImpl,
         mediaRoot: task.mediaRoot,
+        r3subClient: deps.r3subClient,
       }),
       install_subtitle: makeInstallSubtitleTool({
         stagedFiles, mediaRoot: task.mediaRoot, installedFingerprints,

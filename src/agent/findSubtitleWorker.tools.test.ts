@@ -249,6 +249,53 @@ describe('download_candidate tool', () => {
     expect(existsSync(firstPath)).toBe(true)
     expect(existsSync(secondPath)).toBe(true)
   })
+
+  // 2026-08-29 r3sub 旁路：r3sub 下载是两跳+HTML中转+末跳POST，塞不进 resolve→GET 契约，
+  // 照 local 先例在 tools 层旁路——deps.r3subClient.download() 直接给 zip bytes，走同一份
+  // writeSubtitle/needsSelection 落盘。多文件 zip 触发 archive 选择流程。
+  it('r3sub 候选走 deps.r3subClient.download 旁路，多文件 zip 触发 needsSelection', async () => {
+    const zip = new AdmZip()
+    zip.addFile('Dune.cmn-Hant.srt', Buffer.from('1\n00:00:01,000 --> 00:00:02,000\n繁中\n'))
+    zip.addFile('Dune.yue-Hant.srt', Buffer.from('1\n00:00:01,000 --> 00:00:02,000\n粤语\n'))
+    const download = vi.fn(async () => ({ bytes: zip.toBuffer(), filename: 'Dune.Part.Two.2024.zip' }))
+    const tool_ = makeDownloadCandidateTool({
+      adapters: [],
+      stagingDir: sandboxDir,
+      stagedFiles: new Map(),
+      targetFilenames: ['Dune.Part.Two.2024.1080p.mkv'],
+      targetLanguage: 'zh',
+      r3subClient: { download },
+    })
+    const out = await tool_.execute!(
+      { candidateId: 'r3sub:S8g2H021493', fileIndex: null, videoFilename: null, itemId: null, archiveEntryName: null },
+      { toolCallId: 't1', messages: [] } as any,
+    ) as { archiveEntries?: string[] }
+    expect(download).toHaveBeenCalledWith('S8g2H021493', expect.anything())
+    // 多文件 zip → 要求 agent 选具体条目
+    expect(out.archiveEntries).toBeTruthy()
+    expect(out.archiveEntries).toContain('Dune.cmn-Hant.srt')
+  })
+
+  it('r3sub：archiveEntryName 指定条目 → 落盘那一条', async () => {
+    const zip = new AdmZip()
+    zip.addFile('Dune.cmn-Hant.srt', Buffer.from('1\n00:00:01,000 --> 00:00:02,000\n繁中\n'))
+    zip.addFile('Dune.yue-Hant.srt', Buffer.from('1\n00:00:01,000 --> 00:00:02,000\n粤语\n'))
+    const stagedFiles = new Map<string, string>()
+    const tool_ = makeDownloadCandidateTool({
+      adapters: [],
+      stagingDir: sandboxDir,
+      stagedFiles,
+      targetFilenames: ['Dune.Part.Two.2024.1080p.mkv'],
+      targetLanguage: 'zh',
+      r3subClient: { download: async () => ({ bytes: zip.toBuffer(), filename: 'Dune.zip' }) },
+    })
+    const out = await tool_.execute!(
+      { candidateId: 'r3sub:S8g2H021493', fileIndex: null, videoFilename: null, itemId: null, archiveEntryName: 'Dune.cmn-Hant.srt' },
+      { toolCallId: 't1', messages: [] } as any,
+    ) as DownloadCandidateOutput
+    const staged = stagedFiles.get(out.stagedFileId)!
+    expect(readFileSync(staged, 'utf8')).toContain('繁中')
+  })
 })
 
 // Task 5 (R-5): download_candidate used to be single-target — deps.videoFilename was fixed at

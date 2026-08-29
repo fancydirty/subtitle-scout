@@ -46,6 +46,11 @@ export interface DownloadCandidateDeps {
    *  直接 readFile 磁盘上的字幕文件，isUnderRoots 复核（defense in depth，同 install_subtitle
    *  既有先例）防一个畸形/被篡改的 providerId 逃出媒体根之外。 */
   mediaRoot?: string
+  /** r3sub 下载旁路（2026-08-29）：r3sub 下载是两跳+HTML中转+末跳POST，塞不进
+   *  resolve→downloadDirect(GET) 契约，照 local 先例在下载分支旁路——client.download(providerId)
+   *  内部走完两跳返回 zip bytes，再走同一份 writeSubtitle 落盘。有 r3sub 凭据时由
+   *  makeFindSubtitleWorker 注入；无则该 provider 的下载会因 client 缺失报错（不静默）。 */
+  r3subClient?: { download: (providerId: string, filename: string) => Promise<{ bytes: Buffer; filename: string }> }
 }
 
 /** Canonicalize a filename for tolerant matching: NFKC folds NBSP / narrow NBSP / full-width
@@ -258,6 +263,17 @@ async function executeDownloadCandidate(
   if (cached) {
     bytes = cached.bytes
     artifactFilename = cached.artifactFilename
+  } else if (provider === 'r3sub') {
+    // r3sub 旁路：两跳下载在 client 内部走完，直接给 zip bytes（不经 runResolve/downloadDirect）。
+    // 之后与网络分支共用同一份 writeSubtitle/needsSelection/packCache——install 层完全不用知道
+    // 这份字幕是普通 GET 下的还是 r3sub 两跳下的。
+    if (!deps.r3subClient) {
+      return { error: 'r3sub 候选无法下载：未注入 r3subClient（检查 R3SUB_EMAIL/R3SUB_PASSWORD 配置）' }
+    }
+    const dl = await deps.r3subClient.download(providerId, providerId)
+    bytes = dl.bytes
+    artifactFilename = dl.filename ?? 'download.zip'
+    packCache.set(cacheKey, { bytes, artifactFilename })
   } else {
     const { url, filename, headers } = await runResolve({ provider, providerId, fileIndex }, deps.adapters)
     const dl = await downloadDirect(url, { headers, fetchImpl: deps.fetchImpl })
