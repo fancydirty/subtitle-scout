@@ -71,6 +71,11 @@ OpenSubtitles is an international source for Chinese-speaking and non-Chinese-sp
 git clone https://github.com/fancydirty/subtitle-scout.git
 cd subtitle-scout
 
+# Create the cache directory (holds the SQLite DB and logs).
+# Needed up front on Synology/DSM: its Docker daemon does not auto-create
+# bind-mount host paths the way standard Linux Docker does.
+mkdir -p cache
+
 # Create environment file
 cp .env.example .env
 ```
@@ -171,6 +176,7 @@ For detailed configuration, troubleshooting, and development setup, see the sect
 启动后通过监控页完成配置：
 
 ```bash
+mkdir -p cache   # 群晖/DSM 必须先建：其 Docker 不像标准 Linux 那样自动创建 bind 挂载的宿主目录
 cp .env.example .env
 docker compose up -d
 ```
