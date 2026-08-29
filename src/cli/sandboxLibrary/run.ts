@@ -172,7 +172,12 @@ async function assembleLiveWorkers(cacheRoot: string, targetLanguage: 'zh' | 'en
     baseUrl: process.env.TMDB_BASE_URL,
     proxyUrl: process.env.TMDB_PROXY_URL,
   })
-  const adapters = await buildAdapters(cfg, () => {}, () => {})
+  // api_call 走 stderr：live E2E 的证据线（单源隔离下，哪个 provider 出网一目了然）。
+  const adapters = await buildAdapters(
+    cfg,
+    e => console.error(`[sandbox-library] ${JSON.stringify(e)}`),
+    msg => console.error(`[sandbox-library] ${msg}`),
+  )
 
   const identify: IdentifySchedulerDeps = {
     db,
