@@ -3,13 +3,23 @@ import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import { I18nProvider } from '../i18n/useT.js'
 import { SettingsTabsPage } from './SettingsTabsPage.js'
 import * as hooks from '../api/hooks.js'
+import type { ProviderRowDTO } from '../api/types.js'
 
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
-function mockHooks(over: { providers?: number; roots?: number } = {}) {
-  vi.spyOn(hooks, 'useSettings').mockReturnValue({ data: { ai_translate_enabled: 'false' } as never, loading: false, error: null, reload: vi.fn() })
+// 后端 buildProviders 的真实行序与 kind/languages 派生字段（registry spec §4.1）。
+const row = (id: ProviderRowDTO['id'], kind: 'infra' | 'source', languages: '*' | string[] | null): ProviderRowDTO =>
+  ({ id, kind, languages, secrets: [], lastTest: null, quota: null })
+const FULL_ROWS: ProviderRowDTO[] = [
+  row('tmdb', 'infra', null), row('llm', 'infra', null), row('translate', 'infra', null),
+  row('assrt', 'source', ['zh']), row('opensubtitles', 'source', '*'), row('jimaku', 'source', ['ja']),
+  row('subhd', 'source', ['zh']), row('zimuku', 'source', ['zh']),
+  row('r3sub', 'source', ['zh']), row('subdl', 'source', '*'),
+]
+function mockHooks(over: { providers?: number; roots?: number; rows?: ProviderRowDTO[]; settings?: Record<string, string> } = {}) {
+  vi.spyOn(hooks, 'useSettings').mockReturnValue({ data: { ai_translate_enabled: 'false', ...over.settings } as never, loading: false, error: null, reload: vi.fn() })
   vi.spyOn(hooks, 'useRoots').mockReturnValue({ data: Array(over.roots ?? 0).fill({ path: '/x' }), loading: false, error: null, reload: vi.fn() })
-  vi.spyOn(hooks, 'useSetupProviders').mockReturnValue({ data: { providers: [] }, loading: false, error: null, reload: vi.fn() })
+  vi.spyOn(hooks, 'useSetupProviders').mockReturnValue({ data: { providers: over.rows ?? [] }, loading: false, error: null, reload: vi.fn() })
   vi.spyOn(hooks, 'useSetupStatus').mockReturnValue({ data: null, loading: false, error: null, reload: vi.fn() })
 }
 
@@ -36,10 +46,40 @@ describe('SettingsTabsPage', () => {
     expect(tab).toHaveAttribute('aria-selected', 'true')
   })
 
-  it('providers badge 显示 n/8', () => {
+  it('providers badge：rows 未到 → 不渲染数字徽章（不猜 0/N）', () => {
     mockHooks()
     renderPage()
-    expect(screen.getByText('0/8')).toBeInTheDocument()
+    expect(screen.queryByText(/\d+\/\d+/)).not.toBeInTheDocument()
+  })
+
+  it('providers badge：zh 用户派生 N=9（jimaku 隐身），x/N 实算', () => {
+    mockHooks({ rows: FULL_ROWS })
+    renderPage()
+    expect(screen.getByText('0/9')).toBeInTheDocument()
+  })
+
+  it('providers badge：en 用户派生 N=5（中文/日文源全部隐身）', () => {
+    mockHooks({ rows: FULL_ROWS, settings: { target_languages: 'en' } })
+    renderPage()
+    expect(screen.getByText('0/5')).toBeInTheDocument()
+  })
+
+  it('zh 用户 providers tab：r3sub/SubDL 卡在列，jimaku 卡不渲染', () => {
+    mockHooks({ rows: FULL_ROWS })
+    renderPage()
+    fireEvent.mouseDown(screen.getByRole('tab', { name: /Providers/ }), { button: 0, ctrlKey: false })
+    expect(screen.getByText('r3sub')).toBeInTheDocument()
+    expect(screen.getByText('SubDL')).toBeInTheDocument()
+    expect(screen.queryByText('Jimaku')).not.toBeInTheDocument()
+  })
+
+  it('多目标语言（zh,ja）→ 语言自称 section 标题 + 通用组殿后', () => {
+    mockHooks({ rows: FULL_ROWS, settings: { target_languages: 'zh,ja' } })
+    renderPage()
+    fireEvent.mouseDown(screen.getByRole('tab', { name: /Providers/ }), { button: 0, ctrlKey: false })
+    expect(screen.getByRole('heading', { name: '中文' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '日本語' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'All languages' })).toBeInTheDocument()
   })
 
   it('media badge 未配置（roots.length===0）', () => {
@@ -76,7 +116,7 @@ describe('SettingsTabsPage', () => {
   // 契约说 providers 必在，所以缺席是真异常，正确行为是**抛一条说得清的错**，
   // 由 AppShell 的 PageBoundary 降级这一页（见 AppShell.boundary.test.tsx）。
   it('providers 完整时正常读取（subhd/zimuku 各记一分）', () => {
-    mockHooks()
+    mockHooks({ rows: FULL_ROWS })
     vi.spyOn(hooks, 'useSetupStatus').mockReturnValue({
       data: {
         providers: {
@@ -87,13 +127,13 @@ describe('SettingsTabsPage', () => {
       loading: false, error: null, reload: vi.fn(),
     })
     renderPage()
-    expect(screen.getByText('2/8')).toBeInTheDocument()
+    expect(screen.getByText('2/9')).toBeInTheDocument()
   })
 
-  it('data 为 null（未加载/失败）→ 合法缺席，降级成 0/8，**不抛**', () => {
-    mockHooks() // useSetupStatus 的 data 默认就是 null
+  it('data 为 null（未加载/失败）→ 合法缺席，开关分记 0 但**不抛**', () => {
+    mockHooks({ rows: FULL_ROWS }) // useSetupStatus 的 data 默认就是 null
     expect(() => renderPage()).not.toThrow()
-    expect(screen.getByText('0/8')).toBeInTheDocument()
+    expect(screen.getByText('0/9')).toBeInTheDocument()
   })
 
   it('data 在但 providers 缺席 → 契约违例，抛出指名道姓的错（不是静默 0/8）', () => {
@@ -128,7 +168,7 @@ describe('SettingsTabsPage', () => {
     vi.spyOn(hooks, 'useSetupProviders').mockReturnValue({
       data: {
         providers: [
-          { id: 'zimuku', lastTest: null, secrets: [
+          { id: 'zimuku', kind: 'source', languages: ['zh'], lastTest: null, secrets: [
             { name: 'ZIMUKU_VISION_BASE_URL', set: true, source: 'db', masked: '••••' },
             { name: 'ZIMUKU_VISION_API_KEY', set: true, source: 'db', masked: '••••' },
             { name: 'ZIMUKU_VISION_MODEL', set: true, source: 'db', masked: '••••' },
@@ -147,9 +187,9 @@ describe('SettingsTabsPage', () => {
       loading: false, error: null, reload: vi.fn(),
     })
     renderPage()
-    // 计数只来自 setup/status 的 zimuku.enabled 这一分，不因 secrets 非空再加一分。
-    // （badge 在 tablist 上，不依赖当前 tab。）
-    expect(screen.getByText('1/8')).toBeInTheDocument()
+    // 计数只来自 setup/status 的 zimuku.enabled 这一分，不因 secrets 非空再加一分
+    // （rows 只有 zimuku 一行 → 派生 N=1；badge 在 tablist 上，不依赖当前 tab）。
+    expect(screen.getByText('1/1')).toBeInTheDocument()
     // Radix 卸载非激活 tab 的内容，卡片断言必须先切到 providers。
     fireEvent.mouseDown(screen.getByRole('tab', { name: /Providers/ }), { button: 0, ctrlKey: false })
     // zimuku 只出现一次（开关卡），不额外多一张 keyed 凭据卡。

@@ -15,6 +15,8 @@ import { ZimukuVisionCard } from './ZimukuVisionCard.js'
 import { RootsManager } from './RootsManager.js'
 import { SecuritySection } from './SecuritySection.js'
 import { SystemSection } from './SystemSection.js'
+import { parseTargets, deriveVisibleRows, groupSourceRows, type SourceGroup } from './sourceDerivation.js'
+import { TARGET_LANGUAGE_AUTONYMS } from './text.js'
 
 /** `setup/status` 的 `providers` 子树——**要么完整，要么根本没到**，没有第三种合法形态。
  *
@@ -86,31 +88,66 @@ export function SettingsTabsPage() {
   const [updated, setUpdated] = useState<SettingsDTO | null>(null)
   const settingsData = updated != null ? { ...settings, data: updated } : settings
 
-  // providers tab：八卡片（spec §4.2 顺序 TMDB/LLM/AI翻译/ASSRT/OpenSubtitles/Jimaku/subhd/zimuku）
+  // providers tab（registry spec §5.1）：行集合按 target_languages **派生**——infra
+  // （TMDB/LLM/AI翻译）恒在，源行只留语言命中的（zh 用户看不见 jimaku，en 用户看不见
+  // assrt/subhd/zimuku/r3sub）。x/N 的 N 就是这个派生集合的大小，8 的字面量从此退役。
   const rows = providers.data?.providers ?? []
-  const translateRow = rows.find((r) => r.id === 'translate')
-  // "keyed 凭据卡" = 有自己凭据的字幕源。判据不能只看 `secrets.length > 0`：
-  // zimuku 行现在带着三个 ZIMUKU_VISION_*（视觉兜底，见后端 PROVIDER_SECRETS 注释），
-  // 但它本身是**开关型**源——下面已经用 ProviderToggleCard + ZimukuVisionCard 渲染过了。
-  // 不显式排除的话它会被渲染两次，且在 n/8 里被数两次（→ 9/8）。
-  const keyedRows = rows.filter((r) => r.secrets.length > 0 && r.id !== 'translate' && r.id !== 'zimuku')
+  const targetsCsv = settingsData.data?.target_languages ?? null
+  const targets = parseTargets(targetsCsv)
+  const visibleRows = deriveVisibleRows(rows, targetsCsv)
+  const translateRow = visibleRows.find((r) => r.id === 'translate')
+  // infra 凭据卡（tmdb/llm）——translate 在 llm 卡下面由 TranslateCard 专渲染。
+  const infraRows = visibleRows.filter((r) => r.kind === 'infra' && r.id !== 'translate')
+  // 源分组：单语言一个 'all' 组（平铺，无标题）；多语言按「语言专属 × 通用」分 section。
+  const sourceGroups = groupSourceRows(rows, targets)
+  const visibleSources = sourceGroups.flatMap((g) => g.rows)
 
   // ⚠️ 这里读的是 readProviders 的返回值，**不是**再解引用一次 setupStatus.data。
   // 契约违例在上面那个函数里已经被判成 throw，走到这里的 setupProviders 只有两态：
   // null（还没到）或完整。下面 badge 与卡片区共用同一个值，形状判断只做一次。
   const setupProviders = readProviders(setupStatus.data, setupStatus.error)
 
-  // badge n/8 实算（spec §2 已配置判据）
+  // badge n/N 实算（spec §2 已配置判据不变；N=派生集合大小）。
+  // "keyed 凭据卡" 判据仍须显式排除 zimuku：它带着三个 ZIMUKU_VISION_*（视觉兜底），
+  // 但本体是开关型源（enabled 才算配好），secrets 全 set 不是它的配好判据。
   const keyedConfigured = (r: ProviderRowDTO) => r.secrets.length > 0 && r.secrets.every((s) => s.set)
-  const keyedCount = keyedRows.filter(keyedConfigured).length
+  const keyedCount = [...infraRows, ...visibleSources]
+    .filter((r) => r.id !== 'subhd' && r.id !== 'zimuku')
+    .filter(keyedConfigured).length
   const translateConfigured =
     settingsData.data?.ai_translate_enabled === 'true' &&
     Boolean(translateRow && translateRow.secrets.every((s) => s.set))
-  const subhdConfigured = setupProviders?.subhd.enabled ?? false
-  const zimukuConfigured = setupProviders?.zimuku.enabled ?? false
+  const subhdVisible = visibleSources.some((r) => r.id === 'subhd')
+  const zimukuVisible = visibleSources.some((r) => r.id === 'zimuku')
+  const subhdConfigured = subhdVisible && (setupProviders?.subhd.enabled ?? false)
+  const zimukuConfigured = zimukuVisible && (setupProviders?.zimuku.enabled ?? false)
   const configuredCount: number = keyedCount + (translateConfigured ? 1 : 0) + (subhdConfigured ? 1 : 0) + (zimukuConfigured ? 1 : 0)
-  const providerBadgeVariant = configuredCount === 8 ? 'success' : configuredCount === 0 ? 'destructive' : 'warning'
+  const providerTotal = visibleRows.length
+  const providerBadgeVariant = configuredCount === providerTotal ? 'success' : configuredCount === 0 ? 'destructive' : 'warning'
   const mediaUnconfigured = (roots.data?.length ?? 0) === 0
+
+  const groupTitle = (lang: SourceGroup['lang']): string =>
+    lang === 'universal'
+      ? t('settings_sources_group_universal')
+      : (TARGET_LANGUAGE_AUTONYMS as Record<string, string>)[lang] ?? lang
+
+  /** 一张源卡：subhd/zimuku 是开关卡（zimuku 开启时附视觉兜底卡），其余走通用凭据卡。
+   *  setupProviders 未到时开关卡不渲染（与旧版 `setupProviders && …` 的降级语义一致）。 */
+  const sourceCard = (row: ProviderRowDTO) => {
+    if (row.id === 'subhd' || row.id === 'zimuku') {
+      if (!setupProviders) return null
+      if (row.id === 'subhd') {
+        return <ProviderToggleCard key="subhd" id="subhd" state={setupProviders.subhd} reload={setupStatus.reload} />
+      }
+      return (
+        <div key="zimuku" className="space-y-6">
+          <ProviderToggleCard id="zimuku" state={setupProviders.zimuku} reload={setupStatus.reload} />
+          {setupProviders.zimuku.enabled && <ZimukuVisionCard reload={setupStatus.reload} />}
+        </div>
+      )
+    }
+    return <ProviderCard key={row.id} row={row} reload={providers.reload} />
+  }
 
   // 布局 spec 决策 A：设置页收口 --container-form（880px 表单可读横距）。四个 tab
   // 共用这一个顶层 Tabs，不像其他页要在每个 Section 分支上重复。
@@ -120,7 +157,10 @@ export function SettingsTabsPage() {
         <TabsTrigger value="general">{t('settings_tab_general')}</TabsTrigger>
         <TabsTrigger value="providers">
           {t('settings_tab_providers')}
-          <Badge variant={providerBadgeVariant} className="ml-1">{configuredCount}/8</Badge>
+          {/* rows 还没到（加载中/降级）时不渲染数字徽章——渲染一个猜出来的 0/N 是谎话 */}
+          {rows.length > 0 && (
+            <Badge variant={providerBadgeVariant} className="ml-1">{configuredCount}/{providerTotal}</Badge>
+          )}
         </TabsTrigger>
         <TabsTrigger value="media">
           {t('settings_tab_media')}
@@ -134,7 +174,7 @@ export function SettingsTabsPage() {
         <SystemSection />
       </TabsContent>
       <TabsContent value="providers" className="p-6 space-y-6">
-        {keyedRows.map((row) => (
+        {infraRows.map((row) => (
           <div key={row.id} className="space-y-6">
             <ProviderCard row={row} reload={providers.reload} />
             {row.id === 'llm' && translateRow && (
@@ -147,18 +187,17 @@ export function SettingsTabsPage() {
             )}
           </div>
         ))}
-        {/* 同一个 setupProviders：原先这里写的是 `setupStatus.data && …data.providers.subhd`，
-            `data &&` 只挡住了 data 本身，providers 缺席时照样在这三行里抛——与 badge 那两行
-            是同一个缺陷的第二、三、四处。收敛到一个已判形状的值上，缺陷就没有第二个入口。 */}
-        {setupProviders && (
-          <>
-            <ProviderToggleCard id="subhd" state={setupProviders.subhd} reload={setupStatus.reload} />
-            <ProviderToggleCard id="zimuku" state={setupProviders.zimuku} reload={setupStatus.reload} />
-            {setupProviders.zimuku.enabled && (
-              <ZimukuVisionCard reload={setupStatus.reload} />
+        {/* 源分组（registry spec §5.1）：单语言时唯一的 'all' 组平铺、零标题——观感与旧版
+            一致；多语言时每组一个语言自称标题 + 通用组殿后。开关卡仍从 readProviders 判过
+            形状的 setupProviders 读 enabled（那三层解引用的白屏史见上）。 */}
+        {sourceGroups.map((group) => (
+          <div key={group.lang} className="space-y-6">
+            {group.lang !== 'all' && (
+              <h3 className="text-sm font-medium text-weak">{groupTitle(group.lang)}</h3>
             )}
-          </>
-        )}
+            {group.rows.map(sourceCard)}
+          </div>
+        ))}
       </TabsContent>
       <TabsContent value="media" className="p-6 space-y-6">
         <RootsManager roots={roots} />

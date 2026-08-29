@@ -374,6 +374,7 @@ export const zh = {
   secret_r3sub_email: 'r3sub 账号邮箱',
   secret_r3sub_password: 'r3sub 账号密码',
   secret_subdl_api_key: 'SubDL API 密钥',
+  settings_sources_group_universal: '通用源',
   secret_translate_base_url: '接口地址',
   secret_translate_api_key: 'API 密钥',
   secret_translate_model: '模型',

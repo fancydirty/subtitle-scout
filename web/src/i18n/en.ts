@@ -437,6 +437,7 @@ export const en = {
   secret_r3sub_email: 'r3sub account email',
   secret_r3sub_password: 'r3sub account password',
   secret_subdl_api_key: 'SubDL API key',
+  settings_sources_group_universal: 'All languages',
   secret_translate_base_url: 'Base URL',
   secret_translate_api_key: 'API key',
   secret_translate_model: 'Model',

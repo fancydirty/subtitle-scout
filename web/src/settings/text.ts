@@ -23,6 +23,22 @@ export const SELECTABLE_TARGET_LANGUAGES = [
   'zh', 'en', 'ja', 'ko', 'es', 'fr', 'de', 'pt', 'ru', 'it',
 ] as const
 
+/** 语言自称（语言选择器/分组标题的通行惯例：语言名用它自己的语言写，不进 i18n 表）。
+ *  satisfies 钉死键集与 SELECTABLE_TARGET_LANGUAGES 一致——加语言不补名就红。
+ *  消费方：wizard StepLanguage 的选择胶囊、设置页多语言源分组的 section 标题。 */
+export const TARGET_LANGUAGE_AUTONYMS = {
+  zh: '中文',
+  en: 'English',
+  ja: '日本語',
+  ko: '한국어',
+  es: 'Español',
+  fr: 'Français',
+  de: 'Deutsch',
+  pt: 'Português',
+  ru: 'Русский',
+  it: 'Italiano',
+} as const satisfies Record<(typeof SELECTABLE_TARGET_LANGUAGES)[number], string>
+
 /** hardsub_mode 未设置时的真实运行期默认值——后端 cli/index.ts 的硬事实：未设置/脏值一律
  *  降级 'off'（最保守口径）。PM 审计发现的"spec 写 agent、UI 显示 agent、后端跑 off"三方
  *  打架以**后端为准**对齐（spec 文档为过时记述）。 */
