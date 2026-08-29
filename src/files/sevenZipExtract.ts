@@ -84,7 +84,13 @@ export async function extractSubtitleEntries(archive: Buffer): Promise<ArchiveEn
     const subs = files.filter((f) =>
       SUBTITLE_EXTS.includes(extname(f.name).toLowerCase()) &&
       !basename(f.name).startsWith('.'))
-    if (subs.length === 0) throw new Error('archive contains no subtitle files')
+    if (subs.length === 0) {
+      // 报出实际条目（2026-08-30 Matrix 实案）：r3sub 蓝光 rar 里只有 .sup 位图字幕——
+      // 只说"没有字幕文件"时 agent 分不清"包坏了"与"这一族候选全是位图"，会继续在
+      // 同族候选上空转；把条目名亮出来它才有放弃的依据。
+      const listing = files.slice(0, 5).map((f) => basename(f.name)).join(', ') || 'empty archive'
+      throw new Error(`archive contains no text subtitle files (entries: ${listing})`)
+    }
     for (const s of subs) {
       if (s.data.length > MAX_ENTRY_BYTES) {
         throw new Error(
