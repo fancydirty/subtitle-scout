@@ -60,6 +60,16 @@ export function backdropUrl(path: string | null): string | null {
   return `${TMDB_BACKDROP_BASE}${path}`
 }
 
+/** hero 手机档（≤640px）的竖版海报 URL——w780 档（390 CSS px × 2 DPR ≈ 780 设备像素，
+ *  posterUrl 的 w400 在全宽 hero 下会糊）。demo 假后端的 posterPath 是完整 URL 形态，
+ *  以 http 开头时透传不拼前缀。null → null（调用方回落 backdrop）。 */
+const TMDB_POSTER_HERO_BASE = 'https://image.tmdb.org/t/p/w780'
+export function heroPosterUrl(posterPath: string | null): string | null {
+  if (!posterPath) return null
+  if (posterPath.startsWith('http')) return posterPath
+  return `${TMDB_POSTER_HERO_BASE}${posterPath}`
+}
+
 /** 逐集剧照缩略图 URL，无 path → null 让调用方不渲染 img。 */
 export function stillUrl(path: string | null): string | null {
   if (!path) return null

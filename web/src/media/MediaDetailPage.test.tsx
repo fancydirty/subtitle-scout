@@ -520,6 +520,29 @@ describe('Hero D：背景图块（有图渲染 w1280 / 无图整块不渲染，�
     // 标题不是背景图块的后代（图上无文字）。
     expect(backdrop.contains(heading)).toBe(false)
   })
+
+  it('🔴 <picture> 资产切换：640 断点 source 用 poster w780（手机档竖屏原生素材，2026-08-29 裁决）', () => {
+    renderDetail(asyncOf(detail({
+      work: { workId: 'tmdb:1', title: 'BB', chineseTitle: null, year: 2008, posterPath: '/p.jpg',
+              mediaType: 'tv', backdropPath: '/bd.jpg', overview: null },
+    })))
+    const img = screen.getByTestId('media-detail-backdrop')
+    const picture = img.closest('picture')
+    expect(picture, '缺 <picture>——手机档还在硬裁 backdrop').not.toBeNull()
+    const source = picture!.querySelector('source')
+    expect(source).not.toBeNull()
+    expect(source!.getAttribute('media')).toBe('(max-width: 640px)')
+    expect(source!.getAttribute('srcset')).toBe('https://image.tmdb.org/t/p/w780/p.jpg')
+  })
+
+  it('posterPath 为 null → source 回落 backdrop（罕见分支，CSS 2:3 裁切兜底）', () => {
+    renderDetail(asyncOf(detail({
+      work: { workId: 'tmdb:1', title: 'BB', chineseTitle: null, year: 2008, posterPath: null,
+              mediaType: 'tv', backdropPath: '/bd.jpg', overview: null },
+    })))
+    const source = screen.getByTestId('media-detail-backdrop').closest('picture')!.querySelector('source')
+    expect(source!.getAttribute('srcset')).toContain('/t/p/w1280/bd.jpg')
+  })
 })
 
 describe('Hero D：metadata 行（就绪进度条 + N/M + 年份 + 类型）', () => {
@@ -681,7 +704,9 @@ describe('Hero D：CSS 几何（圆角上缘 + 底缘渐入 + 拒绝投影）', 
     const mask = cssDeclRe('\\.media-detail-hero-backdrop', 'mask-image')
     expect(mask, '底缘没有线性渐入').toBeTruthy()
     expect(mask).toContain('linear-gradient')
-    expect(mask).toContain('transparent')
+    // 2026-08-29 B 曲线后零点写作 rgba(0, 0, 0, 0)（easeInOutSine 停点族的统一形态）；
+    // 曲线细节（38%/九停点/无 calc）由 cards.css.test 专门钉，这里只守「渐到全透明」语义。
+    expect(mask).toMatch(/transparent|rgba\(0, 0, 0, 0\)/)
   })
 
   it('R-F11：hero 段无投影（MEDIA_CSS 已整段守 box-shadow，这里再钉 hero 专属块）', () => {

@@ -29,7 +29,7 @@ import type {
   MediaSubtitleDot,
   EpisodeState,
 } from '../api/types.js'
-import { backdropUrl } from '../api/client.js'
+import { backdropUrl, heroPosterUrl } from '../api/client.js'
 import { useT } from '../i18n/useT.js'
 import { localizeError } from '../lib/errorText.js'
 import { EpisodeCell } from './EpisodeCell.js'
@@ -168,9 +168,15 @@ function DetailHero({ detail, title, originalTitle }: {
 
   return (
     <div className="media-detail-hero">
-      {/* 全宽 backdrop：16:9、圆角上缘、底缘线性渐入页面底色。**无图整块不渲染**（无占位灰块）。 */}
+      {/* 全宽图块（2026-08-29 裁决）：宽屏 backdrop 32:9 横幅、手机档（640 断点）素材换
+          poster 原生 2:3——<picture> 让浏览器只下载命中档（display:none 双 img 会双下载）。
+          posterPath null 时 source 回落 backdrop（CSS 2:3 裁切兜底；works 表 36/36 有
+          poster，罕见分支）。**无 backdrop 时整块不渲染**（无占位，规则不变）。 */}
       {backdrop ? (
-        <img className="media-detail-hero-backdrop" data-testid="media-detail-backdrop" src={backdrop} alt="" loading="lazy" />
+        <picture>
+          <source media="(max-width: 640px)" srcSet={heroPosterUrl(work.posterPath) ?? backdrop} />
+          <img className="media-detail-hero-backdrop" data-testid="media-detail-backdrop" src={backdrop} alt="" loading="lazy" />
+        </picture>
       ) : null}
 
       {/* 标题区（实底，图外）：中文名 + 原名副行。 */}

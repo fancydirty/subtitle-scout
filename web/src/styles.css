@@ -1671,23 +1671,38 @@ html {
   flex-direction: column;
   gap: 12px;
 }
-/* 全宽 backdrop：img 自身即 16:9 图块（宽屏 420px 封顶——16:9 不封顶时 1440 屏下高逾 600px，
-   标题/信息带全被推出首屏，违背 D 形态「图块+信息带同屏」的本意；封顶后 object-fit 居中裁切，
-   窄屏 16:9 不足 420px 不受影响）。底缘「渐入页面底色」用 mask 把最底 24px 淡成透明，露出其下
-   的页面底色（--color-background），等价于线性渐入而无需第二个渐变层。
-   ⚠️ mask 渐变停点**禁用 calc(100% - Npx)**：Chromium 在 mask-image 的渐变停点里对该 calc 的
-   百分比解析错基准（塌成近零高度，整图被遮，2026-08-29 真机实测两个 Chromium 内核均复现）。
-   等价写法 to top + 纯 px 停点：底缘 0 透明 → 24px 全黑 → 其余延续全黑。 */
+/* 全宽 backdrop 两档裁切（2026-08-29 用户裁决，spec: 2026-08-29-hero-fade-responsive-design）：
+   宽屏（>640px）32:9 超宽横幅——比旧 420 封顶再矮一档，封顶随之退役；object-position 上移
+   到 50% 30%（32:9 居中裁会切头顶，实渲染验证过）。手机档见下方 640 媒询：素材由组件层
+   换 poster 原生 2:3（<picture>），object-position 回 center。
+   底缘渐隐 = easeInOutSine 九停点 mask（B 案）：渐隐区占图高 38%，两端零导数进出，无
+   两停点线性的 Mach band 折痕；百分比停点随图高自适应，两档共用这一条。
+   ⚠️ mask 渐变停点禁用 calc(100% - Npx)：Chromium 在 mask-image 渐变停点里对该 calc 的
+   百分比解析错基准（img 无布局高度时塌成近零，整图被遮，时机敏感，2026-08-29 真机两内核
+   复现）。钉值测试锁「不含 calc + 9 停点」（cards.css.test）。 */
 .media-detail-hero-backdrop {
   width: 100%;
-  aspect-ratio: 16 / 9;
-  max-height: 420px;
+  aspect-ratio: 32 / 9;
   object-fit: cover;
+  object-position: 50% 30%;
   display: block;
   border-top-left-radius: var(--radius-card);
   border-top-right-radius: var(--radius-card);
-  -webkit-mask-image: linear-gradient(to top, transparent, #000 24px);
-          mask-image: linear-gradient(to top, transparent, #000 24px);
+  -webkit-mask-image: linear-gradient(to top,
+    rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.038) 4.8%, rgba(0, 0, 0, 0.146) 9.5%,
+    rgba(0, 0, 0, 0.309) 14.3%, rgba(0, 0, 0, 0.5) 19%, rgba(0, 0, 0, 0.691) 23.8%,
+    rgba(0, 0, 0, 0.854) 28.5%, rgba(0, 0, 0, 0.962) 33.3%, #000 38%);
+          mask-image: linear-gradient(to top,
+    rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.038) 4.8%, rgba(0, 0, 0, 0.146) 9.5%,
+    rgba(0, 0, 0, 0.309) 14.3%, rgba(0, 0, 0, 0.5) 19%, rgba(0, 0, 0, 0.691) 23.8%,
+    rgba(0, 0, 0, 0.854) 28.5%, rgba(0, 0, 0, 0.962) 33.3%, #000 38%);
+}
+/* 手机档（app 既有 640px 断点同一条线，本文件 :903 亦此值）：poster 原生 2:3 竖屏。 */
+@media (max-width: 640px) {
+  .media-detail-hero-backdrop {
+    aspect-ratio: 2 / 3;
+    object-position: center;
+  }
 }
 .media-detail-hero-head {
   display: flex;

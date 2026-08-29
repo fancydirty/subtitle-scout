@@ -4,7 +4,7 @@
 // 抽取 `{error: string}` 字段；抽不出来（响应体不是 JSON、或没有 error 字段）时回落 "path →
 // status"，不炸调用方。
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { api, backdropUrl, stillUrl } from './client.js'
+import { api, backdropUrl, stillUrl, heroPosterUrl } from './client.js'
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -17,6 +17,12 @@ describe('backdropUrl / stillUrl（详情页 hero + 逐集剧照 CDN 拼接）',
     expect(stillUrl('/s.jpg')).toBe('https://image.tmdb.org/t/p/w300/s.jpg')
     expect(backdropUrl(null)).toBeNull()
     expect(stillUrl(null)).toBeNull()
+  })
+
+  it('heroPosterUrl：裸路径拼 w780；完整 URL 透传（demo 假数据形态）；null → null', () => {
+    expect(heroPosterUrl('/p.jpg')).toBe('https://image.tmdb.org/t/p/w780/p.jpg')
+    expect(heroPosterUrl('https://image.tmdb.org/t/p/w342/p.jpg')).toBe('https://image.tmdb.org/t/p/w342/p.jpg')
+    expect(heroPosterUrl(null)).toBeNull()
   })
 })
 

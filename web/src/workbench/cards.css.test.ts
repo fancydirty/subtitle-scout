@@ -363,25 +363,43 @@ describe('全局滚动条：thin + 双引擎 + thumb .14/悬停 .22 + 圆角 + �
   })
 })
 
-// ── Hero D backdrop（2026-08-29 真机排障后钉死）─────────────────────────────────
-// ① mask 渐变停点禁 calc(100% - Npx)：Chromium 在 mask-image 渐变停点里对该 calc 的百分比
-//    解析错基准（塌成近零高度→整图被遮，两个 Chromium 内核实测复现）。等价安全形：
-//    to top + 纯 px 停点。这条钉的就是"别有人好心改回 calc 形"。
-// ② 420px 封顶：16:9 不封顶时宽屏下高逾 600px，标题/信息带全被推出首屏，违背 D 形态本意。
-describe('Hero D backdrop：mask 无 calc（to top + px 停点）+ 16:9 + 420px 封顶', () => {
-  it('🔴 mask 双引擎均为 to top + 24px 纯 px 停点，且不含 calc', () => {
+// ── Hero backdrop 两档裁切 + B 曲线渐隐（2026-08-29 用户裁决）───────────────────
+// ① mask 停点禁 calc（Chromium 时机敏感塌零 bug，2026-08-29 真机钉死）——B 曲线为
+//    easeInOutSine 九停点（8×rgba + 1×#000），渐隐区占图高 38%，两端零导数无折痕。
+// ② 宽屏 32:9 + object-position 50% 30%（裁切窗上移保头顶）；420px 封顶已退役。
+// ③ 手机（既有 640px 断点）：素材由组件层换 poster（<picture>），比例 2:3、
+//    object-position 回 center。declFromFullCss 只取首个规则块，手机档在第二个块里，
+//    这里用本地 allBlocksOf 拿全部同名块按序断言。
+function allBlocksOf(selector: string): string[] {
+  const bare = CSS.replace(/\/\*[\s\S]*?\*\//g, '')
+  const re = new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([^}]*)\\}`, 'g')
+  return [...bare.matchAll(re)].map((m) => m[1]!)
+}
+
+describe('Hero backdrop：B 曲线 mask（38% 九停点无 calc）+ 宽 32:9 / 手机 2:3 两档', () => {
+  it('🔴 mask 双引擎均为 to top 百分比停点、含 38% 终点、9 停点、不含 calc', () => {
     for (const prop of ['mask-image', '-webkit-mask-image']) {
       const v = declFromFullCss('.media-detail-hero-backdrop', prop)
-      expect(v, `${prop} 缺失——底缘渐入没了`).toBeTruthy()
+      expect(v, `${prop} 缺失——底缘渐隐没了`).toBeTruthy()
       expect(v).toContain('to top')
-      expect(v).toContain('24px')
-      expect(v, `${prop} 用了 calc——Chromium mask 停点 calc 百分比解析错基准，整图会被遮`).not.toContain('calc')
+      expect(v).toContain('38%')
+      expect(v, `${prop} 用了 calc——Chromium mask 停点 calc 百分比解析塌零，整图会被遮`).not.toContain('calc')
+      expect((v!.match(/rgba\(/g) ?? []).length, '停点数变了——easeInOutSine 曲线被动过').toBe(8)
     }
   })
 
-  it('🔴 16:9 + max-height 420px 封顶 + cover 裁切', () => {
-    expect(declFromFullCss('.media-detail-hero-backdrop', 'aspect-ratio')).toBe('16 / 9')
-    expect(declFromFullCss('.media-detail-hero-backdrop', 'max-height')).toBe('420px')
-    expect(declFromFullCss('.media-detail-hero-backdrop', 'object-fit')).toBe('cover')
+  it('🔴 宽屏默认档：32:9 + cover + object-position 50% 30%，420px 封顶已退役', () => {
+    const base = allBlocksOf('.media-detail-hero-backdrop')[0]!
+    expect(base).toContain('aspect-ratio: 32 / 9')
+    expect(base).toContain('object-fit: cover')
+    expect(base).toContain('object-position: 50% 30%')
+    expect(base, 'max-height 该退役了——比例本身管住高度').not.toContain('max-height')
+  })
+
+  it('🔴 手机档（第二个规则块，640px 断点内）：2:3 + object-position 回 center', () => {
+    const blocks = allBlocksOf('.media-detail-hero-backdrop')
+    expect(blocks.length, '手机档规则块缺失').toBeGreaterThanOrEqual(2)
+    expect(blocks[1]).toContain('aspect-ratio: 2 / 3')
+    expect(blocks[1]).toContain('object-position: center')
   })
 })
