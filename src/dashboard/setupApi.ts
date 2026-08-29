@@ -8,15 +8,19 @@ import { generateText } from 'ai'
 import type { SettingsRepo } from '../v2/settingsRepo.js'
 import { isSecretName, maskSecretValue, resolveProviderFlagFromSettings, resolveSecretFromSettings, type SecretName, type SecretSource } from '../v2/secrets.js'
 import {
-  checkAssrt, checkJimaku, checkLlm, checkOpenSubtitles, checkSubhd, checkTmdb, checkZimuku, withTimeout,
+  checkAssrt, checkJimaku, checkLlm, checkOpenSubtitles, checkR3sub, checkSubdl, checkSubhd, checkTmdb, checkZimuku, withTimeout,
 } from '../cli/doctor.js'
 import { TmdbClient } from '../adapters/providers/tmdb.js'
 import { AssrtClient } from '../adapters/providers/assrt.js'
 import { OpenSubtitlesClient } from '../adapters/providers/opensubtitles.js'
 import { JimakuClient } from '../adapters/providers/jimaku.js'
+import { R3subClient } from '../adapters/providers/r3sub.js'
+import { R3subSessionStore } from '../adapters/providers/r3subSession.js'
+import { SubdlClient } from '../adapters/providers/subdl.js'
 import { SUBHD_BASE, curlFetch } from '../adapters/providers/subhd.js'
 import { ZIMUKU_BASE } from '../adapters/providers/zimuku.js'
 import { detectChallenge } from '../adapters/providers/yunsuo.js'
+import { SOURCE_REGISTRY, type SourceLanguages } from '../core/sourceRegistry.js'
 import { makeModel } from '../agent/llm.js'
 import { QUOTA_STATE_PREFIX } from '../cli/quotaState.js'
 import { join } from 'node:path'
@@ -39,6 +43,10 @@ export interface SetupStatusDTO {
     jimaku: SetupSecretStateDTO
     subhd: { enabled: boolean; source: SecretSource }
     zimuku: { enabled: boolean; source: SecretSource; captchaReady: boolean }
+    /** registry spec §4.2：email+password **成对**才 satisfied（照 opensubtitles 的
+     *  hasUsername 成对先例）；masked 是脱敏后的邮箱。 */
+    r3sub: SetupSecretStateDTO
+    subdl: SetupSecretStateDTO
   }
   roots: { count: number }
   engineEnabled: boolean
@@ -53,12 +61,17 @@ export interface SecretTestDTO { ok: boolean; at: number; error?: string }
 export interface ProviderQuotaDTO { resetAt: string | null; observedAt: number }
 
 export interface ProviderRowDTO {
-  id: 'tmdb' | 'llm' | 'translate' | 'assrt' | 'opensubtitles' | 'jimaku' | 'subhd' | 'zimuku'
+  id: 'tmdb' | 'llm' | 'translate' | 'assrt' | 'opensubtitles' | 'jimaku' | 'subhd' | 'zimuku' | 'r3sub' | 'subdl'
   secrets: { name: SecretName; set: boolean; source: SecretSource; masked: string | null }[]
   lastTest: SecretTestDTO | null
   /** 该源当前是否处于"配额已耗尽"状态；null=没有这个事实（正常，绝大多数时候如此）。
    *  **挂在 provider 行上而不是另起一个聚合 DTO**：见 buildProviders 上方的落点论证。 */
   quota: ProviderQuotaDTO | null
+  /** registry spec §4.1：infra（TMDB/LLM/翻译，永远展示）还是字幕源（按语言派生展示）。 */
+  kind: 'infra' | 'source'
+  /** kind='source' 时来自 SOURCE_REGISTRY（'*'=全语言通用）；infra 行恒 null。
+   *  前端分组/x-of-N 都从这个字段派生，web 侧不复制注册表。 */
+  languages: '*' | string[] | null
 }
 
 export interface ProvidersDTO { providers: ProviderRowDTO[] }
@@ -124,6 +137,19 @@ export function buildSetupStatus(deps: SetupDeps): SetupStatusDTO {
       subhd: { enabled: subhd.enabled, source: subhd.source },
       // spec §3 步骤 5：captchaReady = LLM 三件套可解析（wizard 展示；后端入列守卫在 buildAdapters）。
       zimuku: { enabled: zimuku.enabled, source: zimuku.source, captchaReady: llmSatisfied },
+      // registry spec §4.2：成对判据（照 opensubtitles hasUsername 先例）——单填 email 或单填
+      // password 都不算配好；masked 取邮箱（password 永不出面，连脱敏形态都不给）。
+      r3sub: (() => {
+        const email = sec('R3SUB_EMAIL')
+        const pass = sec('R3SUB_PASSWORD')
+        const satisfied = email.source !== 'none' && pass.source !== 'none'
+        return {
+          satisfied,
+          source: satisfied ? email.source : 'none' as SecretSource,
+          masked: satisfied && email.value !== null ? mask(email.value) : null,
+        }
+      })(),
+      subdl: secretState(sec('SUBDL_API_KEY'), mask),
     },
     roots: { count: deps.rootsCount() },
     // spec §4.6：fail-open——只有显式 'false' 才视为关，脏值/缺省一律开。
@@ -185,6 +211,21 @@ const PROVIDER_SECRETS: Record<ProviderRowDTO['id'], SecretName[]> = {
   // （见 web/src/settings/SettingsTabsPage.tsx 的 keyedRows）——否则 zimuku 会
   // 既渲染成开关卡又渲染成凭据卡，且在 n/8 里被数两次。
   zimuku: ['ZIMUKU_VISION_BASE_URL', 'ZIMUKU_VISION_API_KEY', 'ZIMUKU_VISION_MODEL'],
+  // registry spec §4.1：r3sub 账密成对、subdl 单 key。语言归属不在这里写——kind/languages
+  // 由 SOURCE_REGISTRY 派生（见 buildProviders），这张表只管"每行有哪些凭据"。
+  r3sub: ['R3SUB_EMAIL', 'R3SUB_PASSWORD'],
+  subdl: ['SUBDL_API_KEY'],
+}
+
+/** registry spec §4.1：行的 kind/languages 派生。tmdb/llm/translate 是 infra（永远展示，
+ *  languages=null）；其余行必须能在 SOURCE_REGISTRY 里找到自己——找不到说明注册表和
+ *  PROVIDER_SECRETS 漂移了，这里直接抛（测试当场红，好过 UI 静默少一行）。 */
+function rowMeta(id: ProviderRowDTO['id']): { kind: 'infra' | 'source'; languages: '*' | string[] | null } {
+  if (id === 'tmdb' || id === 'llm' || id === 'translate') return { kind: 'infra', languages: null }
+  const def = SOURCE_REGISTRY.find((s) => s.id === id)
+  if (!def) throw new Error(`provider ${id} missing from SOURCE_REGISTRY`)
+  const langs: SourceLanguages = def.languages
+  return { kind: 'source', languages: langs === '*' ? '*' : [...langs] }
 }
 
 function readLastTest(deps: SetupDeps, target: ValidateTarget): SecretTestDTO | null {
@@ -265,13 +306,14 @@ export function buildProviders(deps: SetupDeps): ProvidersDTO {
     secrets: PROVIDER_SECRETS[id].map((name) => meta.find((m) => m.name === name)!),
     lastTest: readLastTest(deps, id),
     quota: quotas.get(id) ?? null,
+    ...rowMeta(id),
   }))
   return { providers: rows }
 }
 
 // ---------- POST validate ----------
 
-export const VALIDATE_TARGETS = ['tmdb', 'llm', 'translate', 'assrt', 'opensubtitles', 'jimaku', 'subhd', 'zimuku'] as const
+export const VALIDATE_TARGETS = ['tmdb', 'llm', 'translate', 'assrt', 'opensubtitles', 'jimaku', 'subhd', 'zimuku', 'r3sub', 'subdl'] as const
 export type ValidateTarget = (typeof VALIDATE_TARGETS)[number]
 
 export interface ValidateResultDTO { ok: boolean; detail?: string; error?: string }
@@ -289,6 +331,8 @@ const NEXT_STEP_HINT: Record<ValidateTarget, string> = {
   jimaku: 'Copy your API key from jimaku.cc account settings.',
   subhd: 'subhd.me must be reachable from this host — check the network/proxy.',
   zimuku: 'zimuku.org must be reachable; some networks block or throttle it.',
+  r3sub: 'Register at r3sub.com, verify your email there, then enter that same email and password here.',
+  subdl: 'Register a free account at subdl.com and copy the API key from your account panel.',
 }
 
 /** spec §4.4 错误三分类。只模式匹配，永不回显原始串（spec §8：异常消息可能 echo 凭据）。 */
@@ -392,6 +436,26 @@ function defaultProbe(
           return { ok: res.ok, challenged: detectChallenge(html) }
         },
       })
+    case 'r3sub': {
+      const email = cred('R3SUB_EMAIL')
+      const password = cred('R3SUB_PASSWORD')
+      if (!email || !password) return () => notConfigured
+      // login() 每次都真 POST 凭据（不吃 store 缓存）——错密码必抛，正是体检要的性质；
+      // 成功顺手把新 cookie 落进与 buildAdapters 同一个 session store，不浪费这次登录。
+      const client = new R3subClient({
+        email, password,
+        sessionStore: new R3subSessionStore(join(cacheRoot, 'r3sub-session')),
+      })
+      return () => checkR3sub(() => withTimeout(client.login(), VALIDATE_TIMEOUT_MS, 'r3sub'))
+    }
+    case 'subdl': {
+      const apiKey = cred('SUBDL_API_KEY')
+      if (!apiKey) return () => notConfigured
+      const subdl = new SubdlClient({ apiKey })
+      // The Matrix：与 tmdb/OS 探针同一个零成本目标（搜索配额 2000/日，不耗下载池）。
+      return () => checkSubdl(() =>
+        withTimeout(subdl.search({ filmName: 'The Matrix', type: 'movie', languages: ['EN'] }), VALIDATE_TIMEOUT_MS, 'SubDL').then((r) => r.length))
+    }
   }
 }
 

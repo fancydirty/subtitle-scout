@@ -66,6 +66,8 @@ const setupStatusDTO = {
     jimaku: { satisfied: false, source: 'none', masked: null },
     subhd: { enabled: false, source: 'none' },
     zimuku: { enabled: false, source: 'none', captchaReady: false },
+    r3sub: { satisfied: false, source: 'none', masked: null },
+    subdl: { satisfied: false, source: 'none', masked: null },
   },
   roots: { count: 0 },
   engineEnabled: true,

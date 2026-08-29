@@ -95,6 +95,49 @@ export async function checkJimaku(probe: () => Promise<unknown>): Promise<Doctor
   }
 }
 
+/** r3sub 是可选 provider（BYO 账密）：未配置（probe 为 null）→ skip，非失败。
+ *  已配置 → 真实登录一次（R3subClient.login 每次都 POST 凭据，错密码必抛——这正是
+ *  凭据体检要的性质；成功顺手刷新 session store 的 cookie，不浪费）。 */
+export async function checkR3sub(probe: (() => Promise<void>) | null): Promise<DoctorResult> {
+  const name = 'r3sub'
+  if (!probe) {
+    return {
+      name, ok: true, skip: true,
+      detail: '未配置(可选 provider)——在 dashboard 设置页配置 R3SUB_EMAIL/R3SUB_PASSWORD 启用',
+    }
+  }
+  try {
+    await probe()
+    return { name, ok: true, detail: 'r3sub 登录探测通过' }
+  } catch (e) {
+    return {
+      name, ok: false, detail: `登录探测失败:${String(e)}`,
+      hint: '确认已在 r3sub.com 注册并完成邮箱验证，且此处填的邮箱/密码与站上一致。',
+    }
+  }
+}
+
+/** SubDL 是可选 provider（BYO key）：未配置（probe 为 null）→ skip，非失败。
+ *  已配置 → 带 key 搜索探测（免费搜索配额 2000/日，一次探测零负担），probe 返回命中数。 */
+export async function checkSubdl(probe: (() => Promise<number>) | null): Promise<DoctorResult> {
+  const name = 'subdl'
+  if (!probe) {
+    return {
+      name, ok: true, skip: true,
+      detail: '未配置(可选 provider)——在 dashboard 设置页配置 SUBDL_API_KEY 启用（subdl.com 免费注册即发）',
+    }
+  }
+  try {
+    const hits = await probe()
+    return { name, ok: true, detail: `SubDL API key 有效，探测命中 ${hits} 条` }
+  } catch (e) {
+    return {
+      name, ok: false, detail: `搜索探测失败:${String(e)}`,
+      hint: '确认 SUBDL_API_KEY 正确（subdl.com 账号面板复制）；检查网络能否直连 api.subdl.com。',
+    }
+  }
+}
+
 /** spec A §4.5：subhd 首页可达性（无 key 服务，HTTP 2xx/3xx 即通）。probe 返回状态码——
  *  调用方必须用 curlFetch（subhd.ts:224，Node 原生 fetch 的 TLS 指纹会被 subhd 拒）。 */
 export async function checkSubhd(probe: () => Promise<number>): Promise<DoctorResult> {

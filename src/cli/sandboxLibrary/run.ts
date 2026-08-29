@@ -220,7 +220,7 @@ async function assembleLiveWorkers(cacheRoot: string, targetLanguage: 'zh' | 'en
     cacheRoot,
     tmdb,
     librarySandbox: true,
-    r3subClient: buildR3subClient(cfg) ?? undefined,
+    r3subClient: buildR3subClient(cfg, e => console.error(`[sandbox-library] ${JSON.stringify(e)}`)) ?? undefined,
   })
 
   return { identify, subtitleWorker }

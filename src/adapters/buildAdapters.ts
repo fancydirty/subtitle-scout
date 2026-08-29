@@ -149,8 +149,13 @@ export async function buildAdapters(
 }
 
 /** r3sub 下载客户端（find-subtitle worker 的 r3sub 旁路用）——凭据齐时构造，否则 null。
- *  与 buildAdapters 里的 r3sub adapter 共用同一 session store 目录（复用登录 cookie）。 */
-export function buildR3subClient(cfg: AdapterConfigResolver): R3subClient | null {
+ *  与 buildAdapters 里的 r3sub adapter 共用同一 session store 目录（复用登录 cookie）。
+ *  emit 可选：接上时下载两跳的 api_call 与 adapter 侧同渠道可见（E2E 排障就靠它——
+ *  2026-08-30 门票 cookie 根因盲查半天，起因正是旁路 client 的出网不可见）。 */
+export function buildR3subClient(
+  cfg: AdapterConfigResolver,
+  emit: (e: FetchEvent) => void = () => {},
+): R3subClient | null {
   const email = cfg.secret('R3SUB_EMAIL').value
   const password = cfg.secret('R3SUB_PASSWORD').value
   if (!email || !password) return null
@@ -159,5 +164,6 @@ export function buildR3subClient(cfg: AdapterConfigResolver): R3subClient | null
     email,
     password,
     sessionStore: new R3subSessionStore(join(cacheRoot, 'r3sub-session')),
+    onApiCall: r => emit({ event: 'api_call', provider: 'r3sub', ...r }),
   })
 }

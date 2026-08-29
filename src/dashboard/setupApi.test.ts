@@ -153,11 +153,11 @@ describe('putSecret（spec §4.4）', () => {
 })
 
 describe('buildProviders（Providers 区读面）', () => {
-  it('7 行分组；密钥打码；secret_test:* 反射为 lastTest；subhd 空 secrets 数组', () => {
+  it('10 行分组；密钥打码；secret_test:* 反射为 lastTest；subhd 空 secrets 数组', () => {
     settings.setSecret('TMDB_API_KEY', 'tmdb-plain-123456', NOW)
     settings.set(`secret_test:tmdb`, JSON.stringify({ ok: true, at: NOW - 60_000 }), NOW)
     const p = buildProviders(makeDeps())
-    expect(p.providers.map((r) => r.id)).toEqual(['tmdb', 'llm', 'translate', 'assrt', 'opensubtitles', 'jimaku', 'subhd', 'zimuku'])
+    expect(p.providers.map((r) => r.id)).toEqual(['tmdb', 'llm', 'translate', 'assrt', 'opensubtitles', 'jimaku', 'subhd', 'zimuku', 'r3sub', 'subdl'])
     const tmdb = p.providers[0]!
     expect(tmdb.secrets).toEqual([{ name: 'TMDB_API_KEY', set: true, source: 'db', masked: 'tmd••••456' }])
     expect(tmdb.lastTest).toEqual({ ok: true, at: NOW - 60_000 })
@@ -255,7 +255,7 @@ describe('buildProviders 的 quota 字段（quota_state_* 旁路键的唯一读�
     settings.set(quotaKey('jimaku'), JSON.stringify({ resetAt: null }), NOW)
     settings.set(quotaKey('assrt'), JSON.stringify({ resetAt: null, observedAt: NOW }), NOW)
     const p = buildProviders(makeDeps())
-    expect(p.providers).toHaveLength(8)
+    expect(p.providers).toHaveLength(10)
     expect(p.providers.find((r) => r.id === 'opensubtitles')!.quota).toBeNull()
     expect(p.providers.find((r) => r.id === 'jimaku')!.quota).toBeNull()
     expect(p.providers.find((r) => r.id === 'assrt')!.quota).not.toBeNull()
@@ -265,7 +265,7 @@ describe('buildProviders 的 quota 字段（quota_state_* 旁路键的唯一读�
   it('未知 provider 的旁路键不产生额外行', () => {
     settings.set(quotaKey('nonesuch'), JSON.stringify({ resetAt: null, observedAt: NOW }), NOW)
     const p = buildProviders(makeDeps())
-    expect(p.providers).toHaveLength(8)
+    expect(p.providers).toHaveLength(10)
     expect(p.providers.some((r) => r.id === 'nonesuch' as never)).toBe(false)
   })
 
@@ -355,5 +355,73 @@ describe('validateSetupTarget（spec §4.4）', () => {
     expect(sanitizeCredentials({ JIMAKU_API_KEY: 'jk-1', HACK: 'x', TMDB_API_KEY: 42 as never, ASSRT_TOKEN: '' }))
       .toEqual({ JIMAKU_API_KEY: 'jk-1' })
     void seen
+  })
+})
+
+describe('注册表派生（r3sub/subdl 入列 + kind/languages，registry spec §4.1/§4.2）', () => {
+  it('r3sub 行：双凭据 keyed，kind=source，languages=[zh]', () => {
+    const row = buildProviders(makeDeps()).providers.find((r) => r.id === 'r3sub')!
+    expect(row).toBeDefined()
+    expect(row.secrets.map((s) => s.name)).toEqual(['R3SUB_EMAIL', 'R3SUB_PASSWORD'])
+    expect(row.kind).toBe('source')
+    expect(row.languages).toEqual(['zh'])
+  })
+
+  it('subdl 行：单凭据 keyed，kind=source，languages=*', () => {
+    const row = buildProviders(makeDeps()).providers.find((r) => r.id === 'subdl')!
+    expect(row).toBeDefined()
+    expect(row.secrets.map((s) => s.name)).toEqual(['SUBDL_API_KEY'])
+    expect(row.kind).toBe('source')
+    expect(row.languages).toBe('*')
+  })
+
+  it('infra 行（tmdb/llm/translate）kind=infra、languages=null；源行 languages 来自注册表', () => {
+    const p = buildProviders(makeDeps())
+    for (const id of ['tmdb', 'llm', 'translate'] as const) {
+      const row = p.providers.find((r) => r.id === id)!
+      expect(row.kind).toBe('infra')
+      expect(row.languages).toBeNull()
+    }
+    expect(p.providers.find((r) => r.id === 'assrt')!.languages).toEqual(['zh'])
+    expect(p.providers.find((r) => r.id === 'opensubtitles')!.languages).toBe('*')
+    expect(p.providers.find((r) => r.id === 'jimaku')!.languages).toEqual(['ja'])
+  })
+
+  it('status.providers.r3sub：email+password 成对才 satisfied；subdl 按单 key', () => {
+    const s0 = buildSetupStatus(makeDeps())
+    expect(s0.providers.r3sub).toEqual({ satisfied: false, source: 'none', masked: null })
+    expect(s0.providers.subdl).toEqual({ satisfied: false, source: 'none', masked: null })
+
+    settings.setSecret('R3SUB_EMAIL', 'someone@example.com', NOW)
+    const s1 = buildSetupStatus(makeDeps())
+    expect(s1.providers.r3sub.satisfied).toBe(false)   // 只有 email 不算配好
+
+    settings.setSecret('R3SUB_PASSWORD', 'hunter2-secret', NOW)
+    const s2 = buildSetupStatus(makeDeps())
+    expect(s2.providers.r3sub.satisfied).toBe(true)
+    expect(s2.providers.r3sub.source).toBe('db')
+    expect(s2.providers.r3sub.masked).not.toBeNull()
+    expect(s2.providers.r3sub.masked).not.toContain('someone@example.com')
+
+    settings.setSecret('SUBDL_API_KEY', 'subdl_key_123456', NOW)
+    expect(buildSetupStatus(makeDeps()).providers.subdl.satisfied).toBe(true)
+  })
+
+  it('validate targets 认 r3sub/subdl（注入 probe 走通全链）', async () => {
+    const r1 = await validateSetupTarget(makeDeps({}, {
+      probes: { r3sub: async () => ({ ok: true, detail: 'login ok' }) },
+    }), { target: 'r3sub' })
+    expect(r1.body).toEqual({ ok: true, detail: 'login ok' })
+    const r2 = await validateSetupTarget(makeDeps({}, {
+      probes: { subdl: async () => ({ ok: true, skip: true, detail: '未配置' }) },
+    }), { target: 'subdl' })
+    expect(r2.body).toEqual({ ok: false, error: 'subdl is not configured' })
+  })
+
+  it('未配凭据时 r3sub/subdl 的 defaultProbe 报未配置（不出网）', async () => {
+    const r = await validateSetupTarget(makeDeps(), { target: 'r3sub' })
+    expect(r.body).toEqual({ ok: false, error: 'r3sub is not configured' })
+    const r2 = await validateSetupTarget(makeDeps(), { target: 'subdl' })
+    expect(r2.body).toEqual({ ok: false, error: 'subdl is not configured' })
   })
 })

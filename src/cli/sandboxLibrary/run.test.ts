@@ -337,8 +337,8 @@ describe('sandboxCacheDir / missingLiveEnv', () => {
 
   it('live workers inject r3subClient into makeFindSubtitleWorker (r3sub download bypass)', () => {
     const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'run.ts'), 'utf8')
-    expect(src).toMatch(/buildR3subClient\(cfg\)/)
-    expect(src).toMatch(/makeFindSubtitleWorker\(\{[^}]*r3subClient[^}]*\}\)/)
+    expect(src).toMatch(/buildR3subClient\(cfg[,)]/)
+    expect(src).toMatch(/makeFindSubtitleWorker\(\{[\s\S]*?r3subClient/)
   })
 })
 

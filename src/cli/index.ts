@@ -330,7 +330,7 @@ async function cmdWatch() {
     const satisfied = tmdb !== null && reasoningModel !== null
     const realignAdapters = await buildAdapters(cfg, emitProviderEvent, warn)
     // r3sub 下载旁路的 client（两跳下载不经 runResolve）——凭据齐才有，null 时 r3sub 候选下载报错。
-    const r3subClient = buildR3subClient(cfg) ?? undefined
+    const r3subClient = buildR3subClient(cfg, emitProviderEvent) ?? undefined
     const realignRunEpisode = satisfied
       ? makeRealignRunEpisode({
           runFindSubtitleTask: makeFindSubtitleWorker({
