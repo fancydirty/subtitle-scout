@@ -76,7 +76,7 @@ function detailData(o: Partial<MediaLibraryDetailDTO> = {}): MediaLibraryDetailD
   return {
     work: {
       workId: 'tmdb:1', title: 'Dark Matter', chineseTitle: '黑暗智宅',
-      year: 2024, posterPath: null, mediaType: 'tv',
+      year: 2024, posterPath: null, mediaType: 'tv', backdropPath: null, overview: null,
     },
     seasons: [], movie: null, unplacedFileCount: 0,
     ...o,

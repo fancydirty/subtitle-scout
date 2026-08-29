@@ -9,14 +9,14 @@
 // 取值走 vitest.config.ts:21 的 `define`（`?raw` 在 vitest 里恒空串，`node:fs` 撞
 // tsconfig types 白名单）——手法与 SeriesGrid.test.tsx 一致。
 import { describe, it, expect, afterEach } from 'vitest'
-import { render, screen, cleanup, within } from '@testing-library/react'
+import { render, screen, cleanup, within, fireEvent } from '@testing-library/react'
 import { I18nProvider } from '../i18n/useT.js'
-import { MediaDetailPage, seasonTally, isNotFoundError } from './MediaDetailPage.js'
+import { MediaDetailPage, seasonTally, isNotFoundError, readyTally, formatDuration, formatSize } from './MediaDetailPage.js'
 import { extraUnsubtitledCount } from './EpisodeCell.js'
 import { en } from '../i18n/en.js'
 import type { Async } from '../api/hooks.js'
 import type {
-  MediaLibraryDetailDTO, MediaLibraryEpisodeDTO, EpisodeState, MediaSubtitleDot,
+  MediaLibraryDetailDTO, MediaLibraryEpisodeDTO, MediaLibraryMovieDTO, EpisodeState, MediaSubtitleDot,
 } from '../api/types.js'
 
 declare const __STYLES_CSS__: string
@@ -74,10 +74,19 @@ function ep(overrides: Partial<MediaLibraryEpisodeDTO> & { episode: number }): M
   }
 }
 
+/** 电影那一格的默认形状（Hero D 起带 durationSec/sizeBytes 两列）。 */
+function movieCell(overrides: Partial<MediaLibraryMovieDTO> = {}): MediaLibraryMovieDTO {
+  return {
+    dot: 'none', episodeState: 'pending', fileCount: 1, subtitledFileCount: 0,
+    filename: null, durationSec: null, sizeBytes: null,
+    ...overrides,
+  }
+}
+
 function detail(overrides: Partial<MediaLibraryDetailDTO> = {}): MediaLibraryDetailDTO {
   return {
     work: { workId: 'tmdb:1396', title: 'Breaking Bad', chineseTitle: null, year: 2008,
-            posterPath: null, mediaType: 'tv' },
+            posterPath: null, mediaType: 'tv', backdropPath: null, overview: null },
     seasons: [], movie: null, unplacedFileCount: 0,
     ...overrides,
   }
@@ -382,8 +391,8 @@ describe('R-F2「另一处那份仍要单独去配」在详情页可见', () => 
 describe('电影那一格（R-F5：电影没有季集）', () => {
   it('movie 非 null → 渲染电影块，走同一套染色语言', () => {
     renderDetail(asyncOf(detail({
-      work: { workId: 'tmdb:9', title: 'M', chineseTitle: null, year: 1999, posterPath: null, mediaType: 'movie' },
-      movie: { dot: 'green', episodeState: 'covered', fileCount: 1, subtitledFileCount: 1, filename: 'M.mkv' },
+      work: { workId: 'tmdb:9', title: 'M', chineseTitle: null, year: 1999, posterPath: null, mediaType: 'movie', backdropPath: null, overview: null },
+      movie: movieCell({ dot: 'green', episodeState: 'covered', fileCount: 1, subtitledFileCount: 1, filename: 'M.mkv' }),
     })))
     const cell = screen.getByRole('listitem')
     expect(cell.querySelector('.media-ep-num')!.getAttribute('data-state')).toBe('covered')
@@ -393,11 +402,11 @@ describe('电影那一格（R-F5：电影没有季集）', () => {
   it('电影格露出文件名，不是空的拉宽集号格', () => {
     renderDetail(asyncOf(detail({
       work: { workId: 'tmdb:539972', title: 'Kraven the Hunter', chineseTitle: '猎人克莱文',
-              year: 2024, posterPath: null, mediaType: 'movie' },
-      movie: {
+              year: 2024, posterPath: null, mediaType: 'movie', backdropPath: null, overview: null },
+      movie: movieCell({
         dot: 'blue', episodeState: 'embedded', fileCount: 1, subtitledFileCount: 0,
         filename: 'Kraven the Hunter (2024).mkv',
-      },
+      }),
     })))
     expect(screen.getByText('Kraven the Hunter (2024).mkv')).toBeInTheDocument()
     expect(screen.getByRole('listitem').className).not.toMatch(/media-ep-cell-wide/)
@@ -406,8 +415,8 @@ describe('电影那一格（R-F5：电影没有季集）', () => {
   it('**零文件的电影**（空壳 works 直达详情端点）→ absent + 虚线，不假设电影格必有文件', () => {
     // 后端注释点名证伪过"电影格恒有文件"：详情端点没有列表页那个 INNER JOIN。
     renderDetail(asyncOf(detail({
-      work: { workId: 'tmdb:9', title: 'M', chineseTitle: null, year: null, posterPath: null, mediaType: 'movie' },
-      movie: { dot: 'none', episodeState: 'absent', fileCount: 0, subtitledFileCount: 0, filename: null },
+      work: { workId: 'tmdb:9', title: 'M', chineseTitle: null, year: null, posterPath: null, mediaType: 'movie', backdropPath: null, overview: null },
+      movie: movieCell({ dot: 'none', episodeState: 'absent', fileCount: 0, subtitledFileCount: 0, filename: null }),
     })))
     const cell = screen.getByRole('listitem')
     expect(cell.getAttribute('data-ondisk')).toBe('false')
@@ -473,10 +482,210 @@ describe('图例 / unplaced / 异常态', () => {
   it('en：有中文名时**只**显示原名（副标题槽不渲染）；相同则只显示一次', () => {
     renderDetail(asyncOf(detail({
       work: { workId: 'w', title: 'Breaking Bad', chineseTitle: '绝命毒师', year: 2008,
-              posterPath: null, mediaType: 'tv' },
+              posterPath: null, mediaType: 'tv', backdropPath: null, overview: null },
     })))
     // 2026-08-18 裁决：英文 UI 下外国人不需要知道中文名，副标题槽整体不渲染
     expect(screen.getByRole('heading', { name: 'Breaking Bad' })).toBeInTheDocument()
     expect(screen.queryByText('绝命毒师')).not.toBeInTheDocument()
+  })
+})
+
+// ═══ Hero D（2026-08-28）：全宽背景图 + 标题区 + metadata 行 + 简介展开 ═══════════
+describe('Hero D：背景图块（有图渲染 w1280 / 无图整块不渲染，绝不占位）', () => {
+  it('有 backdropPath → 渲染背景图，img src 走 w1280 CDN 档', () => {
+    renderDetail(asyncOf(detail({
+      work: { workId: 'tmdb:1', title: 'BB', chineseTitle: null, year: 2008, posterPath: null,
+              mediaType: 'tv', backdropPath: '/bd.jpg', overview: null },
+    })))
+    const img = screen.getByTestId('media-detail-backdrop') as HTMLImageElement
+    expect(img.getAttribute('src')).toContain('/t/p/w1280')
+    expect(img.getAttribute('src')).toContain('/bd.jpg')
+  })
+
+  it('🔴 backdropPath 为 null → 整块不渲染（无占位灰块，标题区直接开始）', () => {
+    renderDetail(asyncOf(detail({
+      work: { workId: 'tmdb:1', title: 'BB', chineseTitle: null, year: 2008, posterPath: null,
+              mediaType: 'tv', backdropPath: null, overview: null },
+    })))
+    expect(screen.queryByTestId('media-detail-backdrop')).toBeNull()
+  })
+
+  it('背景图不压任何文字（scrim 归零）——标题在图块**之外**的实底区，不是叠在图上', () => {
+    renderDetail(asyncOf(detail({
+      work: { workId: 'tmdb:1', title: 'Breaking Bad', chineseTitle: null, year: 2008, posterPath: null,
+              mediaType: 'tv', backdropPath: '/bd.jpg', overview: null },
+    })))
+    const heading = screen.getByRole('heading', { name: 'Breaking Bad' })
+    const backdrop = screen.getByTestId('media-detail-backdrop')
+    // 标题不是背景图块的后代（图上无文字）。
+    expect(backdrop.contains(heading)).toBe(false)
+  })
+})
+
+describe('Hero D：metadata 行（就绪进度条 + N/M + 年份 + 类型）', () => {
+  it('🔴 进度条填充 = 就绪聚合（ready/onDisk），且「就绪 N/M」文字与它同源', () => {
+    // 4 集在盘：2 covered（绿点，算就绪）+ 2 pending（不就绪）→ ready=2, onDisk=4 → 50%。
+    renderDetail(asyncOf(detail({
+      seasons: [{
+        season: 1,
+        episodes: [
+          ep({ episode: 1, onDisk: true, dot: 'green', episodeState: 'covered' }),
+          ep({ episode: 2, onDisk: true, dot: 'green', episodeState: 'covered' }),
+          ep({ episode: 3, onDisk: true, dot: 'none', episodeState: 'pending' }),
+          ep({ episode: 4, onDisk: true, dot: 'none', episodeState: 'pending' }),
+        ],
+      }],
+    })))
+    const fill = screen.getByTestId('media-detail-ready-fill')
+    expect(fill.style.width).toBe('50%')
+    // 「就绪 2/4」文字：复用海报卡 media_card_coverage（'Ready'）——同词同口径。
+    expect(screen.getByText(new RegExp(`${en.media_card_coverage}\\s*2/4`))).toBeInTheDocument()
+  })
+
+  it('就绪口径逐字复刻海报卡：绿(covered)+蓝(embedded)+原生(none·origin-skip) 都算就绪', () => {
+    renderDetail(asyncOf(detail({
+      seasons: [{
+        season: 1,
+        episodes: [
+          ep({ episode: 1, onDisk: true, dot: 'green', episodeState: 'covered' }),
+          ep({ episode: 2, onDisk: true, dot: 'blue', episodeState: 'embedded' }),
+          ep({ episode: 3, onDisk: true, dot: 'none', episodeState: 'origin-skip' }),
+          ep({ episode: 4, onDisk: true, dot: 'none', episodeState: 'pending' }),
+          ep({ episode: 5, onDisk: false, dot: 'none', episodeState: 'absent', fileCount: 0 }),
+        ],
+      }],
+    })))
+    // onDisk=4（虚线格不算），ready=3 → 75%。
+    expect(screen.getByTestId('media-detail-ready-fill').style.width).toBe('75%')
+    expect(screen.getByText(new RegExp(`${en.media_card_coverage}\\s*3/4`))).toBeInTheDocument()
+  })
+
+  it('剧集类型段：「剧集 · N 季」（N = 有内容的季数）', () => {
+    renderDetail(asyncOf(detail({
+      seasons: [
+        { season: 1, episodes: [ep({ episode: 1 })] },
+        { season: 2, episodes: [ep({ episode: 1 })] },
+      ],
+    })))
+    expect(screen.getByText(new RegExp(`${en.media_detail_kind_series}\\s*·\\s*2\\s*${en.media_detail_seasons_unit}`))).toBeInTheDocument()
+  })
+
+  it('年份出现在 metadata 行', () => {
+    renderDetail(asyncOf(detail({ seasons: [{ season: 1, episodes: [ep({ episode: 1 })] }] })))
+    expect(screen.getByText(/2008/)).toBeInTheDocument()
+  })
+
+  it('onDisk=0（零文件）时不渲染就绪进度条（避免 0/0 与 NaN%）', () => {
+    renderDetail(asyncOf(detail({ seasons: [] })))
+    expect(screen.queryByTestId('media-detail-ready-fill')).toBeNull()
+  })
+})
+
+describe('Hero D：电影 metadata 行含时长 + 体积（1h48m · 1.4 GB）', () => {
+  it('🔴 电影行渲染格式化的时长与体积', () => {
+    renderDetail(asyncOf(detail({
+      work: { workId: 'tmdb:9', title: 'Kraven', chineseTitle: null, year: 2024, posterPath: null,
+              mediaType: 'movie', backdropPath: null, overview: null },
+      movie: movieCell({ dot: 'green', episodeState: 'covered', fileCount: 1, subtitledFileCount: 1,
+                         filename: 'K.mkv', durationSec: 6480, sizeBytes: 1503238553 }),
+    })))
+    expect(screen.getByText(/1h48m/)).toBeInTheDocument()
+    expect(screen.getByText(/1\.4\s*GB/)).toBeInTheDocument()
+    // metadata 行的就绪读数在场（电影 1/1 就绪）。
+    expect(screen.getByText(new RegExp(`${en.media_card_coverage}\\s*1/1`))).toBeInTheDocument()
+  })
+
+  it('时长/体积为 null（多份/未探测）时对应段不渲染，其余照常', () => {
+    renderDetail(asyncOf(detail({
+      work: { workId: 'tmdb:9', title: 'Kraven', chineseTitle: null, year: 2024, posterPath: null,
+              mediaType: 'movie', backdropPath: null, overview: null },
+      movie: movieCell({ dot: 'green', episodeState: 'covered', fileCount: 1, subtitledFileCount: 1,
+                         filename: 'K.mkv', durationSec: null, sizeBytes: null }),
+    })))
+    expect(screen.queryByText(/GB|MB/)).toBeNull()
+    expect(screen.queryByText(/\dh\dm|\dm\b/)).toBeNull()
+  })
+
+  it('formatDuration / formatSize 纯函数口径', () => {
+    expect(formatDuration(6480)).toBe('1h48m')      // 108 分钟
+    expect(formatDuration(2700)).toBe('45m')        // 45 分钟，无小时段
+    expect(formatSize(1503238553)).toBe('1.4 GB')
+    expect(formatSize(700 * 1024 * 1024)).toBe('700 MB')
+  })
+})
+
+describe('Hero D：readyTally 纯函数（口径 = 海报卡「就绪 N/M」，不另造）', () => {
+  it('剧集：ready = 绿/蓝/原生格，onDisk = 实线格（虚线不算）', () => {
+    const d = detail({
+      seasons: [{
+        season: 1,
+        episodes: [
+          ep({ episode: 1, onDisk: true, dot: 'green', episodeState: 'covered' }),
+          ep({ episode: 2, onDisk: true, dot: 'blue', episodeState: 'embedded' }),
+          ep({ episode: 3, onDisk: true, dot: 'none', episodeState: 'origin-skip' }),
+          ep({ episode: 4, onDisk: true, dot: 'none', episodeState: 'pending' }),
+          ep({ episode: 5, onDisk: false, dot: 'none', episodeState: 'absent', fileCount: 0 }),
+        ],
+      }],
+    })
+    expect(readyTally(d)).toEqual({ ready: 3, onDisk: 4 })
+  })
+
+  it('电影就绪：有字幕/自带/原生的电影 ready=1，pending 电影 ready=0；零文件 onDisk=0', () => {
+    const covered = detail({ movie: movieCell({ dot: 'green', episodeState: 'covered', fileCount: 1 }) })
+    expect(readyTally(covered)).toEqual({ ready: 1, onDisk: 1 })
+    const pending = detail({ movie: movieCell({ dot: 'none', episodeState: 'pending', fileCount: 1 }) })
+    expect(readyTally(pending)).toEqual({ ready: 0, onDisk: 1 })
+    const absent = detail({ movie: movieCell({ dot: 'none', episodeState: 'absent', fileCount: 0 }) })
+    expect(readyTally(absent)).toEqual({ ready: 0, onDisk: 0 })
+  })
+})
+
+describe('Hero D：简介截断 + 「更多」展开（原地展开，非弹窗）', () => {
+  const LONG = 'A high school chemistry teacher diagnosed with terminal cancer turns to a life of crime, producing and selling methamphetamine to secure his family future before he dies, and it changes everything about who he becomes.'
+
+  it('有 overview → 渲染截断的简介 + 「更多」；点击后原地展开、按钮变「收起」', () => {
+    renderDetail(asyncOf(detail({
+      work: { workId: 'tmdb:1', title: 'BB', chineseTitle: null, year: 2008, posterPath: null,
+              mediaType: 'tv', backdropPath: null, overview: LONG },
+    })))
+    const p = screen.getByTestId('media-detail-overview')
+    expect(p.className).toContain('media-detail-overview-clamp')
+    const more = screen.getByRole('button', { name: en.media_detail_overview_more })
+    fireEvent.click(more)
+    // 原地展开：同一个 <p> 去掉截断类，按钮文案变「收起」（不是新开弹窗）。
+    expect(screen.getByTestId('media-detail-overview').className).not.toContain('media-detail-overview-clamp')
+    expect(screen.getByRole('button', { name: en.media_detail_overview_less })).toBeInTheDocument()
+  })
+
+  it('overview 为 null → 简介整段不渲染（无空壳、无「更多」按钮）', () => {
+    renderDetail(asyncOf(detail({
+      work: { workId: 'tmdb:1', title: 'BB', chineseTitle: null, year: 2008, posterPath: null,
+              mediaType: 'tv', backdropPath: null, overview: null },
+    })))
+    expect(screen.queryByTestId('media-detail-overview')).toBeNull()
+    expect(screen.queryByRole('button', { name: en.media_detail_overview_more })).toBeNull()
+  })
+
+  it('CSS：「更多」链接用 --color-fn-purple（紫链接色，token 类不裸 hex）', () => {
+    const color = cssDecl('.media-detail-overview-toggle', 'color')
+    expect(color, '.media-detail-overview-toggle 没有颜色声明').toBeTruthy()
+    expect(color).toBe('var(--color-fn-purple)')
+  })
+})
+
+describe('Hero D：CSS 几何（圆角上缘 + 底缘渐入 + 拒绝投影）', () => {
+  it('背景图块圆角上缘走 --radius-card，底缘线性渐入（mask fade）', () => {
+    const radius = cssDeclRe('\\.media-detail-hero-backdrop', 'border-top-left-radius')
+    expect(radius).toBe('var(--radius-card)')
+    const mask = cssDeclRe('\\.media-detail-hero-backdrop', 'mask-image')
+    expect(mask, '底缘没有线性渐入').toBeTruthy()
+    expect(mask).toContain('linear-gradient')
+    expect(mask).toContain('transparent')
+  })
+
+  it('R-F11：hero 段无投影（MEDIA_CSS 已整段守 box-shadow，这里再钉 hero 专属块）', () => {
+    const heroBlock = /\.media-detail-hero[\s\S]*?\{[^}]*box-shadow/
+    expect(heroBlock.test(MEDIA_CSS)).toBe(false)
   })
 })

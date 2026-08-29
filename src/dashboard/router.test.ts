@@ -99,7 +99,7 @@ const mediaLibraryItem: MediaLibraryItemDTO = {
 const mediaLibraryDetailDTO: MediaLibraryDetailDTO = {
   work: {
     workId: 'tmdb:1', title: 'Breaking Bad', chineseTitle: '绝命毒师', year: 2008,
-    posterPath: '/bb.jpg', mediaType: 'tv',
+    posterPath: '/bb.jpg', mediaType: 'tv', backdropPath: null, overview: null,
   },
   seasons: [{
     season: 1,

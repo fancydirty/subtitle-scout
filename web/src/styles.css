@@ -2,6 +2,30 @@
    Plan C Task 31 起完全 Astryx-free：reset 由 tw.css 的 preflight 顶替，
    颜色全部读新栈 token（tw.css @theme），不新起配色。 */
 
+/* ── 全局滚动条 DNA 化（2026-08-28，Hero D 同批裁决）───────────────────────────
+   Firefox 走 scrollbar-width/scrollbar-color；Chromium/WebKit 走 ::-webkit-scrollbar 族。
+   thumb 常态 rgba(255,255,255,.14)、悬停 .22（与全站 hover 抬升发丝线同值），圆角、轨道透明。
+   颜色走裸 rgba 不走 token：滚动条是浏览器底盘件，不属于任何一页的配色语义（同 hover
+   发丝线 rgba(255,255,255,.14) 的既有取值——它在本文件里已作为裸 rgba 出现了十余处）。 */
+html {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
 .cmdk-trigger {
   display: inline-flex;
   align-items: center;
@@ -1627,7 +1651,7 @@
   white-space: nowrap;
 }
 
-/* ---- 详情：头部海报缩略 ---- */
+/* ---- 详情：头部海报缩略（骨架屏 DetailSkeleton 仍用；Hero D 后正文头部改走下方 hero） ---- */
 .media-detail-poster {
   width: 72px;
   flex-shrink: 0;
@@ -1635,6 +1659,109 @@
   overflow: hidden;
   border: 1px solid var(--color-border);
   background: var(--color-secondary);
+}
+
+/* ---- 详情：Hero D（2026-08-28）——全宽 backdrop + 实底标题区 + metadata 行 + 简介 ────
+   自上而下：① 全宽 backdrop 图块（16:9 裁切、圆角上缘 --radius-card、底缘 24px 线性渐入
+   页面底色，**无文字压图、scrim 归零**；无 backdrop 时整块不渲染）② 实底标题区（中文名 +
+   原名副行）③ metadata 行（lime 就绪进度条 + 「就绪 N/M」+ 年份 + 类型 / 电影时长体积）
+   ④ 简介截断 + 更多展开。R-F11：**拒绝投影**——本段无任何 box-shadow。 */
+.media-detail-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+/* 全宽 backdrop：img 自身即 16:9 图块（宽屏 420px 封顶——16:9 不封顶时 1440 屏下高逾 600px，
+   标题/信息带全被推出首屏，违背 D 形态「图块+信息带同屏」的本意；封顶后 object-fit 居中裁切，
+   窄屏 16:9 不足 420px 不受影响）。底缘「渐入页面底色」用 mask 把最底 24px 淡成透明，露出其下
+   的页面底色（--color-background），等价于线性渐入而无需第二个渐变层。
+   ⚠️ mask 渐变停点**禁用 calc(100% - Npx)**：Chromium 在 mask-image 的渐变停点里对该 calc 的
+   百分比解析错基准（塌成近零高度，整图被遮，2026-08-29 真机实测两个 Chromium 内核均复现）。
+   等价写法 to top + 纯 px 停点：底缘 0 透明 → 24px 全黑 → 其余延续全黑。 */
+.media-detail-hero-backdrop {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  max-height: 420px;
+  object-fit: cover;
+  display: block;
+  border-top-left-radius: var(--radius-card);
+  border-top-right-radius: var(--radius-card);
+  -webkit-mask-image: linear-gradient(to top, transparent, #000 24px);
+          mask-image: linear-gradient(to top, transparent, #000 24px);
+}
+.media-detail-hero-head {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.media-detail-hero-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+/* lime 覆盖进度条：就绪 / 本地。绿档与海报卡 .media-card-bar-g 同 token（--color-fn-green）。 */
+.media-detail-hero-bar {
+  position: relative;
+  width: 140px;
+  height: 4px;
+  border-radius: 99px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+}
+.media-detail-hero-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 99px;
+  background: var(--color-fn-green);
+}
+.media-detail-hero-facts {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--color-muted-foreground);
+}
+.media-detail-hero-overview {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+.media-detail-overview-text {
+  margin: 0;
+  max-width: 72ch;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--color-muted-foreground);
+}
+/* 两~三行截断（展开态原地去掉本类）。 */
+.media-detail-overview-clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+/* 「更多 / 收起」链接：紫链接色（--color-fn-purple，本仓"链接/在动"的既有语义色），
+   非按钮外观（无边框无底），token 类不裸 hex（token-lock 纪律）。 */
+.media-detail-overview-toggle {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--color-fn-purple);
+  cursor: pointer;
+}
+.media-detail-overview-toggle:hover {
+  text-decoration: underline;
+}
+.media-detail-overview-toggle:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+  border-radius: 3px;
 }
 
 /* ---- 详情：图例 ---- */

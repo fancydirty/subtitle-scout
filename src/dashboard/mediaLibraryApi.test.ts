@@ -24,14 +24,19 @@ function addWork(
     year?: number | null
     posterPath?: string | null
     chineseTitles?: string[] | null
+    // Hero D（2026-08-28）：详情页头部要读 works 的这两列（backdrop_path 由 v42 ALTER 加，
+    // overview 在终态 CREATE TABLE 里）。默认 null，只有 hero 用例才显式给值。
+    overview?: string | null
+    backdropPath?: string | null
   },
 ): void {
   db.prepare(
-    `INSERT INTO works (id, title, original_title, year, media_type, origin_lang, overview, poster_path, chinese_titles, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO works (id, title, original_title, year, media_type, origin_lang, overview, poster_path, chinese_titles, backdrop_path, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
-    id, o.title, null, o.year ?? null, o.mediaType ?? 'tv', null, null,
-    o.posterPath ?? null, o.chineseTitles ? JSON.stringify(o.chineseTitles) : null, NOW, NOW,
+    id, o.title, null, o.year ?? null, o.mediaType ?? 'tv', null, o.overview ?? null,
+    o.posterPath ?? null, o.chineseTitles ? JSON.stringify(o.chineseTitles) : null,
+    o.backdropPath ?? null, NOW, NOW,
   )
 }
 
@@ -49,12 +54,16 @@ function addFile(o: {
   needsSubtitle?: number | null
   skipReason?: string | null
   filename?: string
+  /** Hero D（2026-08-28）：电影行要读单文件的时长/体积（1h48m · 1.4 GB）。
+   *  duration_sec 可空（ffprobe 未探测），size 非空。默认 size=100，duration=null。 */
+  durationSec?: number | null
+  size?: number
 }): void {
   db.prepare(
-    `INSERT INTO files (path, dir, filename, size, mtime, work_dir, work_id, season, episode, sub_status, embedded_langs, needs_subtitle, skip_reason, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO files (path, dir, filename, size, mtime, duration_sec, work_dir, work_id, season, episode, sub_status, embedded_langs, needs_subtitle, skip_reason, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
-    o.path, '/d', o.filename ?? 'f.mkv', 100, NOW, '/d', o.workId,
+    o.path, '/d', o.filename ?? 'f.mkv', o.size ?? 100, NOW, o.durationSec ?? null, '/d', o.workId,
     o.season ?? null, o.episode ?? null, o.subStatus ?? null,
     o.embeddedLangs ? JSON.stringify(o.embeddedLangs) : null,
     o.needsSubtitle === undefined ? 1 : o.needsSubtitle,
@@ -1251,5 +1260,87 @@ describe('buildMediaLibraryDetail（详情：季集网格）', () => {
     ).run()
     expect(() => buildMediaLibraryDetail(db, 'tmdb:200')).not.toThrow()
     expect(buildMediaLibraryDetail(db, 'tmdb:200')!.seasons[0].episodes[0].dot).toBe('none')
+  })
+})
+
+// ═══ Hero D（2026-08-28）：详情页头部要读的两组新字段 ═══════════════════════════
+// ① work.backdropPath / work.overview —— 全宽背景图 + 简介（works 表 backdrop_path/overview
+//    两列 36/36 有值）。② 电影格的时长/体积 —— hero metadata 行「1h48m · 1.4 GB」的数据源。
+describe('Hero D：work.backdropPath / work.overview（详情头部背景图 + 简介）', () => {
+  it('🔴 buildMediaLibraryDetail 的 work 带 backdropPath 与 overview（如实透传，不加工）', () => {
+    addWork('tmdb:900', {
+      title: 'Breaking Bad', year: 2008,
+      backdropPath: '/bd900.jpg', overview: 'A high school chemistry teacher turned drug kingpin.',
+    })
+    addCanonical('tmdb:900', 1, [1])
+    addFile({ path: '/m/bb/s1e1.mkv', workId: 'tmdb:900', season: 1, episode: 1 })
+
+    const w = buildMediaLibraryDetail(db, 'tmdb:900')!.work
+    expect(w.backdropPath).toBe('/bd900.jpg')
+    expect(w.overview).toBe('A high school chemistry teacher turned drug kingpin.')
+  })
+
+  it('🔴 两列缺值时为 null（前端据此不渲染背景图 / 不渲染简介，绝不占位）', () => {
+    addWork('tmdb:901', { title: 'No Art' })
+    addCanonical('tmdb:901', 1, [1])
+    addFile({ path: '/m/na/s1e1.mkv', workId: 'tmdb:901', season: 1, episode: 1 })
+
+    const w = buildMediaLibraryDetail(db, 'tmdb:901')!.work
+    expect(w.backdropPath).toBeNull()
+    expect(w.overview).toBeNull()
+  })
+
+  it('🔴 电影同样透传 backdropPath / overview（hero 对剧集与电影一视同仁）', () => {
+    addWork('tmdb:902', {
+      title: 'M', mediaType: 'movie', year: 1999,
+      backdropPath: '/m902.jpg', overview: 'A film.',
+    })
+    addFile({ path: '/m/m/M.mkv', workId: 'tmdb:902', season: null, episode: null })
+
+    const w = buildMediaLibraryDetail(db, 'tmdb:902')!.work
+    expect(w.backdropPath).toBe('/m902.jpg')
+    expect(w.overview).toBe('A film.')
+  })
+})
+
+describe('Hero D：电影格的时长/体积（metadata 行「1h48m · 1.4 GB」的数据源）', () => {
+  it('🔴 单文件电影 → movie.durationSec / movie.sizeBytes 取那份文件的真值', () => {
+    addWork('tmdb:910', { title: 'Kraven', mediaType: 'movie', year: 2024 })
+    // 6480 秒 = 1h48m；1503238553 字节 ≈ 1.4 GB。
+    addFile({
+      path: '/m/k/K.mkv', workId: 'tmdb:910', season: null, episode: null,
+      filename: 'K (2024).mkv', durationSec: 6480, size: 1503238553,
+    })
+
+    const movie = buildMediaLibraryDetail(db, 'tmdb:910')!.movie!
+    expect(movie.durationSec).toBe(6480)
+    expect(movie.sizeBytes).toBe(1503238553)
+  })
+
+  it('🔴 duration_sec 未探测（NULL）→ durationSec 为 null，size 仍如实报', () => {
+    addWork('tmdb:911', { title: 'NoProbe', mediaType: 'movie' })
+    addFile({ path: '/m/np/M.mkv', workId: 'tmdb:911', season: null, episode: null, durationSec: null, size: 4200 })
+
+    const movie = buildMediaLibraryDetail(db, 'tmdb:911')!.movie!
+    expect(movie.durationSec).toBeNull()
+    expect(movie.sizeBytes).toBe(4200)
+  })
+
+  it('🔴 多份文件的电影 → 时长/体积无法归属到一格，两者皆 null（同 filename 的既有口径）', () => {
+    addWork('tmdb:912', { title: 'TwoCopies', mediaType: 'movie' })
+    addFile({ path: '/a/M.mkv', workId: 'tmdb:912', season: null, episode: null, durationSec: 6000, size: 111 })
+    addFile({ path: '/b/M.mkv', workId: 'tmdb:912', season: null, episode: null, durationSec: 6000, size: 222 })
+
+    const movie = buildMediaLibraryDetail(db, 'tmdb:912')!.movie!
+    expect(movie.filename).toBeNull()
+    expect(movie.durationSec).toBeNull()
+    expect(movie.sizeBytes).toBeNull()
+  })
+
+  it('🔴 剧集不产出电影格（movie 恒 null，时长/体积只属于电影）', () => {
+    addWork('tmdb:913', { title: 'Series' })
+    addCanonical('tmdb:913', 1, [1])
+    addFile({ path: '/s/s1e1.mkv', workId: 'tmdb:913', season: 1, episode: 1, durationSec: 1500, size: 999 })
+    expect(buildMediaLibraryDetail(db, 'tmdb:913')!.movie).toBeNull()
   })
 })

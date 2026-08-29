@@ -70,8 +70,8 @@ describe('AppShell 页级错误边界：DTO 残缺时降级这一页，不白屏
 
     // 2) **外壳没被卸载**。这是与旧行为唯一重要的区别：旧代码这里整棵树都没了。
     //    导航链接还在 = 用户还能自己走到别的页面去，不用刷新。
-    //    ⚠️ 不断言 role=navigation：壳里不止一个（侧栏 + 顶栏面包屑 + 底部栏），getByRole
-    //    会撞 "found multiple"。同理链接用 getAllByRole：2026-08-27 起 BottomTabBar 与侧栏
+    //    ⚠️ 不断言 role=navigation：壳里不止一个（侧栏 + 底部栏；顶栏面包屑已于 Hero D 删除），
+    //    getByRole 会撞 "found multiple"。同理链接用 getAllByRole：2026-08-27 起 BottomTabBar 与侧栏
     //    渲染同名链接（jsdom 无媒体查询，断点互斥在 nav.contract.test.tsx 里钉类名验）。
     expect(screen.getByRole('main')).toBeInTheDocument()
     for (const label of [en.nav_activity, en.nav_notifications, en.nav_media, en.nav_settings]) {

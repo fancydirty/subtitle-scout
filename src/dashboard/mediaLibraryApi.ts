@@ -430,6 +430,10 @@ interface WorkRow {
   media_type: string
   poster_path: string | null
   chinese_titles: string | null
+  /** Hero D（2026-08-28）：详情头部才 SELECT；列表查询不取（列表卡不需要背景图/简介）。
+   *  故收窄成可选——列表 builder 的 WorkRow 里这两个字段本就不存在。 */
+  backdrop_path?: string | null
+  overview?: string | null
 }
 
 interface FileRow {
@@ -438,6 +442,10 @@ interface FileRow {
   episode: number | null
   /** 详情电影格才 SELECT；列表查询没有这一列。 */
   filename?: string
+  /** Hero D（2026-08-28）：电影格的时长/体积。详情查询才 SELECT（size 非空、duration_sec 可空），
+   *  列表查询不取——列表卡不显示单文件读数。 */
+  duration_sec?: number | null
+  size?: number
   sub_status: string | null
   embedded_langs: string | null
   /** NULL=judge 还没判（谓词 `needs_subtitle IS NULL`）/ 0=不需要 / 1=需要。
@@ -767,6 +775,11 @@ export interface MediaLibraryMovieDTO {
   subtitledFileCount: number
   /** 磁盘文件名。零文件或一份以上时为 null（多份时文件名不是这一格能说清的事）。 */
   filename: string | null
+  /** Hero D（2026-08-28）：单文件电影的时长（秒）。ffprobe 未探测 → null。
+   *  多份 / 零文件时 null（同 filename 的既有口径——归属不到一格的读数不谎报）。 */
+  durationSec: number | null
+  /** Hero D（2026-08-28）：单文件电影的体积（字节）。多份 / 零文件时 null。 */
+  sizeBytes: number | null
 }
 
 export interface MediaLibraryDetailDTO {
@@ -777,6 +790,11 @@ export interface MediaLibraryDetailDTO {
     year: number | null
     posterPath: string | null
     mediaType: 'tv' | 'movie'
+    /** Hero D（2026-08-28）：全宽背景图（TMDB backdrop_path，web 端自拼 w1280 CDN）。
+     *  null = 库里没有这张图 → 前端**整块不渲染**，无占位灰块。 */
+    backdropPath: string | null
+    /** Hero D（2026-08-28）：作品简介（works.overview）。null / 空 → 简介整段不渲染。 */
+    overview: string | null
   }
   /** 季集网格。**电影恒空数组**（R-F5：电影没有季集）。 */
   seasons: MediaLibrarySeasonDTO[]
@@ -812,14 +830,14 @@ export interface MediaLibraryDetailDTO {
 export function buildMediaLibraryDetail(db: ScoutDb, workId: string, targetLanguage: string = 'zh'): MediaLibraryDetailDTO | null {
   const w = db
     .prepare(
-      `SELECT id, title, year, media_type, poster_path, chinese_titles FROM works WHERE id = ?`,
+      `SELECT id, title, year, media_type, poster_path, chinese_titles, backdrop_path, overview FROM works WHERE id = ?`,
     )
     .get(workId) as WorkRow | undefined
   if (!w) return null
 
   const files = db
     .prepare(
-      `SELECT work_id, season, episode, filename, sub_status, embedded_langs, needs_subtitle, skip_reason
+      `SELECT work_id, season, episode, filename, duration_sec, size, sub_status, embedded_langs, needs_subtitle, skip_reason
        FROM files WHERE work_id = ?`,
     )
     .all(workId) as FileRow[]
@@ -831,14 +849,24 @@ export function buildMediaLibraryDetail(db: ScoutDb, workId: string, targetLangu
     year: w.year,
     posterPath: w.poster_path,
     mediaType: mediaTypeOf(w.media_type),
+    // Hero D（2026-08-28）：如实透传，不加工——null 由前端 backdropUrl()/简介闸各自降级。
+    backdropPath: w.backdrop_path ?? null,
+    overview: w.overview ?? null,
   }
 
   // 电影：没有季集网格，只有"有没有字幕"这一格（R-F2 同样按任一份算）。
   if (work.mediaType === 'movie') {
     const agg = aggregateDot(files, targetLanguage)
+    // 单文件时才能把时长/体积/文件名归到这一格——多份时归属不明，三者一律 null。
+    const one = files.length === 1 ? files[0]! : null
     return {
       work, seasons: [],
-      movie: { ...agg, filename: files.length === 1 ? (files[0]!.filename ?? null) : null },
+      movie: {
+        ...agg,
+        filename: one?.filename ?? null,
+        durationSec: one?.duration_sec ?? null,
+        sizeBytes: one?.size ?? null,
+      },
       unplacedFileCount: 0,
     }
   }

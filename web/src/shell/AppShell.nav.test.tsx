@@ -137,16 +137,17 @@ describe('AppShell：每个导航 tab 都真的渲染出内容（漏分支 = 静
     expect(within(main).queryByText(en.placeholder_under_construction)).toBeNull()
   })
 
-  // 🔴 Task ⑩ 的同型反向断言。变异实测（把分支退回占位组件）→ 本条红。
-  it('#/notifications 渲染真页面（Task ⑩ 已填肉）——绝不再是占位壳', async () => {
-    location.hash = '#/notifications'
+  // 🔴 Hero D（2026-08-28）：Topbar 面包屑整条删除。外壳里只剩侧栏 + 底部两个 navigation，
+  // 不再有第三个面包屑 nav。变异实测（把 <Topbar> 接回外壳）→ 本条红（3 个 nav）。
+  it('Topbar 已删：外壳只渲染侧栏 + 底部两个 nav，不再有顶栏面包屑', async () => {
+    location.hash = '#/media'
     renderShell()
-    const main = await screen.findByRole('main')
-    // 空流水态（mock 给的是 []）的真文案在场 = 真页面渲染了。
-    await waitFor(() => {
-      expect(within(main).getByText(en.notif_empty_title)).toBeInTheDocument()
-    })
-    expect(within(main).queryByText(en.placeholder_under_construction)).toBeNull()
+    await screen.findByRole('main')
+    const navs = screen.getAllByRole('navigation')
+    expect(navs, '外壳里应只有侧栏与底部两个 nav（面包屑已删）').toHaveLength(2)
+    for (const nav of navs) {
+      expect(nav.getAttribute('aria-label'), '仍存在面包屑 nav——Topbar 没删干净').not.toBe('Breadcrumb')
+    }
   })
 })
 

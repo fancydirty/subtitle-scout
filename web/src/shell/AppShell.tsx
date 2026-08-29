@@ -1,10 +1,10 @@
-// web/src/shell/AppShell.tsx：外壳——Sidebar + Topbar + 四个页面分支。
-// 顶栏只显示当前页；技术读数、⌘K 面板与 workflow/pending 轮询已删除。
+// web/src/shell/AppShell.tsx：外壳——Sidebar + 四个页面分支。
+// 顶栏（Topbar 面包屑）2026-08-28（Hero D）整条删除：面包屑只有一级（tab 名），信息量为零，
+// 而媒体库详情页自己在页头画了返回链接与作品名。skip-to-content 目标仍是 main，不受影响。
 import { useMediaLibraryDetail } from '../api/hooks.js'
 import { useShellRoute } from './route.js'
 import { Sidebar } from './Sidebar.js'
 import { BottomTabBar } from './BottomTabBar.js'
-import { Topbar } from './Topbar.js'
 import { EngineBanner } from './EngineBanner.js'
 import { PageBoundary } from './PageBoundary.js'
 import { SettingsTabsPage } from '../settings/SettingsTabsPage.js'
@@ -35,15 +35,15 @@ function ShellBody() {
 
   // Task ⑧：媒体库详情（#/media/:workId）——mediaWorkId 为 null 时 hook 不发请求
   // （见 api/hooks.ts 注释），不在详情页时不会白白 404。
-  // 它**只喂给页面本体**，不喂 Topbar：新导航的面包屑只有一级（TABS 里的 tab 名），
-  // 媒体库详情页自己在页头画了返回链接与作品名。给 Topbar 加二级面包屑是独立的产品动作。
+  // 它只喂给页面本体（详情页自绘头部的返回链接、作品名与 Hero D）。
   // 必须在 EventsProvider 内：useReloadOnFound / useReloadWhenCurrentClears 读 SSE Context。
   const mediaDetail = useMediaLibraryDetail(route.mediaWorkId ?? null)
 
   // 自绘壳，结构逐值复刻 AstryxAppShell（node_modules/@astryxdesign/core/src/AppShell/
   // AppShell.tsx:769-811 + Layout.tsx:283-296，height="fill" 路径）：根 flex column
-  // 满高（h-screen；Astryx 用 100dvh，桌面端等价，本应用桌面优先）→ 顶栏全宽在最前
-  // （DOM 序＝焦点序）→ 中间行 [侧栏 | 内容]。
+  // 满高（h-screen；Astryx 用 100dvh，桌面端等价，本应用桌面优先）→ 中间行 [侧栏 | 内容]。
+  // 2026-08-28（Hero D）：顶栏（Topbar 面包屑）整条删除，DOM 序里第一个可聚焦件是
+  // skip-to-content 链接，直达 role="main"。
   // skip-to-content 链接与 role="main" 是 Astryx 壳的真实无障碍件（无测试覆盖），
   // 保留成本一行；样式在 styles.css 的 shell 段（.skip-to-content）。
   return (
@@ -51,7 +51,6 @@ function ShellBody() {
       <a href="#scout-app-main" className="skip-to-content">
         {t('a11y_skip_to_content')}
       </a>
-      <Topbar tab={route.tab} />
       <div className="flex flex-1 overflow-hidden">
         <Sidebar tab={route.tab} />
         {/* 2026-08-27 布局 spec 决策 B：留白从 p-4（16px，Astryx contentPadding 4 的遗值）

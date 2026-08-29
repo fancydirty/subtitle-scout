@@ -33,7 +33,6 @@ export const zh = {
   // 外壳无障碍名与状态词（审计 P0-4/P1-0）。
   a11y_side_nav: '侧边导航',
   a11y_bottom_nav: '底部导航',
-  a11y_breadcrumb: '面包屑',
   a11y_dialog_close: '关闭',
   a11y_skip_to_content: '跳到主要内容',
   a11y_loading_media_library: '正在加载媒体库',
@@ -450,6 +449,14 @@ export const zh = {
   media_detail_not_found_desc: '库里没有这个作品，可能已随守备目录一起移除。',
   media_detail_no_seasons_title: '还没有任何一集',
   media_detail_no_seasons_desc: '磁盘上没有能归入季的文件，应有集目录也还没缓存。',
+
+  // Hero D（2026-08-28 详情页头部重设计）。「就绪 N/M」复用 media_card_coverage（'就绪'）。
+  media_detail_kind_series: '剧集',
+  // 季数单位（拼成「剧集 · 3 季」）。
+  media_detail_seasons_unit: '季',
+  // 简介截断后的展开/收起（紫链接色，原地展开非弹窗）。
+  media_detail_overview_more: '更多',
+  media_detail_overview_less: '收起',
 
   // 八态文案（R-F12）。⚠️ unsolvable 不写"失败"——它不是永久终态，复查闸每周放回一次。
   media_state_covered: '已有字幕',

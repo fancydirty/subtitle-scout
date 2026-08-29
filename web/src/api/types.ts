@@ -561,6 +561,12 @@ export interface MediaLibraryMovieDTO {
   subtitledFileCount: number
   /** 磁盘文件名。零文件或一份以上时为 null（多份时文件名不是这一格能说清的事）。 */
   filename: string | null
+  /** Hero D（2026-08-28）：单文件电影的时长（秒）。ffprobe 未探测 / 多份 / 零文件 → null。
+   *  前端拼「1h48m」，null 时该段不渲染。 */
+  durationSec: number | null
+  /** Hero D（2026-08-28）：单文件电影的体积（字节）。多份 / 零文件 → null。
+   *  前端拼「1.4 GB」，null 时该段不渲染。 */
+  sizeBytes: number | null
 }
 
 export interface MediaLibraryWorkDTO {
@@ -570,6 +576,11 @@ export interface MediaLibraryWorkDTO {
   year: number | null
   posterPath: string | null
   mediaType: 'tv' | 'movie'
+  /** Hero D（2026-08-28）：全宽背景图（TMDB backdrop_path，web 端自拼 w1280 CDN）。
+   *  null = 库里没有这张图 → 前端**整块不渲染**，无占位灰块。 */
+  backdropPath: string | null
+  /** Hero D（2026-08-28）：作品简介（works.overview）。null / 空 → 简介整段不渲染。 */
+  overview: string | null
 }
 
 /** GET /api/v2/mediaLibrary/:workId 响应体。 */

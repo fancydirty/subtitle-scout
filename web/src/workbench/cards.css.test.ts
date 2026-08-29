@@ -340,3 +340,48 @@ describe('styles.css 引用的每个 --color-* token 都真的有定义（拼错
     expect(CSS).not.toMatch(/--color-fg\b/)
   })
 })
+
+// ── 全局滚动条 DNA 化（2026-08-28，Hero D 同批裁决）──────────────────────────
+// 滚动条样式是全局底盘件，写在 styles.css 顶部（在 .wb-tabs 段之前，不进 WB_CSS 切片）。
+// 照本文件"钉 CSS 计算值"的既有先例钉两条：① Firefox 引擎（scrollbar-width/color）
+// ② WebKit 引擎（thumb 常态/悬停色 + 圆角 + 轨道透明）。删任一条或改色都会红。
+describe('全局滚动条：thin + 双引擎 + thumb .14/悬停 .22 + 圆角 + 轨道透明', () => {
+  it('🔴 Firefox 引擎：html 上 scrollbar-width:thin + scrollbar-color（thumb .14 / 轨道透明）', () => {
+    expect(declFromFullCss('html', 'scrollbar-width')).toBe('thin')
+    const color = declFromFullCss('html', 'scrollbar-color')
+    expect(color, 'html 没有 scrollbar-color——Firefox 会退回系统默认粗滚动条').toBeTruthy()
+    expect(color).toContain('rgba(255, 255, 255, 0.14)')
+    expect(color).toContain('transparent')
+  })
+
+  it('🔴 WebKit 引擎：thumb 常态 .14 / 悬停 .22 + 圆角，轨道透明', () => {
+    expect(declFromFullCss('::-webkit-scrollbar-thumb', 'background')).toBe('rgba(255, 255, 255, 0.14)')
+    expect(declFromFullCss('::-webkit-scrollbar-thumb:hover', 'background')).toBe('rgba(255, 255, 255, 0.22)')
+    const radius = declFromFullCss('::-webkit-scrollbar-thumb', 'border-radius')
+    expect(radius, 'thumb 没有圆角').toBeTruthy()
+    expect(declFromFullCss('::-webkit-scrollbar-track', 'background')).toBe('transparent')
+  })
+})
+
+// ── Hero D backdrop（2026-08-29 真机排障后钉死）─────────────────────────────────
+// ① mask 渐变停点禁 calc(100% - Npx)：Chromium 在 mask-image 渐变停点里对该 calc 的百分比
+//    解析错基准（塌成近零高度→整图被遮，两个 Chromium 内核实测复现）。等价安全形：
+//    to top + 纯 px 停点。这条钉的就是"别有人好心改回 calc 形"。
+// ② 420px 封顶：16:9 不封顶时宽屏下高逾 600px，标题/信息带全被推出首屏，违背 D 形态本意。
+describe('Hero D backdrop：mask 无 calc（to top + px 停点）+ 16:9 + 420px 封顶', () => {
+  it('🔴 mask 双引擎均为 to top + 24px 纯 px 停点，且不含 calc', () => {
+    for (const prop of ['mask-image', '-webkit-mask-image']) {
+      const v = declFromFullCss('.media-detail-hero-backdrop', prop)
+      expect(v, `${prop} 缺失——底缘渐入没了`).toBeTruthy()
+      expect(v).toContain('to top')
+      expect(v).toContain('24px')
+      expect(v, `${prop} 用了 calc——Chromium mask 停点 calc 百分比解析错基准，整图会被遮`).not.toContain('calc')
+    }
+  })
+
+  it('🔴 16:9 + max-height 420px 封顶 + cover 裁切', () => {
+    expect(declFromFullCss('.media-detail-hero-backdrop', 'aspect-ratio')).toBe('16 / 9')
+    expect(declFromFullCss('.media-detail-hero-backdrop', 'max-height')).toBe('420px')
+    expect(declFromFullCss('.media-detail-hero-backdrop', 'object-fit')).toBe('cover')
+  })
+})

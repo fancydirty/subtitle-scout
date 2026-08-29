@@ -5,9 +5,9 @@ export const en = {
   // 不进这张表——见 web/src/shell/tabs.ts 顶部注释。
   //
   // 2026-08-12（Task ⑦）：新导航四项 = 活动/通知/媒体库/设置。nav_library / nav_workflow
-  // **保留**——那两个路由还活着（只是不在侧栏里），Topbar 的面包屑仍按 route.tab 查 TABS…
-  // 查不到时回落空串，但 #/library 的二级面包屑（剧名那条）还要用 nav_library。
-  // 两个键随 Task ⑪ 删旧页面时一起走。
+  // **保留**——那两个路由还活着（只是不在侧栏里，见 route.ts 的 LEGACY_REDIRECTS 改写）。
+  // 2026-08-28（Hero D）：Topbar 面包屑整条删除，它是这两个键此前的读取方之一；键仍留到
+  // Task ⑪ 下架旧页面时一起走（届时 i18n.test 会因两侧键集一致自然带走）。
   brand_name: 'Subtitle Scout',
   nav_activity: 'Activity',
   nav_notifications: 'Notifications',
@@ -30,7 +30,6 @@ export const en = {
   // 外壳无障碍名与状态词（审计 P0-4/P1-0）。
   a11y_side_nav: 'Side navigation',
   a11y_bottom_nav: 'Bottom navigation',
-  a11y_breadcrumb: 'Breadcrumb',
   a11y_dialog_close: 'Close',
   a11y_skip_to_content: 'Skip to content',
   a11y_loading_media_library: 'loading media library',
@@ -515,6 +514,15 @@ export const en = {
   media_detail_no_seasons_title: 'No episodes yet',
   media_detail_no_seasons_desc:
     'Nothing on disk could be placed into a season, and the expected-episode list has not been cached yet.',
+
+  // Hero D（2026-08-28 详情页头部重设计）。metadata 行的类型段与简介展开。
+  // ⚠️ 「就绪 N/M」复用 media_card_coverage（'Ready'）——与海报卡同一口径同一词，不另起。
+  media_detail_kind_series: 'Series',
+  // 季数单位（与季数拼成「Series · 3 seasons」）。英文不做单复数区分（"1 seasons" 可接受）。
+  media_detail_seasons_unit: 'seasons',
+  // 简介截断后的展开/收起链接（--color-fn-purple 链接色）。原地展开，非弹窗。
+  media_detail_overview_more: 'More',
+  media_detail_overview_less: 'Less',
 
   // 八态文案（R-F12）。**逐态一句人话**——不是符号的名字（"对勾"），是那一格的事实。
   // ⚠️ unsolvable 刻意不写 "failed"/"gave up"：后端注释明写它**不是永久终态**，

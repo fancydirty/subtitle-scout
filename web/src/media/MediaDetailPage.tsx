@@ -16,24 +16,26 @@
 // ── 异常态（§4.4）────────────────────────────────────────────────────────
 // 404（作品不存在）与其它错误分开：前者是"这个 id 没有对应作品"（用户点了个坏链接），
 // 后者是"我没能问到"（可重试）。两者显示不同文案 —— 给 404 配一个"重试"按钮是骗人。
+import { useState } from 'react'
 import { Section } from '../components/ui/section.js'
 import { Skeleton } from '../components/ui/skeleton.js'
 import { EmptyState } from '../components/ui/empty-state.js'
 import { Button } from '../components/ui/button.js'
-import { AspectRatio } from '../components/ui/aspect-ratio.js'
 import type { Async } from '../api/hooks.js'
 import type {
   MediaLibraryDetailDTO,
   MediaLibrarySeasonDTO,
   MediaLibraryMovieDTO,
+  MediaSubtitleDot,
+  EpisodeState,
 } from '../api/types.js'
+import { backdropUrl } from '../api/client.js'
 import { useT } from '../i18n/useT.js'
 import { localizeError } from '../lib/errorText.js'
 import { EpisodeCell } from './EpisodeCell.js'
 import { EpisodeMark } from './EpisodeMark.js'
 import { EPISODE_STATE_LABEL, LEGEND_STATES } from './episodeStateMeta.js'
 import { displayTitle } from '../workbench/displayTitle.js'
-import { MediaPoster } from './MediaPoster.js'
 
 /** 404 判定：后端 404 的 body 是 `{error:'not found'}`（router.ts），client.ts 对 4xx 优先取
  *  body.error → 错误串就是 'not found'。'… → 404' 是非 JSON body 的兜底形态，一并认。
@@ -53,6 +55,149 @@ export function seasonTally(season: MediaLibrarySeasonDTO): { onDisk: number; mi
   let onDisk = 0
   for (const ep of season.episodes) if (ep.onDisk) onDisk++
   return { onDisk, missing: season.episodes.length - onDisk }
+}
+
+// ── Hero D（2026-08-28）：metadata 行的「就绪 N/M」聚合 ──────────────────────────
+/** 一格是否算「就绪」。**逐字复刻海报卡列表的 ready 口径**——后端 buildMediaLibrary 里
+ *  `ready = subtitled(dot='green') + embedded(dot='blue') + originLanguage(dot='none'∧origin-skip)`
+ *  （mediaLibraryApi.ts）。判据只读后端**已经算好**的 dot / episodeState 两个字段，前端不重判
+ *  语言、不碰 target_languages。
+ *
+ *  🔴 为什么这是「同一口径」而非「另造第二份判据」（任务书铁律）：详情 DTO 里每一格的
+ *  dot/episodeState 与列表里那一格是**同一份 aggregateDot 的产出**（同一后端函数、同一 workId）。
+ *  这里只是把列表按格做的那三段 filter 计数，在详情的同一批格上再做一遍算术——判据本身
+ *  （green/blue/none·origin-skip 算就绪）没有第二个定义点，后端改口径这里跟着变，不漂移。 */
+function isReadyCell(cell: { dot: MediaSubtitleDot; episodeState: EpisodeState }): boolean {
+  return (
+    cell.dot === 'green' ||
+    cell.dot === 'blue' ||
+    (cell.dot === 'none' && cell.episodeState === 'origin-skip')
+  )
+}
+
+/** 整部作品的「就绪 N / 本地 M」聚合（hero 进度条 + 「就绪 N/M」文字共用这一个数）。
+ *  onDisk = 实线格（虚线格 onDisk=false 不算）+ 有文件的电影格；口径与列表 `onDiskEpisodeCount`
+ *  （去重格数）一致。 */
+export function readyTally(detail: MediaLibraryDetailDTO): { ready: number; onDisk: number } {
+  let ready = 0
+  let onDisk = 0
+  for (const s of detail.seasons) {
+    for (const e of s.episodes) {
+      if (!e.onDisk) continue
+      onDisk++
+      if (isReadyCell(e)) ready++
+    }
+  }
+  // 电影那一格：fileCount>0 = 磁盘上有（与列表 cells.size 同口径；零文件电影 absent 不算）。
+  if (detail.movie && detail.movie.fileCount > 0) {
+    onDisk++
+    if (isReadyCell(detail.movie)) ready++
+  }
+  return { ready, onDisk }
+}
+
+/** 秒 → 「1h48m」/「45m」。ffprobe 时长是整秒量级，四舍五入到分钟即可。 */
+export function formatDuration(sec: number): string {
+  const total = Math.max(0, Math.round(sec))
+  const h = Math.floor(total / 3600)
+  const m = Math.round((total % 3600) / 60)
+  return h > 0 ? `${h}h${m}m` : `${m}m`
+}
+
+/** 字节 → 「1.4 GB」/「700 MB」。≥1 GiB 走 GB 一位小数，否则 MB 整数。 */
+export function formatSize(bytes: number): string {
+  const gb = bytes / 1024 ** 3
+  if (gb >= 1) return `${gb.toFixed(1)} GB`
+  return `${Math.round(bytes / 1024 ** 2)} MB`
+}
+
+/** hero 简介：两~三行截断 + 「更多」原地展开（非弹窗）。短简介（≤100 字符）直接全显、不挂按钮。 */
+function HeroOverview({ text }: { text: string }) {
+  const { t } = useT()
+  const [expanded, setExpanded] = useState(false)
+  const long = text.length > 100
+  const clamped = long && !expanded
+  return (
+    <div className="media-detail-hero-overview">
+      <p
+        data-testid="media-detail-overview"
+        className={clamped ? 'media-detail-overview-text media-detail-overview-clamp' : 'media-detail-overview-text'}
+      >
+        {text}
+      </p>
+      {long ? (
+        <button
+          type="button"
+          className="media-detail-overview-toggle"
+          onClick={() => setExpanded((v) => !v)}
+        >
+          {expanded ? t('media_detail_overview_less') : t('media_detail_overview_more')}
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
+/** Hero D 头部：全宽 backdrop（无图整块不渲染）+ 实底标题区 + metadata 行 + 简介。 */
+function DetailHero({ detail, title, originalTitle }: {
+  detail: MediaLibraryDetailDTO
+  title: string
+  originalTitle: string | null
+}) {
+  const { t } = useT()
+  const { work, seasons, movie } = detail
+  const backdrop = backdropUrl(work.backdropPath)
+  const { ready, onDisk } = readyTally(detail)
+
+  // metadata 行的文字段（· 分隔）。就绪读数复用海报卡的 media_card_coverage（'就绪'/'Ready'）。
+  const facts: string[] = []
+  if (onDisk > 0) facts.push(`${t('media_card_coverage')} ${ready}/${onDisk}`)
+  if (work.year !== null) facts.push(String(work.year))
+  if (work.mediaType === 'movie') {
+    facts.push(t('media_movie_heading'))
+    if (movie && movie.durationSec !== null) facts.push(formatDuration(movie.durationSec))
+    if (movie && movie.sizeBytes !== null) facts.push(formatSize(movie.sizeBytes))
+  } else {
+    const n = seasons.length
+    facts.push(
+      n > 0
+        ? `${t('media_detail_kind_series')} · ${n} ${t('media_detail_seasons_unit')}`
+        : t('media_detail_kind_series'),
+    )
+  }
+
+  return (
+    <div className="media-detail-hero">
+      {/* 全宽 backdrop：16:9、圆角上缘、底缘线性渐入页面底色。**无图整块不渲染**（无占位灰块）。 */}
+      {backdrop ? (
+        <img className="media-detail-hero-backdrop" data-testid="media-detail-backdrop" src={backdrop} alt="" loading="lazy" />
+      ) : null}
+
+      {/* 标题区（实底，图外）：中文名 + 原名副行。 */}
+      <div className="media-detail-hero-head">
+        <h1 className="text-page-title font-semibold leading-6 text-foreground">{title}</h1>
+        {originalTitle ? (
+          <span className="text-[13px] leading-5 text-muted-foreground">{originalTitle}</span>
+        ) : null}
+
+        {/* metadata 行：就绪进度条 + 事实段。 */}
+        <div className="media-detail-hero-meta">
+          {onDisk > 0 ? (
+            <span className="media-detail-hero-bar" aria-hidden="true">
+              <i
+                className="media-detail-hero-bar-fill"
+                data-testid="media-detail-ready-fill"
+                style={{ width: `${(ready / onDisk) * 100}%` }}
+              />
+            </span>
+          ) : null}
+          <span className="media-detail-hero-facts">{facts.join(' · ')}</span>
+        </div>
+
+        {work.overview && work.overview.trim() !== '' ? <HeroOverview text={work.overview} /> : null}
+      </div>
+    </div>
+  )
 }
 
 function Legend() {
@@ -202,22 +347,7 @@ export function MediaDetailPage({ detail }: { detail: Async<MediaLibraryDetailDT
           {t('media_back')}
         </a>
 
-        <div className="flex gap-4">
-          <div className="media-detail-poster">
-            <AspectRatio ratio={2 / 3} fit="cover">
-              <MediaPoster posterPath={work.posterPath} name={title} />
-            </AspectRatio>
-          </div>
-          <div className="flex flex-col gap-1">
-            <h1 className="text-page-title font-semibold leading-6 text-foreground">{title}</h1>
-            {originalTitle ? (
-              <span className="text-[13px] leading-5 text-muted-foreground">{originalTitle}</span>
-            ) : null}
-            {work.year !== null ? (
-              <span className="font-mono text-[11px] leading-4 text-muted-foreground">{work.year}</span>
-            ) : null}
-          </div>
-        </div>
+        <DetailHero detail={detail.data} title={title} originalTitle={originalTitle} />
 
         <Legend />
 
