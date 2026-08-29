@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { checkAssrt, checkOpenSubtitles, checkZimuku, checkJimaku, checkSubhd, checkLlm, checkTmdb, checkMediaRoots, formatDoctorReport, overallOk, withTimeout, checkDatabase, checkStuckJobs, checkMountCapabilities } from './doctor.js'
+import { checkAssrt, checkOpenSubtitles, checkZimuku, checkJimaku, checkR3sub, checkSubdl, checkSubhd, checkLlm, checkTmdb, checkMediaRoots, formatDoctorReport, overallOk, withTimeout, checkDatabase, checkStuckJobs, checkMountCapabilities } from './doctor.js'
 import { MIGRATIONS } from '../v2/db.js'
 
 describe('doctor 远端三项', () => {
@@ -280,6 +280,31 @@ describe('checkJimaku / checkSubhd（spec A §4.5 新原语）', () => {
     expect((await checkSubhd(async () => 503)).ok).toBe(false)
     const r = await checkSubhd(async () => { throw new Error('ECONNREFUSED') })
     expect(r.ok).toBe(false)
+    expect(r.hint).toBeDefined()
+  })
+})
+
+describe('checkR3sub / checkSubdl（registry spec §4.4）', () => {
+  it('checkR3sub：probe null（未配置）→ skip 非失败', async () => {
+    const r = await checkR3sub(null)
+    expect(r).toMatchObject({ name: 'r3sub', ok: true, skip: true })
+  })
+  it('checkR3sub：登录探针成功 → ok；抛错 → !ok + hint', async () => {
+    expect((await checkR3sub(async () => {})).ok).toBe(true)
+    const r = await checkR3sub(async () => { throw new Error('r3sub 登录失败') })
+    expect(r).toMatchObject({ name: 'r3sub', ok: false })
+    expect(r.hint).toContain('邮箱验证')
+  })
+  it('checkSubdl：probe null（未配置）→ skip 非失败', async () => {
+    const r = await checkSubdl(null)
+    expect(r).toMatchObject({ name: 'subdl', ok: true, skip: true })
+  })
+  it('checkSubdl：搜索探针命中数入 detail；抛错 → !ok + hint', async () => {
+    const ok = await checkSubdl(async () => 30)
+    expect(ok.ok).toBe(true)
+    expect(ok.detail).toContain('30')
+    const r = await checkSubdl(async () => { throw new Error('HTTP 401') })
+    expect(r).toMatchObject({ name: 'subdl', ok: false })
     expect(r.hint).toBeDefined()
   })
 })

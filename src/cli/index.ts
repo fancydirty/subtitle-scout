@@ -21,12 +21,15 @@ import { cmdTranslateItem, tryAutoTranslateCfg, makeDaemonTranslateRunItem } fro
 import { makeRealFetchSourceSub } from './fetchSourceSub.js'
 import {
   checkAssrt, checkOpenSubtitles, checkZimuku, checkLlm, checkTmdb, checkMediaRoots,
-  checkDatabase, checkStuckJobs, checkMountCapabilities, checkJimaku, checkSubhd,
+  checkDatabase, checkStuckJobs, checkMountCapabilities, checkJimaku, checkR3sub, checkSubdl, checkSubhd,
   formatDoctorReport, overallOk, withTimeout, type DoctorResult,
 } from './doctor.js'
 import { detectChallenge } from '../adapters/providers/yunsuo.js'
 import { ZIMUKU_BASE } from '../adapters/providers/zimuku.js'
 import { JimakuClient } from '../adapters/providers/jimaku.js'
+import { R3subClient } from '../adapters/providers/r3sub.js'
+import { R3subSessionStore } from '../adapters/providers/r3subSession.js'
+import { SubdlClient } from '../adapters/providers/subdl.js'
 import { curlFetch, SUBHD_BASE } from '../adapters/providers/subhd.js'
 import { makeAdapterConfigResolver, SECRET_NAMES, type AdapterConfigResolver } from '../v2/secrets.js'
 import { setupSatisfied, workPermitted, makeSecretsWatcher, makeSatisfactionTracker, type ClientsHolder } from './watchClients.js'
@@ -842,6 +845,29 @@ async function cmdDoctor() {
   } else {
     const jk = new JimakuClient({ apiKey: jimakuKey })
     results.push(await checkJimaku(() => withTimeout(jk.search({ query: 'test' }), 10_000, 'Jimaku')))
+  }
+
+  // r3sub / SubDL（registry spec §4.4）：BYO 凭据的可选源，未配置 → skip；已配置分别用
+  // 真实登录 / 带 key 搜索探测（与 dashboard validate 探针同构）。
+  const r3subEmail = cfg.secret('R3SUB_EMAIL').value
+  const r3subPassword = cfg.secret('R3SUB_PASSWORD').value
+  if (!r3subEmail || !r3subPassword) {
+    results.push(await checkR3sub(null))
+  } else {
+    const r3 = new R3subClient({
+      email: r3subEmail, password: r3subPassword,
+      sessionStore: new R3subSessionStore(join(cacheRoot, 'r3sub-session')),
+    })
+    results.push(await checkR3sub(() => withTimeout(r3.login(), 10_000, 'r3sub')))
+  }
+
+  const subdlKey = cfg.secret('SUBDL_API_KEY').value
+  if (!subdlKey) {
+    results.push(await checkSubdl(null))
+  } else {
+    const subdl = new SubdlClient({ apiKey: subdlKey })
+    results.push(await checkSubdl(() =>
+      withTimeout(subdl.search({ filmName: 'The Matrix', type: 'movie', languages: ['EN'] }), 10_000, 'SubDL').then(r => r.length)))
   }
 
   const zimukuEnabled = cfg.flag('ZIMUKU_ENABLED').enabled
