@@ -31,8 +31,12 @@ describe('ASSRT zero-result search (subs is an empty OBJECT, recorded 2026-07-06
 })
 
 describe('PROVIDERS registry', () => {
-  it('includes zimuku + jimaku + local alongside assrt/opensubtitles（F2:jimaku=日字源;local=本地候选非网络适配器）', () => {
-    expect(PROVIDERS).toEqual(['assrt', 'opensubtitles', 'zimuku', 'subhd', 'jimaku', 'local'])
+  it('includes zimuku + jimaku + r3sub + subdl + local alongside assrt/opensubtitles（F2:jimaku=日字源;r3sub=台版官方源;subdl=subscene接班国际源;local=本地候选非网络适配器）', () => {
+    expect(PROVIDERS).toEqual(['assrt', 'opensubtitles', 'zimuku', 'subhd', 'jimaku', 'r3sub', 'subdl', 'local'])
+  })
+  it('parseCandidateKey 认得 r3sub/subdl（2026-08-29 双源接入）', () => {
+    expect(parseCandidateKey('r3sub:S8g2H021493')).toEqual({ provider: 'r3sub', providerId: 'S8g2H021493' })
+    expect(parseCandidateKey('subdl:3197651-3213944')).toEqual({ provider: 'subdl', providerId: '3197651-3213944' })
   })
   it("PROVIDERS 含 'jimaku'，且 provider:'jimaku' 的候选能通过校验", () => {
     expect(PROVIDERS).toContain('jimaku')

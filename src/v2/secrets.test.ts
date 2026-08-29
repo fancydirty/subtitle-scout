@@ -13,18 +13,22 @@ describe('SECRET_NAMES 白名单（spec §4.1）', () => {
   //
   // ⚠️ c582571 加了三个键**但没改这条断言**，于是它红了很久（接手时的 7 条既有失败之一）。
   // 那不是 bug 是**测试过时**：白名单本身是对的，只是这条断言还停在上一档。
-  it('恰为 15 键（含 TRANSLATE_* 与 ZIMUKU_VISION_* 各三凭证）', () => {
+  it('恰为 18 键（含 TRANSLATE_* 与 ZIMUKU_VISION_* 各三凭证 + r3sub 邮箱/密码 + subdl key）', () => {
     expect([...SECRET_NAMES].sort()).toEqual([
       'ASSRT_TOKEN', 'JIMAKU_API_KEY', 'LLM_API_KEY', 'LLM_BASE_URL', 'LLM_MODEL',
       'OPENSUBTITLES_API_KEY', 'OPENSUBTITLES_PASSWORD', 'OPENSUBTITLES_USERNAME',
+      'R3SUB_EMAIL', 'R3SUB_PASSWORD', 'SUBDL_API_KEY',
       'TMDB_API_KEY',
       'TRANSLATE_API_KEY', 'TRANSLATE_BASE_URL', 'TRANSLATE_MODEL',
       'ZIMUKU_VISION_API_KEY', 'ZIMUKU_VISION_BASE_URL', 'ZIMUKU_VISION_MODEL',
     ].sort())
-    expect(SECRET_NAMES).toHaveLength(15)
+    expect(SECRET_NAMES).toHaveLength(18)
   })
   it('isSecretName 放行白名单、拒绝其他', () => {
     expect(isSecretName('TMDB_API_KEY')).toBe(true)
+    expect(isSecretName('R3SUB_EMAIL')).toBe(true)
+    expect(isSecretName('R3SUB_PASSWORD')).toBe(true)
+    expect(isSecretName('SUBDL_API_KEY')).toBe(true)
     expect(isSecretName('ADMIN_TOKEN')).toBe(false)
     expect(isSecretName('')).toBe(false)
   })
