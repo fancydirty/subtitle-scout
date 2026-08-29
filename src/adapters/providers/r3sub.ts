@@ -82,6 +82,31 @@ export interface R3subShow {
   files: string[]       // 檔案內容里每条字幕文件名（data-fname 权威值）
 }
 
+/** 下载中转页 commentForm 的字段（真下载第二跳 jpdown1.php 要用）。注意 lang 值是 tw/cn，
+ *  与第一跳 download.php 的 zh/cn 不同名——取中转页实际值，不沿用第一跳。 */
+export interface R3subInterstitial {
+  id: string
+  lang: string
+}
+
+/** 解析下载中转页：抠 commentForm（action=/jpdown1.php）的 id 与 lang 隐藏域。 */
+export function parseInterstitial(html: string): R3subInterstitial {
+  // 定位 jpdown1 表单起点后，顺序读其后的 input（id 在前、lang 紧随）。
+  const formAt = html.indexOf('jpdown1.php')
+  const from = formAt >= 0 ? formAt : 0
+  let id = ''
+  let lang = ''
+  let i = from
+  while (id === '' || lang === '') {
+    const tag = findNextTag(html, 'input', i)
+    if (!tag) break
+    i = tag.end
+    if (tag.attrs.name === 'id' && !id) id = tag.attrs.value ?? ''
+    else if (tag.attrs.name === 'lang' && !lang) lang = tag.attrs.value ?? ''
+  }
+  return { id, lang }
+}
+
 /** 解析详情页：zip 名（download.php 表单 filename 隐藏域）+ 檔案清单（所有 data-fname）。 */
 export function parseShow(html: string): R3subShow {
   let zipName = ''
@@ -222,6 +247,62 @@ export class R3subClient {
   async detail(id: string): Promise<R3subShow> {
     return parseShow(await this.getWithSession(`https://r3sub.com/show.php?id=${encodeURIComponent(id)}`))
   }
+
+  /** 两跳下载（spec §1.1）：download.php 中转页 → jpdown1.php 取 zip。首跳 lang=zh 失败
+   *  （末跳返回非 zip）自动落 lang=cn 镜像重试一次。返回 zip bytes + 文件名。 */
+  async download(providerId: string, filename: string): Promise<{ bytes: Buffer; filename: string }> {
+    for (const lang of ['zh', 'cn'] as const) {
+      const cookie = await this.cookie()
+      // 跳1：download.php 取中转页
+      const interRes = await this.call('https://r3sub.com/download.php', {
+        method: 'POST',
+        headers: {
+          'User-Agent': UA,
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Cookie: cookie,
+          Referer: `https://r3sub.com/show.php?id=${providerId}`,
+        },
+        body: new URLSearchParams({ id: providerId, lang, filename }).toString(),
+      })
+      const interHtml = await interRes.text()
+      if (isLoginWall(interHtml)) {
+        this.store.invalidate()
+        continue // 会话失效——下一轮循环会重登（cookie() 触发 login）
+      }
+      const form = parseInterstitial(interHtml)
+      if (!form.id) continue // 中转页异常，换通道
+      // 跳2：jpdown1.php 取真 zip
+      const zipRes = await this.call('https://r3sub.com/jpdown1.php', {
+        method: 'POST',
+        headers: {
+          'User-Agent': UA,
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Cookie: cookie,
+          Referer: 'https://r3sub.com/download.php',
+        },
+        body: new URLSearchParams({ id: form.id, lang: form.lang }).toString(),
+      })
+      const buf = Buffer.from(await zipRes.arrayBuffer())
+      // 成功判据：拿到二进制（zip/rar 魔数），不是又一个 HTML 页。
+      if (isArchiveBytes(buf)) {
+        const cd = zipRes.headers.get('content-disposition') ?? ''
+        const cdName = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd)?.[1]
+        return { bytes: buf, filename: cdName ? decodeURIComponent(cdName) : filename }
+      }
+    }
+    throw new Error(`r3sub 下载失败：两个通道（主站/镜像）都没取到 zip（${filename}）`)
+  }
+}
+
+/** 字节是否是压缩包（zip `PK\x03\x04` / rar `Rar!` / 7z `7z\xBC\xAF`）——区分真下载与又一个 HTML 页。 */
+function isArchiveBytes(buf: Buffer): boolean {
+  if (buf.length < 4) return false
+  const b = buf
+  return (
+    (b[0] === 0x50 && b[1] === 0x4b) ||                       // PK (zip)
+    (b[0] === 0x52 && b[1] === 0x61 && b[2] === 0x72) ||      // Rar
+    (b[0] === 0x37 && b[1] === 0x7a)                          // 7z
+  )
 }
 
 /** 响应是否是登录墙——download.php 匿名/失效时返回的登录表单页特征。 */
