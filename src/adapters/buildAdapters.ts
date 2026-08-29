@@ -6,12 +6,17 @@ import { ZimukuClient } from './providers/zimuku.js'
 import { ZimukuSessionStore } from './providers/zimukuSession.js'
 import { SubhdClient } from './providers/subhd.js'
 import { JimakuClient } from './providers/jimaku.js'
+import { R3subClient } from './providers/r3sub.js'
+import { R3subSessionStore } from './providers/r3subSession.js'
+import { SubdlClient } from './providers/subdl.js'
 import type { FetchAdapter, FetchEvent } from './fetchLib.js'
 import { makeAssrtAdapter } from './fetch/assrtAdapter.js'
 import { makeOpenSubtitlesAdapter } from './fetch/opensubtitlesAdapter.js'
 import { makeZimukuAdapter } from './fetch/zimukuAdapter.js'
 import { makeSubhdAdapter } from './fetch/subhdAdapter.js'
 import { makeJimakuAdapter } from './fetch/jimakuAdapter.js'
+import { makeR3subAdapter } from './fetch/r3subAdapter.js'
+import { makeSubdlAdapter } from './fetch/subdlAdapter.js'
 import { makeModel } from '../agent/llm.js'
 import { makeCaptchaSolver } from './captchaSolver.js'
 import type { AdapterConfigResolver } from '../v2/secrets.js'
@@ -115,5 +120,44 @@ export async function buildAdapters(
     })
     adapters.push(makeJimakuAdapter(client))
   }
+
+  // r3sub：台版官方中文字幕站。邮箱+密码齐才入列（enabled 再按中文门控）。下载走两跳，adapter
+  // 的 resolve 抛错——真实下载由 find-subtitle worker 的 r3sub 旁路走 R3subClient.download
+  // （worker 装配处另注入 client，见 cli/index.ts）。
+  const r3subEmail = cfg.secret('R3SUB_EMAIL').value
+  const r3subPassword = cfg.secret('R3SUB_PASSWORD').value
+  if (r3subEmail && r3subPassword) {
+    const client = new R3subClient({
+      email: r3subEmail,
+      password: r3subPassword,
+      sessionStore: new R3subSessionStore(join(cacheRoot, 'r3sub-session')),
+      onApiCall: r => emit({ event: 'api_call', provider: 'r3sub', ...r }),
+    })
+    adapters.push(makeR3subAdapter(client))
+  }
+
+  // SubDL：subscene 接班的国际源。有免费 API key 才入列；enabled 恒真（不做语言门控）。
+  const subdlKey = cfg.secret('SUBDL_API_KEY').value
+  if (subdlKey) {
+    const client = new SubdlClient({
+      apiKey: subdlKey,
+      onApiCall: r => emit({ event: 'api_call', provider: 'subdl', ...r }),
+    })
+    adapters.push(makeSubdlAdapter(client))
+  }
   return adapters
+}
+
+/** r3sub 下载客户端（find-subtitle worker 的 r3sub 旁路用）——凭据齐时构造，否则 null。
+ *  与 buildAdapters 里的 r3sub adapter 共用同一 session store 目录（复用登录 cookie）。 */
+export function buildR3subClient(cfg: AdapterConfigResolver): R3subClient | null {
+  const email = cfg.secret('R3SUB_EMAIL').value
+  const password = cfg.secret('R3SUB_PASSWORD').value
+  if (!email || !password) return null
+  const cacheRoot = process.env.SUBTITLE_SCOUT_CACHE_DIR || join(homedir(), '.subtitle-scout', 'cache')
+  return new R3subClient({
+    email,
+    password,
+    sessionStore: new R3subSessionStore(join(cacheRoot, 'r3sub-session')),
+  })
 }

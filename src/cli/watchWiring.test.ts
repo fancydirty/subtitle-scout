@@ -240,7 +240,8 @@ describe('cmdWatch 的入口切换（C2：容器重启后必须跑 daemonV2）',
     // sandbox-library 命令可以传 true；watch 那条 makeFindSubtitleWorker 不许。
     const watchChunk = src.slice(src.indexOf('async function cmdWatch'), src.indexOf('async function cmdDoctor'))
     expect(watchChunk).not.toMatch(/librarySandbox:\s*true/)
-    expect(src).toMatch(/makeFindSubtitleWorker\(\{ model: reasoningModel, adapters: realignAdapters, cacheRoot, tmdb \}\)/)
+    // 2026-08-29：worker 装配加了 r3subClient 注入（r3sub 两跳下载旁路）——匹配放宽到含该键。
+    expect(src).toMatch(/makeFindSubtitleWorker\(\{ model: reasoningModel, adapters: realignAdapters, cacheRoot, tmdb, r3subClient \}\)/)
   })
 
   it('🔴 cmdWatch 传的 translateEnabled 是**真实双门控**，不是硬编码的常量', () => {

@@ -69,7 +69,7 @@ import { makeRealignLibraryPort } from '../v2/realignLibraryPort.js'
 import { replayRollback } from '../files/realignManifest.js'
 // (import removed - see comment above)
 import { makeFindSubtitleWorker } from '../agent/findSubtitleWorker.js'
-import { buildAdapters } from '../adapters/buildAdapters.js'
+import { buildAdapters, buildR3subClient } from '../adapters/buildAdapters.js'
 import { resolveTargetLanguages } from './targetLanguages.js'
 import { probeEmbeddedSubtitles, probeDurationSec } from '../files/streamProbe.js'
 import { dashboardAuthStartupLines } from './dashboardTokenWarning.js'
@@ -329,6 +329,8 @@ async function cmdWatch() {
     const { mappings, tmdb, reasoningModel } = await assemble(cfg, warn)
     const satisfied = tmdb !== null && reasoningModel !== null
     const realignAdapters = await buildAdapters(cfg, emitProviderEvent, warn)
+    // r3sub 下载旁路的 client（两跳下载不经 runResolve）——凭据齐才有，null 时 r3sub 候选下载报错。
+    const r3subClient = buildR3subClient(cfg) ?? undefined
     const realignRunEpisode = satisfied
       ? makeRealignRunEpisode({
           runFindSubtitleTask: makeFindSubtitleWorker({
@@ -336,6 +338,7 @@ async function cmdWatch() {
             adapters: realignAdapters,
             cacheRoot,
             tmdb,
+            r3subClient,
           }),
           // 债务D5 注记（修订）：targetLanguage 随 holder 代际新鲜求值（secrets 变更驱动重建），
           // 仍非 per-task 新鲜——改语言后下轮 ingest 自然生效，realign 这条路径要等下一次重建。
@@ -434,7 +437,7 @@ async function cmdWatch() {
     // holder 代际那一份 realignAdapters——**不 per-task 重建**。新架构里一轮巡检会连着跑几十个
     // 作品，每个作品重建一整套 provider adapters（含 Zimuku 的 session 重读盘）纯属白付。
     const subtitleWorkerV2 = (satisfied && reasoningModel)
-      ? makeFindSubtitleWorker({ model: reasoningModel, adapters: realignAdapters, cacheRoot, tmdb })
+      ? makeFindSubtitleWorker({ model: reasoningModel, adapters: realignAdapters, cacheRoot, tmdb, r3subClient })
       : null
 
     // orchestrateWorkerTaskDeps 已删（第 5.5 步）

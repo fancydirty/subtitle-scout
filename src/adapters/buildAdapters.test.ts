@@ -62,6 +62,17 @@ describe('buildAdapters · cfg resolver（spec A §4.3：DB 供凭据；2026-08-
     expect(adapters.map(a => a.name)).toEqual(['zimuku'])
   })
 
+  it('r3sub：邮箱+密码齐 → 入列；缺一 → 不入列', async () => {
+    expect((await buildAdapters(cfgOf({ R3SUB_EMAIL: 'a@b.com', R3SUB_PASSWORD: 'pw' }))).map(a => a.name)).toContain('r3sub')
+    expect((await buildAdapters(cfgOf({ R3SUB_EMAIL: 'a@b.com' }))).map(a => a.name)).not.toContain('r3sub')
+    expect((await buildAdapters(cfgOf({ R3SUB_PASSWORD: 'pw' }))).map(a => a.name)).not.toContain('r3sub')
+  })
+
+  it('subdl：有 API key → 入列；缺 → 不入列', async () => {
+    expect((await buildAdapters(cfgOf({ SUBDL_API_KEY: 'k' }))).map(a => a.name)).toContain('subdl')
+    expect((await buildAdapters(cfgOf({}))).map(a => a.name)).not.toContain('subdl')
+  })
+
   // `c582571`（zimuku 验证码改为模板匹配优先）之后"视觉三件套不齐"不再是跳过的理由。
   // 这里刻意只给一件（BASE_URL 缺 KEY/MODEL）——半齐的配置**不许**被当成齐，
   // 但也**不许**因此把整个适配器踢掉（模板匹配那条主路径与视觉配置无关）。
