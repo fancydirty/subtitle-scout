@@ -371,6 +371,11 @@ export const en = {
   wizard_consequence_assrt: 'Without ASSRT, one fewer subtitle source.',
   wizard_consequence_os: 'Without OpenSubtitles, one fewer subtitle source.',
   wizard_consequence_jimaku: 'Without Jimaku, one fewer subtitle source.',
+  wizard_r3sub_email_label: 'r3sub email',
+  wizard_r3sub_pass_label: 'r3sub password',
+  wizard_subdl_label: 'SubDL API key',
+  wizard_consequence_r3sub: 'Without r3sub, no official Traditional Chinese tracks from Taiwan releases.',
+  wizard_consequence_subdl: 'Without SubDL, one fewer international subtitle source.',
   wizard_providers_save_note: 'Only keys that pass the test are saved.',
 
   wizard_subhd_label: 'subhd',

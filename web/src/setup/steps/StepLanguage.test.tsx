@@ -34,6 +34,9 @@ function props(over: Partial<WizardStepProps> = {}): WizardStepProps {
   return {
     status: STATUS,
     patchStatus: () => {},
+    targetLanguages: null,
+    providerRows: null,
+    setTargetLanguages: () => {},
     rerun: false,
     onAdvance: () => {},
     onBack: () => {},

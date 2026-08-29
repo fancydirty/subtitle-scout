@@ -34,7 +34,7 @@ const BASE: SetupStatusDTO = {
 
 function props(over: Partial<WizardStepProps> = {}): WizardStepProps {
   return {
-    status: BASE, patchStatus: () => {}, rerun: false,
+    status: BASE, patchStatus: () => {}, targetLanguages: null, providerRows: null, setTargetLanguages: () => {}, rerun: false,
     onAdvance: () => {}, onBack: () => {}, onComplete: () => {}, ...over,
   }
 }

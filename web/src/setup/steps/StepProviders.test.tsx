@@ -30,7 +30,7 @@ const BASE: SetupStatusDTO = {
 
 function props(over: Partial<WizardStepProps> = {}): WizardStepProps {
   return {
-    status: BASE, patchStatus: () => {}, rerun: false,
+    status: BASE, patchStatus: () => {}, targetLanguages: null, providerRows: null, setTargetLanguages: () => {}, rerun: false,
     onAdvance: () => {}, onBack: () => {}, onComplete: () => {}, ...over,
   }
 }
@@ -185,5 +185,38 @@ describe('StepProviders', () => {
     expect(await screen.findByText('Test unavailable, retry')).toBeInTheDocument()
     expect(screen.queryByText(/HTTP 500/)).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Save & continue' })).toBeDisabled()
+  })
+
+  // ── 分流（registry spec §5.2）：成员按目标语言派生 ─────────────────────────────
+  const DERIVE_ROWS = [
+    { id: 'assrt', kind: 'source', languages: ['zh'], secrets: [], lastTest: null, quota: null },
+    { id: 'opensubtitles', kind: 'source', languages: '*', secrets: [], lastTest: null, quota: null },
+    { id: 'jimaku', kind: 'source', languages: ['ja'], secrets: [], lastTest: null, quota: null },
+    { id: 'r3sub', kind: 'source', languages: ['zh'], secrets: [], lastTest: null, quota: null },
+    { id: 'subdl', kind: 'source', languages: '*', secrets: [], lastTest: null, quota: null },
+  ] as never
+
+  it('zh 用户：ASSRT/OS/r3sub/SubDL 四家在场，jimaku 缺席', () => {
+    renderStep({ targetLanguages: 'zh', providerRows: DERIVE_ROWS })
+    expect(screen.getByTestId('provider-assrt')).toBeInTheDocument()
+    expect(screen.getByTestId('provider-r3sub')).toBeInTheDocument()
+    expect(screen.getByTestId('provider-subdl')).toBeInTheDocument()
+    expect(screen.queryByTestId('provider-jimaku')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('r3sub email')).toBeInTheDocument()
+    expect(screen.getByLabelText('r3sub password')).toBeInTheDocument()
+  })
+
+  it('ja 用户：OS/Jimaku/SubDL，assrt/r3sub 缺席', () => {
+    renderStep({ targetLanguages: 'ja', providerRows: DERIVE_ROWS })
+    expect(screen.getByTestId('provider-jimaku')).toBeInTheDocument()
+    expect(screen.queryByTestId('provider-assrt')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('provider-r3sub')).not.toBeInTheDocument()
+  })
+
+  it('rows 未到（null）→ fail-open 五家全渲染', () => {
+    renderStep({ targetLanguages: 'ja', providerRows: null })
+    for (const id of ['assrt', 'opensubtitles', 'jimaku', 'r3sub', 'subdl']) {
+      expect(screen.getByTestId('provider-' + id)).toBeInTheDocument()
+    }
   })
 })

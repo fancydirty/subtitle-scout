@@ -313,6 +313,11 @@ export const zh = {
   wizard_consequence_assrt: '没有 ASSRT，少一个字幕来源。',
   wizard_consequence_os: '没有 OpenSubtitles，少一个字幕来源。',
   wizard_consequence_jimaku: '没有 Jimaku，少一个字幕来源。',
+  wizard_r3sub_email_label: 'r3sub 邮箱',
+  wizard_r3sub_pass_label: 'r3sub 密码',
+  wizard_subdl_label: 'SubDL API key',
+  wizard_consequence_r3sub: '没有 r3sub，就没有台版官方繁中字幕轨这一来源。',
+  wizard_consequence_subdl: '没有 SubDL，少一个国际字幕来源。',
   wizard_providers_save_note: '只有测试通过的密钥才会保存。',
 
   wizard_subhd_label: 'subhd',

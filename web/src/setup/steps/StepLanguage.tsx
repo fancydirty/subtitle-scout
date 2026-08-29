@@ -13,25 +13,14 @@ import { useT } from '../../i18n/useT.js'
 import { localizeErrorValue } from '../../lib/errorText.js'
 import { Button } from '../../components/ui/button.js'
 import { cn } from '../../lib/utils.js'
-import { SELECTABLE_TARGET_LANGUAGES } from '../../settings/text.js'
+import { SELECTABLE_TARGET_LANGUAGES, TARGET_LANGUAGE_AUTONYMS } from '../../settings/text.js'
 import type { WizardStepProps } from './types.js'
 
-// 语言名是语言自己的自称，不是 UI 文案——不进 i18n 表（语言选择器的通行惯例）。
-// 键集必须逐一覆盖 SELECTABLE_TARGET_LANGUAGES（下方 satisfies 钉死：清单加语言这里不补名就红）。
-const PRESET_LABELS = {
-  zh: '中文',
-  en: 'English',
-  ja: '日本語',
-  ko: '한국어',
-  es: 'Español',
-  fr: 'Français',
-  de: 'Deutsch',
-  pt: 'Português',
-  ru: 'Русский',
-  it: 'Italiano',
-} as const satisfies Record<(typeof SELECTABLE_TARGET_LANGUAGES)[number], string>
+// 语言自称表已收拢到 settings/text.ts 的 TARGET_LANGUAGE_AUTONYMS（satisfies 钉死键集；
+// 设置页多语言分组标题与这里共用一份，不再各持副本）。
+const PRESET_LABELS = TARGET_LANGUAGE_AUTONYMS
 
-export function StepLanguage({ onAdvance }: WizardStepProps) {
+export function StepLanguage({ onAdvance, setTargetLanguages }: WizardStepProps) {
   const { t, setLang, lang } = useT()
   const [selected, setSelected] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
@@ -48,7 +37,10 @@ export function StepLanguage({ onAdvance }: WizardStepProps) {
     setSaving(true)
     setSaveError(null)
     try {
-      await api.updateSettings({ target_languages: selected.join(',') })
+      const csv = selected.join(',')
+      await api.updateSettings({ target_languages: csv })
+      // 外壳记账（registry spec §5.2）：后续源步据此分流，ja/en 用户的开关源步整步消失。
+      setTargetLanguages(csv)
       onAdvance()
     } catch (e) {
       setSaveError(localizeErrorValue(e, lang))

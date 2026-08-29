@@ -92,4 +92,37 @@ describe('BootstrapWizard 外壳', () => {
     fireEvent.click(screen.getByText('done'))
     expect(onComplete).toHaveBeenCalledTimes(1)
   })
+
+  // ── 分流跳步（registry spec §5.2）：skip(ctx) 为真的步不出现在步进点与流程里 ────
+  it('setTargetLanguages 后 skip 步整体消失：步进点缩水，advance 直接跨过', () => {
+    function LangStub(p: WizardStepProps) {
+      return (
+        <div>
+          <button onClick={() => p.setTargetLanguages('ja')}>pick-ja</button>
+          <button onClick={p.onAdvance}>next</button>
+        </div>
+      )
+    }
+    const Plain = (label: string) => function Step(p: WizardStepProps) {
+      return <div><span>{label}</span><button onClick={p.onAdvance}>next</button></div>
+    }
+    const steps: WizardStepDef[] = [
+      { id: 'lang', titleKey: 'wizard_step_language_title', descKey: 'wizard_step_language_desc', optional: false, Component: LangStub },
+      { id: 'mid', titleKey: 'wizard_step_tmdb_title', descKey: 'wizard_step_tmdb_desc', optional: false, Component: Plain('mid-step') },
+      { id: 'zh-only', titleKey: 'wizard_step_free_title', descKey: 'wizard_step_free_desc', optional: false,
+        skip: (ctx) => ctx.targetLanguages === 'ja', Component: Plain('zh-only-step') },
+      { id: 'last', titleKey: 'wizard_step_launch_title', descKey: 'wizard_step_launch_desc', optional: false, Component: Plain('last-step') },
+    ]
+    render(<I18nProvider initialLang="en"><BootstrapWizard initialStatus={STATUS} rerun={false} onComplete={() => {}} steps={steps} /></I18nProvider>)
+    // 初始四个步进点
+    expect(screen.getByRole('img', { name: '1 / 4' })).toBeInTheDocument()
+    fireEvent.click(screen.getByText('pick-ja'))
+    // ja 落地 → zh-only 步被剔除，步进点变 3
+    expect(screen.getByRole('img', { name: '1 / 3' })).toBeInTheDocument()
+    fireEvent.click(screen.getByText('next'))          // lang → mid
+    expect(screen.getByText('mid-step')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('next'))          // mid → last（跨过 zh-only）
+    expect(screen.getByText('last-step')).toBeInTheDocument()
+    expect(screen.queryByText('zh-only-step')).not.toBeInTheDocument()
+  })
 })

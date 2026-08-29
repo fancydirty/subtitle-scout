@@ -1,6 +1,8 @@
-// web/src/setup/steps/StepProviders.tsx：wizard 步 4——ASSRT/OpenSubtitles/Jimaku（软门禁，
-// spec A §3 步 4）。各家自测自存：只有测绿的 key 会落库；红不拦路、行内写后果；零绿时
-// Save 禁用、走 Skip。OS 的 username/password 成对才存（与 setupApi hasUsername 同口径）。
+// web/src/setup/steps/StepProviders.tsx：wizard 步 4——keyed 字幕源（软门禁，spec A §3 步 4）。
+// 成员按目标语言分流（registry spec §5.2）：zh→ASSRT/OS/r3sub/SubDL；ja→OS/Jimaku/SubDL；
+// 其他→OS/SubDL。语言归属从 /setup/providers 行派生（derive.ts），rows 未到 fail-open 全员。
+// 各家自测自存：只有测绿的 key 会落库；红不拦路、行内写后果；零绿时 Save 禁用、走 Skip。
+// OS 的 username/password 成对才存（与 setupApi hasUsername 同口径）。
 import { useState } from 'react'
 import { api } from '../../api/client.js'
 import { useT } from '../../i18n/useT.js'
@@ -8,11 +10,12 @@ import { localizeError, localizeErrorValue } from '../../lib/errorText.js'
 import { Button } from '../../components/ui/button.js'
 import { Input } from '../../components/ui/input.js'
 import { StatusDot, StepFooter } from './ui.js'
+import { visibleKeyedSourceIds, type WizardKeyedSourceId } from './derive.js'
 import type { SecretName, SetupStatusDTO } from '../../api/types.js'
 import type { TKey } from '../../i18n/useT.js'
 import type { WizardStepProps } from './types.js'
 
-type ProviderId = 'assrt' | 'opensubtitles' | 'jimaku'
+type ProviderId = WizardKeyedSourceId
 
 interface FieldDef {
   name: SecretName
@@ -29,12 +32,20 @@ const PROVIDER_FIELDS: Record<ProviderId, FieldDef[]> = {
     { name: 'OPENSUBTITLES_PASSWORD', labelKey: 'wizard_os_pass_label', password: true, required: false },
   ],
   jimaku: [{ name: 'JIMAKU_API_KEY', labelKey: 'wizard_jimaku_label', password: true, required: true }],
+  // r3sub：先在 r3sub.com 注册并完成邮箱验证，再回来填同一套账密（GET_CREDENTIALS 有指引）。
+  r3sub: [
+    { name: 'R3SUB_EMAIL', labelKey: 'wizard_r3sub_email_label', password: false, required: true },
+    { name: 'R3SUB_PASSWORD', labelKey: 'wizard_r3sub_pass_label', password: true, required: true },
+  ],
+  subdl: [{ name: 'SUBDL_API_KEY', labelKey: 'wizard_subdl_label', password: true, required: true }],
 }
 
 const CONSEQUENCE_KEY: Record<ProviderId, TKey> = {
   assrt: 'wizard_consequence_assrt',
   opensubtitles: 'wizard_consequence_os',
   jimaku: 'wizard_consequence_jimaku',
+  r3sub: 'wizard_consequence_r3sub',
+  subdl: 'wizard_consequence_subdl',
 }
 
 interface BlockState {
@@ -54,13 +65,17 @@ function testable(id: ProviderId, values: Partial<Record<SecretName, string>>): 
   return PROVIDER_FIELDS[id].every((f) => !f.required || (values[f.name] ?? '') !== '')
 }
 
-export function StepProviders({ status, patchStatus, onAdvance, onBack }: WizardStepProps) {
+export function StepProviders(props: WizardStepProps) {
+  const { status, patchStatus, onAdvance, onBack } = props
   const { t, lang } = useT()
   const [blocks, setBlocks] = useState<Record<ProviderId, BlockState>>({
-    assrt: EMPTY_BLOCK, opensubtitles: EMPTY_BLOCK, jimaku: EMPTY_BLOCK,
+    assrt: EMPTY_BLOCK, opensubtitles: EMPTY_BLOCK, jimaku: EMPTY_BLOCK, r3sub: EMPTY_BLOCK, subdl: EMPTY_BLOCK,
   })
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+
+  // 分流后的本步成员（顺序=行序=注册表声明序；rows 未到 fail-open 全员）。
+  const memberIds = visibleKeyedSourceIds(props)
 
   const setBlock = (id: ProviderId, patch: Partial<BlockState>) =>
     setBlocks((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }))
@@ -69,7 +84,7 @@ export function StepProviders({ status, patchStatus, onAdvance, onBack }: Wizard
     const b = blocks[id]
     return b.testedKey !== null && b.testedKey === currentKey(id, b.values) && testable(id, b.values)
   }
-  const anyGreen = (['assrt', 'opensubtitles', 'jimaku'] as ProviderId[]).some(green)
+  const anyGreen = memberIds.some(green)
 
   const runTest = async (id: ProviderId) => {
     const b = blocks[id]
@@ -98,7 +113,7 @@ export function StepProviders({ status, patchStatus, onAdvance, onBack }: Wizard
     setSaving(true)
     setSaveError(null)
     try {
-      for (const id of ['assrt', 'opensubtitles', 'jimaku'] as ProviderId[]) {
+      for (const id of memberIds) {
         if (!green(id)) continue
         const b = blocks[id]
         for (const f of PROVIDER_FIELDS[id]) {
@@ -109,7 +124,7 @@ export function StepProviders({ status, patchStatus, onAdvance, onBack }: Wizard
           await api.putSecret(f.name, v)
         }
       }
-      // patchStatus 一次性组出三家新态——只动测绿的家，其余保持 status 原值。
+      // patchStatus 一次性组出各家新态——只动测绿的家，其余保持 status 原值。
       const patch: Partial<SetupStatusDTO['providers']> = {}
       if (green('assrt')) patch.assrt = { satisfied: true, source: 'db', masked: null }
       if (green('opensubtitles')) {
@@ -118,6 +133,8 @@ export function StepProviders({ status, patchStatus, onAdvance, onBack }: Wizard
         patch.opensubtitles = { satisfied: true, source: 'db', hasUsername: paired, masked: null }
       }
       if (green('jimaku')) patch.jimaku = { satisfied: true, source: 'db', masked: null }
+      if (green('r3sub')) patch.r3sub = { satisfied: true, source: 'db', masked: null }
+      if (green('subdl')) patch.subdl = { satisfied: true, source: 'db', masked: null }
       patchStatus({ providers: { ...status.providers, ...patch } })
       onAdvance()
     } catch (e) {
@@ -178,9 +195,7 @@ export function StepProviders({ status, patchStatus, onAdvance, onBack }: Wizard
   return (
     <div className="flex flex-col gap-5">
       <p className="text-sm text-muted-foreground">{t('wizard_providers_banner')}</p>
-      {renderBlock('assrt')}
-      {renderBlock('opensubtitles')}
-      {renderBlock('jimaku')}
+      {memberIds.map(renderBlock)}
       <p className="text-xs text-weak">{t('wizard_providers_save_note')}</p>
       {saveError && <p className="text-sm text-fn-red">{saveError}</p>}
       <StepFooter onBack={onBack}>
