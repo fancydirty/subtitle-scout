@@ -14,8 +14,8 @@ function renderCard(row: ProviderRowDTO, reload = vi.fn()) {
   render(<I18nProvider initialLang="en"><ProviderCard row={row} reload={reload} /></I18nProvider>)
 }
 
-const TMDB: ProviderRowDTO = { id: 'tmdb', secrets: [{ name: 'TMDB_API_KEY' as any, set: true, source: 'env', masked: 'abc••••xyz' }], lastTest: null, quota: null }
-const ASSRT: ProviderRowDTO = { id: 'assrt', secrets: [{ name: 'ASSRT_TOKEN' as any, set: true, source: 'db', masked: 'ass••••123' }], lastTest: { ok: true, at: 1700000000000 }, quota: null }
+const TMDB: ProviderRowDTO = { id: 'tmdb', kind: 'infra', languages: null, secrets: [{ name: 'TMDB_API_KEY' as any, set: true, source: 'env', masked: 'abc••••xyz' }], lastTest: null, quota: null }
+const ASSRT: ProviderRowDTO = { id: 'assrt', kind: 'source', languages: ['zh'], secrets: [{ name: 'ASSRT_TOKEN' as any, set: true, source: 'db', masked: 'ass••••123' }], lastTest: { ok: true, at: 1700000000000 }, quota: null }
 
 describe('ProviderCard', () => {
   it('env 源：只读打码 + 已配置 badge + 无 Edit（不暴露 env）', () => {
@@ -67,7 +67,7 @@ describe('ProviderCard', () => {
     renderCard(ASSRT)
     // Vercel 风 rest 态：footer 行是「passed {rel} ago」的相对时间格式
     expect(within(screen.getByTestId('providers-assrt')).getByText(/passed/i)).toBeInTheDocument()
-    const fail: ProviderRowDTO = { id: 'llm', secrets: [{ name: 'LLM_API_KEY' as any, set: true, source: 'db', masked: 'sk••••' }], lastTest: { ok: false, at: 1700000000000, error: 'Invalid credentials' }, quota: null }
+    const fail: ProviderRowDTO = { id: 'llm', kind: 'infra', languages: null, secrets: [{ name: 'LLM_API_KEY' as any, set: true, source: 'db', masked: 'sk••••' }], lastTest: { ok: false, at: 1700000000000, error: 'Invalid credentials' }, quota: null }
     cleanup(); renderCard(fail)
     const card = within(screen.getByTestId('providers-llm'))
     expect(card.getByText(/failed/i)).toBeInTheDocument()
@@ -75,7 +75,7 @@ describe('ProviderCard', () => {
   })
 
   it('混合源编辑：env 行只读，db 行变输入框', () => {
-    const mixed: ProviderRowDTO = { id: 'llm', secrets: [
+    const mixed: ProviderRowDTO = { id: 'llm', kind: 'infra', languages: null, secrets: [
       { name: 'LLM_BASE_URL' as any, set: true, source: 'env', masked: 'htt••••/v1' },
       { name: 'LLM_API_KEY' as any, set: true, source: 'db', masked: 'sk••••ey' },
     ], lastTest: null, quota: null }

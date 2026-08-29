@@ -26,7 +26,7 @@ function withI18n(node: React.ReactNode) {
 }
 
 const LLM: ProviderRowDTO = {
-  id: 'llm',
+  id: 'llm', kind: 'infra', languages: null,
   secrets: [
     { name: 'LLM_BASE_URL' as any, set: true, source: 'db', masked: 'htt…/v1' },
     { name: 'LLM_API_KEY' as any, set: true, source: 'db', masked: 'sk-…e10' },
@@ -37,14 +37,14 @@ const LLM: ProviderRowDTO = {
 }
 
 const TMDB_ENV: ProviderRowDTO = {
-  id: 'tmdb',
+  id: 'tmdb', kind: 'infra', languages: null,
   secrets: [{ name: 'TMDB_API_KEY' as any, set: true, source: 'env', masked: 'abc••••xyz' }],
   lastTest: null,
   quota: null,
 }
 
 const TRANSLATE_ROW: ProviderRowDTO = {
-  id: 'translate',
+  id: 'translate', kind: 'infra', languages: null,
   secrets: [
     { name: 'TRANSLATE_BASE_URL' as any, set: true, source: 'db', masked: 'htt…/v1' },
     { name: 'TRANSLATE_API_KEY' as any, set: true, source: 'db', masked: 'tp-…qdh' },

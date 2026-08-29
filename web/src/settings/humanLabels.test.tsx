@@ -11,7 +11,7 @@ afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
 describe('ProviderCard 密钥人话标签', () => {
   it('zh：显示 TMDB API 密钥而不是 TMDB_API_KEY', () => {
-    const row: ProviderRowDTO = { id: 'tmdb', secrets: [{ name: 'TMDB_API_KEY', set: true, source: 'env', masked: 'abc••••xyz' }], lastTest: null, quota: null }
+    const row: ProviderRowDTO = { id: 'tmdb', kind: 'infra', languages: null, secrets: [{ name: 'TMDB_API_KEY', set: true, source: 'env', masked: 'abc••••xyz' }], lastTest: null, quota: null }
     render(<I18nProvider initialLang="zh"><ProviderCard row={row} reload={vi.fn()} /></I18nProvider>)
     const card = within(screen.getByTestId('providers-tmdb'))
     expect(card.getByText('TMDB API 密钥')).toBeInTheDocument()
@@ -19,7 +19,7 @@ describe('ProviderCard 密钥人话标签', () => {
   })
 
   it('zh：编辑 db 源时输入框可及名也是人话标签', () => {
-    const row: ProviderRowDTO = { id: 'assrt', secrets: [{ name: 'ASSRT_TOKEN', set: true, source: 'db', masked: 'ass••••123' }], lastTest: null, quota: null }
+    const row: ProviderRowDTO = { id: 'assrt', kind: 'source', languages: ['zh'], secrets: [{ name: 'ASSRT_TOKEN', set: true, source: 'db', masked: 'ass••••123' }], lastTest: null, quota: null }
     render(<I18nProvider initialLang="zh"><ProviderCard row={row} reload={vi.fn()} /></I18nProvider>)
     const card = within(screen.getByTestId('providers-assrt'))
     fireEvent.click(card.getByRole('button', { name: '编辑凭据' }))
@@ -28,7 +28,7 @@ describe('ProviderCard 密钥人话标签', () => {
 })
 
 describe('TranslateCard 专用模型字段人话标签', () => {
-  const translate: ProviderRowDTO = { id: 'translate', secrets: [
+  const translate: ProviderRowDTO = { id: 'translate', kind: 'infra', languages: null, secrets: [
     { name: 'TRANSLATE_BASE_URL', set: false, source: 'none', masked: null },
     { name: 'TRANSLATE_API_KEY', set: false, source: 'none', masked: null },
     { name: 'TRANSLATE_MODEL', set: false, source: 'none', masked: null },

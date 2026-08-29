@@ -7,7 +7,7 @@ import { TranslateCard } from './TranslateCard.js'
 
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
-const TRANSLATE_ROW: ProviderRowDTO = { id: 'translate', secrets: [
+const TRANSLATE_ROW: ProviderRowDTO = { id: 'translate', kind: 'infra', languages: null, secrets: [
   { name: 'TRANSLATE_BASE_URL', set: false, source: 'none', masked: null },
   { name: 'TRANSLATE_API_KEY', set: false, source: 'none', masked: null },
   { name: 'TRANSLATE_MODEL', set: false, source: 'none', masked: null },

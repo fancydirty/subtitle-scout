@@ -22,7 +22,7 @@ const BASE: SetupStatusDTO = {
     opensubtitles: { satisfied: false, source: 'none', hasUsername: false, masked: null },
     jimaku: { satisfied: false, source: 'none', masked: null },
     subhd: { enabled: true, source: 'db' },
-    zimuku: { enabled: true, source: 'db', captchaReady: true },
+    zimuku: { enabled: true, source: 'db', captchaReady: true }, r3sub: { satisfied: false, source: 'none', masked: null }, subdl: { satisfied: false, source: 'none', masked: null },
   },
   roots: { count: 1 },
   engineEnabled: true,

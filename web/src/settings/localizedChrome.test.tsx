@@ -59,7 +59,7 @@ describe('ProviderToggleCard zh', () => {
   })
 })
 
-const TRANSLATE_ROW: ProviderRowDTO = { id: 'translate', secrets: [
+const TRANSLATE_ROW: ProviderRowDTO = { id: 'translate', kind: 'infra', languages: null, secrets: [
   { name: 'TRANSLATE_BASE_URL', set: false, source: 'none', masked: null },
   { name: 'TRANSLATE_API_KEY', set: false, source: 'none', masked: null },
   { name: 'TRANSLATE_MODEL', set: false, source: 'none', masked: null },
@@ -99,7 +99,7 @@ describe('ZimukuVisionCard zh 按钮', () => {
   it('测试/保存/清除按钮与取消键是中文', async () => {
     // 先让配置加载完成，按钮组才会出现（配置来自 setupProviders）
     vi.spyOn(api, 'setupProviders').mockResolvedValue({ providers: [
-      { id: 'zimuku', lastTest: null, secrets: [
+      { id: 'zimuku', kind: 'source', languages: ['zh'], lastTest: null, secrets: [
         { name: 'ZIMUKU_VISION_MODEL', set: true, source: 'db', masked: '••••' },
         { name: 'ZIMUKU_VISION_BASE_URL', set: true, source: 'db', masked: '••••' },
         { name: 'ZIMUKU_VISION_API_KEY', set: true, source: 'db', masked: '••••' },

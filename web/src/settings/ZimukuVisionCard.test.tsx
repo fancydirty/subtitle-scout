@@ -14,7 +14,7 @@ function renderCard(reload = vi.fn(), secrets: ProviderRowDTO['secrets'] = []) {
   // 测试全绿而线上那张卡恒显示"未配置"。mock 撒谎，测试就只在测自己。
   vi.spyOn(api, 'setupProviders').mockResolvedValue({
     providers: [
-      { id: 'zimuku' as const, secrets, lastTest: null, quota: null },
+      { id: 'zimuku' as const, kind: 'source' as const, languages: ['zh'], secrets, lastTest: null, quota: null },
     ],
   })
   render(<I18nProvider initialLang="en"><ZimukuVisionCard reload={reload} /></I18nProvider>)

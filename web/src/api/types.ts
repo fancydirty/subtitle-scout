@@ -220,19 +220,22 @@ export interface SubtitleCompareDTO {
 
 export type SecretSource = 'env' | 'db' | 'none'
 
-/** 15 个密钥白名单（spec §4.1 枚举 + §8.2 TRANSLATE_* 三凭证 + ZIMUKU_VISION_* 三凭证）。与后端 SECRET_NAMES 同序。 */
+/** 18 个密钥白名单（spec §4.1 枚举 + §8.2 TRANSLATE_* 三凭证 + ZIMUKU_VISION_* 三凭证
+ *  + registry spec §4.1 的 R3SUB_* 账密对与 SUBDL_API_KEY）。与后端 SECRET_NAMES 同序。 */
 export const SECRET_NAMES = [
   'TMDB_API_KEY',
   'LLM_BASE_URL', 'LLM_API_KEY', 'LLM_MODEL',
   'ASSRT_TOKEN',
   'OPENSUBTITLES_API_KEY', 'OPENSUBTITLES_USERNAME', 'OPENSUBTITLES_PASSWORD',
   'JIMAKU_API_KEY',
+  'R3SUB_EMAIL', 'R3SUB_PASSWORD',
+  'SUBDL_API_KEY',
   'TRANSLATE_BASE_URL', 'TRANSLATE_API_KEY', 'TRANSLATE_MODEL',
   'ZIMUKU_VISION_BASE_URL', 'ZIMUKU_VISION_API_KEY', 'ZIMUKU_VISION_MODEL',
 ] as const
 export type SecretName = (typeof SECRET_NAMES)[number]
 
-export type ValidateTarget = 'tmdb' | 'llm' | 'translate' | 'assrt' | 'opensubtitles' | 'jimaku' | 'subhd' | 'zimuku'
+export type ValidateTarget = 'tmdb' | 'llm' | 'translate' | 'assrt' | 'opensubtitles' | 'jimaku' | 'subhd' | 'zimuku' | 'r3sub' | 'subdl'
 
 export interface ValidateResultDTO { ok: boolean; detail?: string; error?: string }
 
@@ -248,6 +251,9 @@ export interface SetupStatusDTO {
     jimaku: SetupSecretStateDTO
     subhd: { enabled: boolean; source: SecretSource }
     zimuku: { enabled: boolean; source: SecretSource; captchaReady: boolean }
+    /** registry spec §4.2：email+password 成对才 satisfied；masked=脱敏邮箱。 */
+    r3sub: SetupSecretStateDTO
+    subdl: SetupSecretStateDTO
   }
   roots: { count: number }
   engineEnabled: boolean
@@ -269,6 +275,11 @@ export interface ProviderRowDTO {
   secrets: { name: SecretName; set: boolean; source: SecretSource; masked: string | null }[]
   lastTest: SecretTestDTO | null
   quota: ProviderQuotaDTO | null
+  /** registry spec §4.1：infra（TMDB/LLM/翻译，永远展示）还是字幕源（按语言派生展示）。 */
+  kind: 'infra' | 'source'
+  /** kind='source' 时来自后端 SOURCE_REGISTRY（'*'=全语言通用）；infra 行恒 null。
+   *  设置页分组与 x/N 计数都从这里派生——前端不复制注册表。 */
+  languages: '*' | string[] | null
 }
 
 export interface ProvidersDTO { providers: ProviderRowDTO[] }

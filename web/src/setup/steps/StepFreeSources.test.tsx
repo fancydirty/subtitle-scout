@@ -22,7 +22,7 @@ const BASE: SetupStatusDTO = {
     opensubtitles: { satisfied: false, source: 'none', hasUsername: false, masked: null },
     jimaku: { satisfied: false, source: 'none', masked: null },
     subhd: { enabled: false, source: 'none' },
-    zimuku: { enabled: false, source: 'none', captchaReady: true },
+    zimuku: { enabled: false, source: 'none', captchaReady: true }, r3sub: { satisfied: false, source: 'none', masked: null }, subdl: { satisfied: false, source: 'none', masked: null },
   },
   roots: { count: 0 },
   engineEnabled: true,
@@ -70,7 +70,7 @@ describe('StepFreeSources', () => {
       expect.objectContaining({
         providers: expect.objectContaining({
           subhd: { enabled: false, source: 'db' },
-          zimuku: { enabled: true, source: 'db', captchaReady: true },
+          zimuku: { enabled: true, source: 'db', captchaReady: true }, r3sub: { satisfied: false, source: 'none', masked: null }, subdl: { satisfied: false, source: 'none', masked: null },
         }),
       }),
     )
@@ -132,7 +132,7 @@ describe('StepFreeSources', () => {
         providers: {
           ...BASE.providers,
           subhd: { enabled: true, source: 'env' },
-          zimuku: { enabled: true, source: 'env', captchaReady: true },
+          zimuku: { enabled: true, source: 'env', captchaReady: true }, r3sub: { satisfied: false, source: 'none', masked: null }, subdl: { satisfied: false, source: 'none', masked: null },
         },
       },
     })

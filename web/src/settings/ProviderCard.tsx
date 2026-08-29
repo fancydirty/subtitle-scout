@@ -22,6 +22,8 @@ const PROVIDER_NAME: Record<ProviderRowDTO['id'], string> = {
   jimaku: 'Jimaku',
   subhd: 'subhd',
   zimuku: 'zimuku',
+  r3sub: 'r3sub',
+  subdl: 'SubDL',
 }
 
 /** 相对时长（`3h` / `12m`），与活动页状态条 relAgo 同口径同粒度——用户不必学第二套语汇。
