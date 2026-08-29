@@ -300,6 +300,46 @@ describe('sandboxCacheDir / missingLiveEnv', () => {
       ASSRT_TOKEN: 'a',
     })).toEqual([])
   })
+
+  it('missingLiveEnv accepts r3sub email+password as the subtitle source', () => {
+    expect(missingLiveEnv({
+      TMDB_API_KEY: 't',
+      LLM_API_KEY: 'k',
+      LLM_BASE_URL: 'http://x',
+      LLM_MODEL: 'm',
+      R3SUB_EMAIL: 'e@x',
+      R3SUB_PASSWORD: 'p',
+    })).toEqual([])
+  })
+
+  it('missingLiveEnv accepts SUBDL_API_KEY as the subtitle source', () => {
+    expect(missingLiveEnv({
+      TMDB_API_KEY: 't',
+      LLM_API_KEY: 'k',
+      LLM_BASE_URL: 'http://x',
+      LLM_MODEL: 'm',
+      SUBDL_API_KEY: 's',
+    })).toEqual([])
+  })
+
+  it('missingLiveEnv: r3sub email without password does not count as a source', () => {
+    const missing = missingLiveEnv({
+      TMDB_API_KEY: 't',
+      LLM_API_KEY: 'k',
+      LLM_BASE_URL: 'http://x',
+      LLM_MODEL: 'm',
+      R3SUB_EMAIL: 'e@x',
+    })
+    expect(missing).toHaveLength(1)
+    expect(missing[0]).toContain('R3SUB_EMAIL+PASSWORD')
+    expect(missing[0]).toContain('SUBDL_API_KEY')
+  })
+
+  it('live workers inject r3subClient into makeFindSubtitleWorker (r3sub download bypass)', () => {
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'run.ts'), 'utf8')
+    expect(src).toMatch(/buildR3subClient\(cfg\)/)
+    expect(src).toMatch(/makeFindSubtitleWorker\(\{[^}]*r3subClient[^}]*\}\)/)
+  })
 })
 
 describe('mechanical inspectOnce zh-viewer', () => {

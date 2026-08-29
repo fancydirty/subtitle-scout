@@ -8,7 +8,7 @@ import { makeModel } from '../../agent/llm.js'
 import { runIdentify } from '../../agent/identifyWorker.js'
 import { makeFindSubtitleWorker } from '../../agent/findSubtitleWorker.js'
 import { tagsForLanguage } from '../../agent/languages.js'
-import { buildAdapters } from '../../adapters/buildAdapters.js'
+import { buildAdapters, buildR3subClient } from '../../adapters/buildAdapters.js'
 import { TmdbClient } from '../../adapters/providers/tmdb.js'
 import { findExternalSidecar, listSidecarLanguages, KNOWN_LANGUAGE_TAGS } from '../../files/sidecar.js'
 import { envOnlyAdapterConfig } from '../../v2/secrets.js'
@@ -72,8 +72,10 @@ export function missingLiveEnv(env: NodeJS.ProcessEnv = process.env): string[] {
   }
   const hasAssrt = !!env.ASSRT_TOKEN
   const hasOs = !!(env.OPENSUBTITLES_API_KEY && env.OPENSUBTITLES_USERNAME && env.OPENSUBTITLES_PASSWORD)
-  if (!hasAssrt && !hasOs) {
-    missing.push('ASSRT_TOKEN|OPENSUBTITLES_API_KEY+USERNAME+PASSWORD')
+  const hasR3sub = !!(env.R3SUB_EMAIL && env.R3SUB_PASSWORD)
+  const hasSubdl = !!env.SUBDL_API_KEY
+  if (!hasAssrt && !hasOs && !hasR3sub && !hasSubdl) {
+    missing.push('ASSRT_TOKEN|OPENSUBTITLES_API_KEY+USERNAME+PASSWORD|R3SUB_EMAIL+PASSWORD|SUBDL_API_KEY')
   }
   return missing
 }
@@ -213,6 +215,7 @@ async function assembleLiveWorkers(cacheRoot: string, targetLanguage: 'zh' | 'en
     cacheRoot,
     tmdb,
     librarySandbox: true,
+    r3subClient: buildR3subClient(cfg) ?? undefined,
   })
 
   return { identify, subtitleWorker }
