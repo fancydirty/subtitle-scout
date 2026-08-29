@@ -286,9 +286,11 @@ export const en = {
   setup_submitting: 'Creating…',
   // 一次性 API key 告知屏（建成即登录后立即展示，唯一一次全显）。
   setup_apikey_heading: 'Your API key',
+  setup_apikey_purpose: 'This key is your login identity for Scout’s entire HTTP API. The handiest use: send it, together with this instance’s address, to your AI assistant — the assistant can then fill in your TMDB, LLM and subtitle-source credentials, add media folders, and later check inspection progress and container health for you.',
   setup_apikey_notice: 'Shown in full only this once. From now on Settings shows the last 4 characters; you can copy or regenerate it there anytime.',
   setup_apikey_copy: 'Copy',
   setup_apikey_copied: 'Copied',
+  setup_apikey_copy_failed: 'Copy failed — select the text above and copy it manually',
   setup_enter_label: 'Continue to dashboard',
   // LoginPage（登录页，极简）。
   login_heading: 'Sign in',

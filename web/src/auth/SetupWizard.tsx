@@ -7,6 +7,7 @@ import { useState } from 'react'
 import { Button } from '../components/ui/button.js'
 import { useT } from '../i18n/useT.js'
 import { localizeErrorValue } from '../lib/errorText.js'
+import { copyText } from '../lib/copyText.js'
 import { api } from '../api/client.js'
 import { AuthShell } from './AuthShell.js'
 import { AuthField } from './AuthField.js'
@@ -67,26 +68,28 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
 }
 
 /** 一次性 API key 告知屏（建成即登录后立即展示，唯一一次全显）。复制是屏上的主按钮；
- *  进入需显式点击——绝不自动跳过一个专门给用户抄密钥的屏（调研：GitHub/Stripe 秘钥一次性揭示）。 */
+ *  进入需显式点击——绝不自动跳过一个专门给用户抄密钥的屏（调研：GitHub/Stripe 秘钥一次性揭示）。
+ *  复制走 lib/copyText（LAN 纯 http 下 navigator.clipboard 不存在，execCommand 兜底）；
+ *  双通道皆败给可见红字——2026-08-29 NAS 实测：旧版 catch 静默 = 用户看到"按钮点不动"。 */
 function ApiKeyNotice({ apiKey, onDone }: { apiKey: string; onDone: () => void }) {
   const { t } = useT()
-  const [copied, setCopied] = useState(false)
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
   async function copy() {
-    try {
-      await navigator.clipboard.writeText(apiKey)
-      setCopied(true)
-    } catch {
-      // 剪贴板不可用（无 https/权限）时静默——用户仍可手动选中 mono 文本复制。
-    }
+    setCopyState((await copyText(apiKey)) ? 'copied' : 'failed')
   }
+  const copied = copyState === 'copied'
   return (
     <AuthShell heading={t('setup_apikey_heading')}>
       <div className="auth-apikey">{apiKey}</div>
+      <p className="auth-intro">{t('setup_apikey_purpose')}</p>
       <p className="auth-intro">{t('setup_apikey_notice')}</p>
       <div className="auth-form">
         <Button variant={copied ? 'secondary' : 'default'} onClick={copy}>
           {copied ? t('setup_apikey_copied') : t('setup_apikey_copy')}
         </Button>
+        {copyState === 'failed' ? (
+          <p className="auth-error" role="alert">{t('setup_apikey_copy_failed')}</p>
+        ) : null}
         {/* 复制后把主按钮面让给 Continue——屏上始终恰好一处 primary，且引导用户前进（审计前端 #6）。 */}
         <Button variant={copied ? 'default' : 'secondary'} onClick={onDone}>
           {t('setup_enter_label')}

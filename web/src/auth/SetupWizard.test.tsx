@@ -77,6 +77,50 @@ describe('SetupWizard（鉴权 A2 Task 9+9′：首启向导，单屏建管理�
     expect(screen.getByRole('button', { name: /continue to dashboard|进入仪表盘/i })).toHaveClass('bg-primary')
   })
 
+  it('🔴 LAN 纯 http（clipboard 不存在）→ execCommand 兜底，复制照样成功（NAS 实测 bug）', async () => {
+    vi.stubGlobal('fetch', okJson(200, { ok: true, apiKey: 'a'.repeat(32) }))
+    vi.stubGlobal('navigator', { clipboard: undefined })
+    const exec = vi.fn().mockReturnValue(true)
+    ;(document as { execCommand?: unknown }).execCommand = exec
+    renderWizard()
+    fireEvent.change(screen.getByLabelText(/username|用户名/i), { target: { value: 'admin' } })
+    fireEvent.change(screen.getByLabelText(/^password$|^密码$/i), { target: { value: 'hunter2222!!' } })
+    fireEvent.change(screen.getByLabelText(/confirm|确认/i), { target: { value: 'hunter2222!!' } })
+    fireEvent.click(screen.getByRole('button', { name: /create account|创建账号/i }))
+    await screen.findByText('a'.repeat(32))
+    fireEvent.click(screen.getByRole('button', { name: /^copy$|^复制$/i }))
+    await screen.findByRole('button', { name: /copied|已复制/i })
+    expect(exec).toHaveBeenCalledWith('copy')
+    delete (document as { execCommand?: unknown }).execCommand
+  })
+
+  it('🔴 双通道皆不可用 → 可见失败提示（role=alert），绝不静默装死', async () => {
+    vi.stubGlobal('fetch', okJson(200, { ok: true, apiKey: 'a'.repeat(32) }))
+    vi.stubGlobal('navigator', { clipboard: undefined })
+    ;(document as { execCommand?: unknown }).execCommand = vi.fn().mockReturnValue(false)
+    renderWizard()
+    fireEvent.change(screen.getByLabelText(/username|用户名/i), { target: { value: 'admin' } })
+    fireEvent.change(screen.getByLabelText(/^password$|^密码$/i), { target: { value: 'hunter2222!!' } })
+    fireEvent.change(screen.getByLabelText(/confirm|确认/i), { target: { value: 'hunter2222!!' } })
+    fireEvent.click(screen.getByRole('button', { name: /create account|创建账号/i }))
+    await screen.findByText('a'.repeat(32))
+    fireEvent.click(screen.getByRole('button', { name: /^copy$|^复制$/i }))
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toMatch(/copy failed|复制失败/i)
+    delete (document as { execCommand?: unknown }).execCommand
+  })
+
+  it('🔴 key 屏解释存在意义：提示可交给 AI 助手代配凭证/盯容器（setup_apikey_purpose）', async () => {
+    vi.stubGlobal('fetch', okJson(200, { ok: true, apiKey: 'a'.repeat(32) }))
+    renderWizard()
+    fireEvent.change(screen.getByLabelText(/username|用户名/i), { target: { value: 'admin' } })
+    fireEvent.change(screen.getByLabelText(/^password$|^密码$/i), { target: { value: 'hunter2222!!' } })
+    fireEvent.change(screen.getByLabelText(/confirm|确认/i), { target: { value: 'hunter2222!!' } })
+    fireEvent.click(screen.getByRole('button', { name: /create account|创建账号/i }))
+    await screen.findByText('a'.repeat(32))
+    expect(screen.getByText(/AI assistant|AI 助手/i)).toBeInTheDocument()
+  })
+
   it('服务端 400（密码太短等）→ 错误行内展示', async () => {
     vi.stubGlobal('fetch', okJson(400, { error: 'password must be at least 10 characters' }))
     renderWizard()

@@ -25,6 +25,7 @@ import { api } from '../api/client.js'
 import type { AuthSecurityDTO } from '../api/types.js'
 import { useT } from '../i18n/useT.js'
 import { localizeErrorValue } from '../lib/errorText.js'
+import { copyText } from '../lib/copyText.js'
 import { AuthField } from '../auth/AuthField.js'
 
 const MIN_PASSWORD_LEN = 10
@@ -83,12 +84,9 @@ function ApiKeyRow({ data, onRegenerated }: { data: AuthSecurityDTO; onRegenerat
   const [confirmOpen, setConfirmOpen] = useState(false)
 
   async function copy() {
-    try {
-      await navigator.clipboard.writeText(data.apiKey)
-      setCopied(true)
-    } catch {
-      // 剪贴板不可用时静默——脱敏值可手选复制不了全量，但这条降级路径罕见（需 https/权限）。
-    }
+    // lib/copyText：LAN 纯 http 下 navigator.clipboard 不存在，execCommand 兜底（2026-08-29
+    // NAS 实测同 wizard ApiKeyNotice 的坑）。设置页这里复制的是脱敏值末 4 位场景少，但同病同修。
+    if (await copyText(data.apiKey)) setCopied(true)
   }
 
   async function regenerate() {
