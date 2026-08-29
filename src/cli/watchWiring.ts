@@ -63,6 +63,8 @@ export interface WatchWiringArgs {
    *  开关，用户在 dashboard 里改。求值一次 = 把 watch 启动那一刻的开关冻死在进程里，用户关掉
    *  翻译后 handoff_translate 行要等容器重启才恢复复查——而它们正是最需要被放回来的那批。 */
   translateEnabled: () => boolean
+  /** 翻译移交阈值惰性读（registry 待办二）——传函数本身，daemon 每次派发现取。 */
+  translateAfterAttempts?: () => number
   /** 翻译一个视频（第 4 步 / C3 + R19）。生产实现是 `makeDaemonTranslateRunItem`，与手动
    *  `translate-item` CLI 共用同一份组装（防两处漂移）。
    *
@@ -124,6 +126,7 @@ export function buildDaemonV2Deps(args: WatchWiringArgs): DaemonV2Deps {
     workPermitted: args.workPermitted,
     // D14：传函数本身（不是 `args.translateEnabled()` 求值一次）——daemonV2 每轮巡检现取。
     translateEnabled: args.translateEnabled,
+    translateAfterAttempts: args.translateAfterAttempts,
     // 第 4 步（C3 + R19）：翻译流的两条接线。同样传函数本身、绝不在这里调用——
     // runItem 每次调用现建 LLM 客户端与 adapters（见 WatchWiringArgs.translateRunItem 的论证）。
     // 漏接的伤害与那 4 个运维器官同型且更隐蔽：翻译流恒休眠，而这与"还没接翻译"完全无法区分

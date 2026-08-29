@@ -17,7 +17,7 @@ const FULL_ROWS: ProviderRowDTO[] = [
   row('r3sub', 'source', ['zh']), row('subdl', 'source', '*'),
 ]
 function mockHooks(over: { providers?: number; roots?: number; rows?: ProviderRowDTO[]; settings?: Record<string, string> } = {}) {
-  vi.spyOn(hooks, 'useSettings').mockReturnValue({ data: { ai_translate_enabled: 'false', ...over.settings } as never, loading: false, error: null, reload: vi.fn() })
+  vi.spyOn(hooks, 'useSettings').mockReturnValue({ data: { ai_translate_enabled: 'false', translate_after_attempts: null, ...over.settings } as never, loading: false, error: null, reload: vi.fn() })
   vi.spyOn(hooks, 'useRoots').mockReturnValue({ data: Array(over.roots ?? 0).fill({ path: '/x' }), loading: false, error: null, reload: vi.fn() })
   vi.spyOn(hooks, 'useSetupProviders').mockReturnValue({ data: { providers: over.rows ?? [] }, loading: false, error: null, reload: vi.fn() })
   vi.spyOn(hooks, 'useSetupStatus').mockReturnValue({ data: null, loading: false, error: null, reload: vi.fn() })

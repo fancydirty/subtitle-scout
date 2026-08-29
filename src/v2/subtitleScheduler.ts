@@ -265,6 +265,15 @@ export const RETRY_LATER_STREAK_CAP = 3
 /** 停牌后交给阶段 2.6 复查闸的间隔（R25「每周找一次」/ D13）。 */
 const PARK_RECHECK_MS = 7 * 24 * 60 * 60 * 1000
 
+/** settings `translate_after_attempts` 的读侧夹取（registry 待办二：翻译触发阈值可配）。
+ *  未设/脏值/越界（<1 或 >99）一律回落 HANDOFF_THRESHOLD=7——R10 的用户裁决保持为默认档。
+ *  退避按天（M-1），所以这个数字读作"连续几天真实找不到后移交翻译流"。 */
+export function clampTranslateAfterAttempts(raw: string | null): number {
+  const n = Number(raw)
+  if (!Number.isInteger(n) || n < 1 || n > 99) return HANDOFF_THRESHOLD
+  return n
+}
+
 /** 把 report 里的一个 itemId / installedPath 反解成 files 表里的 path。
  *
  *  🔴 为什么按 **path** 反解而不是照旧用 itemId 正则（C15，spec 点名的"最致命的一条"之一）：
@@ -333,6 +342,10 @@ export async function runSubtitleWorkDir(
   /** 每成功 markInstalled 一次回调 `(done, total)`。`total` = 本作品文件数，不是队列长度。
    *  放在 `runs` 之后，既有调用点一字不改。缺席 = 不发 tick。 */
   onFileInstalled?: (done: number, total: number) => void,
+  /** 翻译移交阈值（settings `translate_after_attempts` 经 clampTranslateAfterAttempts 后的值）。
+   *  缺席=HANDOFF_THRESHOLD（R10 默认 7）。daemon 每次派发新鲜读 settings（同 targetLanguage/
+   *  hardsubMode 的既有先例），改设置下一个任务即生效，不用重启。 */
+  handoffThreshold: number = HANDOFF_THRESHOLD,
 ): Promise<import('../agent/findSubtitleWorker.schemas.js').FindSubtitleBatchReport | null> {
   const task = buildSubtitleTask(item, targetLanguage)
   const runKey = `job-subtitle:${item.workId}`
@@ -427,7 +440,7 @@ export async function runSubtitleWorkDir(
     // 折算那一轮同样走这条分流（而不是"折算只加计数、分流留给下一轮"）：分两轮的话进程
     // 在两轮之间被杀会留下"计数已到 7、状态还是 NULL"的行，白吃一次额度——与上面 D15/C40
     // 那段是同一个论证，故两档失败共用这一条判定，不为折算另开一条路径。
-    if (attempt >= HANDOFF_THRESHOLD && translatable !== null) {
+    if (attempt >= handoffThreshold && translatable !== null) {
       // translatable=1 → 归翻译流；=0 → 不可救，不给第 8 次机会（R21：O(1) 可判的终局不该
       // 塞在 7 天延迟之后，更不该让翻译流领走一个 100ms 就判 unsupported 的活）。
       const parked = translatable === 1 ? 'handoff_translate' : 'unsolvable'

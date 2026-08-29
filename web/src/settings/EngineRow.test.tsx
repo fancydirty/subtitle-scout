@@ -14,7 +14,7 @@ afterEach(() => {
 
 const SETTINGS: SettingsDTO = {
   target_languages: 'zh',
-  ai_translate_enabled: null,
+  ai_translate_enabled: null, translate_after_attempts: null,
   hardsub_mode: null,
   scan_interval_ms: null,
   trace_retention_days: null,

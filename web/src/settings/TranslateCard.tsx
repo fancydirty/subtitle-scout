@@ -4,6 +4,7 @@
 import { useState } from 'react'
 import { Button } from '../components/ui/button.js'
 import { Input } from '../components/ui/input.js'
+import { Segmented } from '../components/ui/segmented.js'
 import { Switch } from '../components/ui/switch.js'
 import { StatusDot } from '../components/ui/status-dot.js'
 import { api } from '../api/client.js'
@@ -21,6 +22,26 @@ interface Props {
 }
 
 const TRANSLATE_FIELDS = ['TRANSLATE_BASE_URL', 'TRANSLATE_API_KEY', 'TRANSLATE_MODEL'] as const
+
+// registry 待办二：翻译移交阈值五档（值=settings translate_after_attempts；daemon 每次派发
+// 现取，clamp 兜底 7）。退避按天（M-1），所以"次数≈天数"。照 scan_interval_ms 五档先例。
+const TRANSLATE_AFTER_OPTIONS = [
+  { value: '1', labelKey: 'settings_translate_after_1' },
+  { value: '3', labelKey: 'settings_translate_after_3' },
+  { value: '7', labelKey: 'settings_translate_after_7' },
+  { value: '14', labelKey: 'settings_translate_after_14' },
+  { value: '30', labelKey: 'settings_translate_after_30' },
+] as const
+
+/** 库存值落到最近档（手输过其他整数也不炸，值仍合法，daemon 侧 clamp 兜底）。空/脏 → 默认 7。 */
+function nearestAfter(raw: string | null): string {
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n <= 0) return '7'
+  return TRANSLATE_AFTER_OPTIONS.reduce(
+    (best, o) => (Math.abs(Number(o.value) - n) < Math.abs(Number(best) - n) ? o.value : best),
+    '7',
+  )
+}
 const PLACEHOLDERS: Record<string, string> = {
   TRANSLATE_BASE_URL: 'https://api.example.com/v1',
   TRANSLATE_API_KEY: 'sk-...',
@@ -60,6 +81,19 @@ export function TranslateCard({ translate, settings, onUpdated, reload }: Props)
   const canSave = TRANSLATE_FIELDS.every(
     (n) => (drafts[n] ?? '').trim() !== '' || Boolean(secretMap[n]?.set),
   )
+
+  async function commitAfterAttempts(value: string) {
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await api.updateSettings({ translate_after_attempts: value })
+      onUpdated(result)
+    } catch (e) {
+      setError(t('settings_save_error_prefix') + localizeErrorValue(e, lang))
+    } finally {
+      setBusy(false)
+    }
+  }
 
   async function commitEnabled(value: boolean) {
     setBusy(true)
@@ -192,6 +226,21 @@ export function TranslateCard({ translate, settings, onUpdated, reload }: Props)
           <span className="text-[11px] leading-4 text-muted-foreground">
             {t('settings_translate_dedicated_note')}
           </span>
+        )}
+
+        {enabled && (
+          <div className="flex flex-col gap-2">
+            <span className="text-[13px] font-medium leading-5 text-foreground">
+              {t('settings_translate_after_label')}
+            </span>
+            <Segmented
+              label={t('settings_translate_after_label')}
+              items={TRANSLATE_AFTER_OPTIONS.map((o) => ({ value: o.value, label: t(o.labelKey) }))}
+              value={nearestAfter(settings.translate_after_attempts)}
+              onChange={(v) => void commitAfterAttempts(v)}
+            />
+            <span className="text-[11px] leading-4 text-muted-foreground">{t('settings_translate_after_note')}</span>
+          </div>
         )}
 
         {enabled && isDedicated && !editing && (

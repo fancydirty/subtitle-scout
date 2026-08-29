@@ -285,6 +285,11 @@ export interface DaemonV2Deps {
    *  由 watchWiring.test.ts 逐字钉住。 */
   translateEnabled?: () => boolean
 
+  /** 翻译移交阈值（registry 待办二）：settings `translate_after_attempts` 的惰性读——
+   *  每次派发现取（同 translateEnabled 的既有口径），改设置下一个任务即生效。
+   *  缺席 → runSubtitleWorkDir 内部默认 7（R10）。 */
+  translateAfterAttempts?: () => number
+
   /** 翻译一个视频（第 4 步 / C3）。**必须可注入**：这是数分钟到数小时的付费 LLM agent，
    *  测试里从不真的跑（同 subtitleWorker / probe 的既有约定）。
    *
@@ -1026,6 +1031,7 @@ export class ScoutDaemonV2 {
               data: { done: d, total: t, ...face },
             })
           },
+          this.deps.translateAfterAttempts?.(),
         )
         // R-F10 found ①：**找到并装上了字幕**——这一条就是通知页的数据源，也是整条通道里
         // 用户唯一真正想要的那个信号（"找到了什么"）。

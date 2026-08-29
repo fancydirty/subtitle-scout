@@ -92,6 +92,7 @@ export interface RedispatchInput {
 export type SettingsKey =
   | 'target_languages'
   | 'ai_translate_enabled'
+  | 'translate_after_attempts'
   | 'hardsub_mode'
   | 'scan_interval_ms'
   | 'trace_retention_days'

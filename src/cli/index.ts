@@ -33,6 +33,7 @@ import { SubdlClient } from '../adapters/providers/subdl.js'
 import { curlFetch, SUBHD_BASE } from '../adapters/providers/subhd.js'
 import { makeAdapterConfigResolver, SECRET_NAMES, type AdapterConfigResolver } from '../v2/secrets.js'
 import { setupSatisfied, workPermitted, makeSecretsWatcher, makeSatisfactionTracker, type ClientsHolder } from './watchClients.js'
+import { clampTranslateAfterAttempts } from '../v2/subtitleScheduler.js'
 import { openDb } from '../v2/db.js'
 import { JobsRepo } from '../v2/jobsRepo.js'
 import { LibraryRepo } from '../v2/libraryRepo.js'
@@ -693,6 +694,8 @@ async function cmdWatch() {
     // handoff_translate 的行下一轮就该恢复复查，不用重启容器——它们正是 C41 那批"翻译不启动
     // 就永久卡死"的行，最不该等一次重启。
     translateEnabled: () => !!tryAutoTranslateCfg(cfg) && settingsRepo.get('ai_translate_enabled') === 'true',
+    // 翻译移交阈值：每次派发现取（同上），脏值/未设由 clamp 回落 7（R10 默认档）。
+    translateAfterAttempts: () => clampTranslateAfterAttempts(settingsRepo.get('translate_after_attempts')),
     // 第 4 步（C3 + R19）：翻译流真正接回来的那根线。**每次调用现建**（不是启动时建一次）：
     // runItem 内部攥着 LLM 客户端与 adapters，而 secrets_version 变化时 preTick 会整体重建
     // 它们——建一次就等于把"点火前的世界"冻死在进程里，wizard 里配完 TRANSLATE_* 还得重启容器。

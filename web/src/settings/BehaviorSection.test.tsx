@@ -17,7 +17,7 @@ import type { SettingsDTO } from '../api/types.js'
 
 const NULL_SETTINGS: SettingsDTO = {
   target_languages: null, hardsub_mode: null,
-  trace_retention_days: null, scan_interval_ms: null, ai_translate_enabled: null,
+  trace_retention_days: null, scan_interval_ms: null, ai_translate_enabled: null, translate_after_attempts: null,
   engine_enabled: null, 'provider:SUBHD_ENABLED': null, 'provider:ZIMUKU_ENABLED': null,
   engineEnabled: false,
 }
@@ -87,7 +87,7 @@ describe('BehaviorSection：null 值默认占位', () => {
     renderSection(
       asyncOf({
         target_languages: 'en', hardsub_mode: 'aggressive',
-        trace_retention_days: '14', scan_interval_ms: '600000', ai_translate_enabled: 'true',
+        trace_retention_days: '14', scan_interval_ms: '600000', ai_translate_enabled: 'true', translate_after_attempts: null,
         engine_enabled: null, 'provider:SUBHD_ENABLED': null, 'provider:ZIMUKU_ENABLED': null,
         engineEnabled: false,
       }),

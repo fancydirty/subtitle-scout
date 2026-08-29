@@ -306,7 +306,7 @@ describe('startDashboard (v2)', () => {
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({
         target_languages: 'zh,en', hardsub_mode: null,
-        trace_retention_days: null, scan_interval_ms: null, ai_translate_enabled: null,
+        trace_retention_days: null, scan_interval_ms: null, ai_translate_enabled: null, translate_after_attempts: null,
         engine_enabled: null, 'provider:SUBHD_ENABLED': null, 'provider:ZIMUKU_ENABLED': null,
         engineEnabled: true,
       })
@@ -386,7 +386,7 @@ describe('startDashboard (v2)', () => {
         expect(res.status).toBe(200)
         expect(await res.json()).toEqual({
           target_languages: 'zh,en', hardsub_mode: 'aggressive',
-          trace_retention_days: null, scan_interval_ms: null, ai_translate_enabled: null,
+          trace_retention_days: null, scan_interval_ms: null, ai_translate_enabled: null, translate_after_attempts: null,
           engine_enabled: null, 'provider:SUBHD_ENABLED': null, 'provider:ZIMUKU_ENABLED': null,
           engineEnabled: true,
         })

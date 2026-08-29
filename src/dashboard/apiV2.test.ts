@@ -145,7 +145,7 @@ describe('buildSettings（GET /api/v2/settings：白名单键，未设置=null�
     const settings = new SettingsRepo(db)
     expect(buildSettings(settings)).toEqual({
       target_languages: null, hardsub_mode: null,
-      trace_retention_days: null, scan_interval_ms: null, ai_translate_enabled: null,
+      trace_retention_days: null, scan_interval_ms: null, ai_translate_enabled: null, translate_after_attempts: null,
       engine_enabled: null, 'provider:SUBHD_ENABLED': null, 'provider:ZIMUKU_ENABLED': null,
       // engine_enabled 未设置 → fail-open 兜底为 true（本任务 ③ 的布尔别名）。
       engineEnabled: true,
@@ -158,7 +158,7 @@ describe('buildSettings（GET /api/v2/settings：白名单键，未设置=null�
     settings.set('hardsub_mode', 'aggressive', NOW)
     expect(buildSettings(settings)).toEqual({
       target_languages: 'zh,en', hardsub_mode: 'aggressive',
-      trace_retention_days: null, scan_interval_ms: null, ai_translate_enabled: null,
+      trace_retention_days: null, scan_interval_ms: null, ai_translate_enabled: null, translate_after_attempts: null,
       engine_enabled: null, 'provider:SUBHD_ENABLED': null, 'provider:ZIMUKU_ENABLED': null,
       engineEnabled: true,
     })

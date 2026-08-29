@@ -3,6 +3,7 @@ import { openDb } from './db.js'
 import {
   runSubtitleWorkDir, buildSubtitleTask, listSubtitleQueue, subtitleJobId,
   RETRY_LATER_STREAK_CAP, queueItemDueNow, queueItemEarliestRetryAt, type SubtitleQueueItem,
+  clampTranslateAfterAttempts,
 } from './subtitleScheduler.js'
 import { traceBus } from '../core/traceBus.js'
 
@@ -1036,5 +1037,60 @@ describe('R21/D15 移交分流（sub_attempt >= 7）', () => {
     expect(after).not.toBe('tmdb-404')
     // 且写的值必须落在自己的命名空间里——否则识别轨的谓词无法区分"是我的终态"与"别人的失败"
     expect(after).toMatch(/^sub:/)
+  })
+})
+
+describe('translate_after_attempts（翻译触发阈值可配 · registry 待办二）', () => {
+  let db: ReturnType<typeof openDb>
+  let item: SubtitleQueueItem
+  beforeEach(() => {
+    db = openDb(':memory:')
+    item = mkItem()
+    for (const f of item.files) {
+      db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_dir, work_id, needs_subtitle, season, episode, updated_at)
+                  VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(f.path, f.dir, f.filename, 100, 1000, f.dir, item.workId, 1, f.season, f.episode, 1000)
+    }
+  })
+
+  const evidencedNoMatch = () => async () => {
+    traceBus.publish({ runKey: 'job-subtitle:tmdb:95897', seq: 0, tool: 'search_source', argsSummary: '{}', resultSummary: '[]', tookMs: 5, at: Date.now() })
+    return { installed: [], no_safe_match: [{ itemId: 'tmdb:95897/s1e1', reason: 'nothing' }], retry_later: [], hardsub_assumed: [] }
+  }
+
+  it('🔴 阈值=1：第一次真实失败即按 translatable 分流（"一次没找到就翻"档）', async () => {
+    const p = item.files[0].path
+    db.prepare('UPDATE files SET translatable = 1 WHERE path = ?').run(p)
+    await runSubtitleWorkDir(db, evidencedNoMatch() as any, item, 'zh', undefined, undefined, 1)
+    expect(subStatusOf(db, p)).toBe('handoff_translate')
+  })
+
+  it('阈值缺省仍是 7（R10 裁决保持默认）：一次失败不停牌', async () => {
+    const p = item.files[0].path
+    db.prepare('UPDATE files SET translatable = 1 WHERE path = ?').run(p)
+    await runSubtitleWorkDir(db, evidencedNoMatch() as any, item, 'zh')
+    expect(subStatusOf(db, p)).toBeNull()
+    expect(subAttemptOf(db, p)).toBe(1)
+  })
+
+  it('阈值=2：第一次不停、第二次停（边界即 >=）', async () => {
+    const p = item.files[0].path
+    db.prepare('UPDATE files SET translatable = 1 WHERE path = ?').run(p)
+    await runSubtitleWorkDir(db, evidencedNoMatch() as any, item, 'zh', undefined, undefined, 2)
+    expect(subStatusOf(db, p)).toBeNull()
+    db.prepare('UPDATE files SET recheck_after = NULL WHERE path = ?').run(p)
+    await runSubtitleWorkDir(db, evidencedNoMatch() as any, item, 'zh', undefined, undefined, 2)
+    expect(subStatusOf(db, p)).toBe('handoff_translate')
+  })
+
+  it('clampTranslateAfterAttempts：未设/脏值/越界回落 7；合法值透传', () => {
+    expect(clampTranslateAfterAttempts(null)).toBe(7)
+    expect(clampTranslateAfterAttempts('')).toBe(7)
+    expect(clampTranslateAfterAttempts('abc')).toBe(7)
+    expect(clampTranslateAfterAttempts('0')).toBe(7)
+    expect(clampTranslateAfterAttempts('-3')).toBe(7)
+    expect(clampTranslateAfterAttempts('100')).toBe(7)
+    expect(clampTranslateAfterAttempts('1')).toBe(1)
+    expect(clampTranslateAfterAttempts('30')).toBe(30)
   })
 })

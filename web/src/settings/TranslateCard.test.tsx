@@ -21,7 +21,7 @@ const DEDICATED_SECRETS: ProviderRowDTO['secrets'] = [
 
 function renderCard(over: { translate?: Partial<ProviderRowDTO>; settings?: Partial<SettingsDTO>; reload?: () => void } = {}) {
   const translate: ProviderRowDTO = { ...TRANSLATE_ROW, ...over.translate }
-  const settings: SettingsDTO = { ai_translate_enabled: 'false', ...over.settings } as SettingsDTO
+  const settings: SettingsDTO = { ai_translate_enabled: 'false', translate_after_attempts: null, ...over.settings } as SettingsDTO
   const reload = over.reload ?? vi.fn()
   render(<I18nProvider initialLang="en"><TranslateCard translate={translate} settings={settings} onUpdated={vi.fn()} reload={reload} /></I18nProvider>)
   return reload
@@ -36,7 +36,7 @@ function fillDedicated() {
 describe('TranslateCard', () => {
   it('🔴 打开开关 → PUT ai_translate_enabled=true，不碰 putSecret', async () => {
     const update = vi.spyOn(api, 'updateSettings').mockResolvedValue({
-      ai_translate_enabled: 'true',
+      ai_translate_enabled: 'true', translate_after_attempts: null,
     } as SettingsDTO)
     const put = vi.spyOn(api, 'putSecret').mockResolvedValue({ ok: true })
     renderCard()
@@ -47,7 +47,7 @@ describe('TranslateCard', () => {
 
   it('🔴 关闭开关 → PUT ai_translate_enabled=false，不碰 putSecret', async () => {
     const update = vi.spyOn(api, 'updateSettings').mockResolvedValue({
-      ai_translate_enabled: 'false',
+      ai_translate_enabled: 'false', translate_after_attempts: null,
     } as SettingsDTO)
     const put = vi.spyOn(api, 'putSecret').mockResolvedValue({ ok: true })
     renderCard({
@@ -67,7 +67,7 @@ describe('TranslateCard', () => {
 
   it('开启后没有「跟随默认 LLM」分段；未配齐时渲染三个必填字段', () => {
     renderCard({ settings: { ai_translate_enabled: 'true' } as SettingsDTO })
-    expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument()
+    // 裸 queryByRole('radiogroup') 的旧断言已失真（移交阈值五档也是 radiogroup）——精确钉旧分段
     expect(screen.queryByRole('radio', { name: 'Follow default LLM' })).not.toBeInTheDocument()
     expect(screen.getByLabelText('Base URL')).toHaveAttribute('required')
     expect(screen.getByLabelText('API key')).toHaveAttribute('required')
@@ -153,7 +153,7 @@ describe('TranslateCard', () => {
 
   it('配齐后关再开 → 仍无必填输入', async () => {
     const update = vi.spyOn(api, 'updateSettings').mockResolvedValue({
-      ai_translate_enabled: 'true',
+      ai_translate_enabled: 'true', translate_after_attempts: null,
     } as SettingsDTO)
     renderCard({
       translate: { secrets: DEDICATED_SECRETS },
@@ -206,5 +206,24 @@ describe('TranslateCard', () => {
       settings: { ai_translate_enabled: 'true' } as SettingsDTO,
     })
     expect(screen.getByText('✓ Configured')).toBeInTheDocument()
+  })
+
+  // ── registry 待办二：翻译移交阈值五档 ─────────────────────────────────────────
+  it('开启时渲染五档移交阈值（默认落 7 档）；关闭时不渲染', () => {
+    renderCard({ settings: { ai_translate_enabled: 'true' } as SettingsDTO })
+    const seg = screen.getByRole('radiogroup', { name: 'Hand over to translation after' })
+    expect(seg).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: '7 misses (default)' })).toBeChecked()
+    cleanup()
+    renderCard({ settings: { ai_translate_enabled: 'false' } as SettingsDTO })
+    expect(screen.queryByRole('radiogroup', { name: 'Hand over to translation after' })).not.toBeInTheDocument()
+  })
+
+  it('库存值落最近档（手输 4 → 3 档高亮），设置值 1 → 1 档', () => {
+    renderCard({ settings: { ai_translate_enabled: 'true', translate_after_attempts: '4' } as SettingsDTO })
+    expect(screen.getByRole('radio', { name: '3 misses' })).toBeChecked()
+    cleanup()
+    renderCard({ settings: { ai_translate_enabled: 'true', translate_after_attempts: '1' } as SettingsDTO })
+    expect(screen.getByRole('radio', { name: '1 miss' })).toBeChecked()
   })
 })

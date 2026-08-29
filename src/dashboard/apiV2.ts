@@ -147,6 +147,8 @@ export interface ReconcileAllResultDTO {
 export const SETTINGS_KEYS = [
   'target_languages', 'hardsub_mode', 'trace_retention_days', 'scan_interval_ms',
   'ai_translate_enabled',
+  // registry 待办二：翻译移交阈值（1-99 的整数串；daemon 读侧 clamp 回落 7）。
+  'translate_after_attempts',
   // spec A §4.6：发动机总开关（fail-open，脏值视为开——布尔别名见 buildSettings）。
   'engine_enabled',
   // spec A §4.4：免费源开关与 engine_enabled 同款通道（PUT 白名单 + zod enum），不另起端点。
@@ -262,6 +264,7 @@ const SETTINGS_VALUE_SCHEMAS: Record<SettingsKey, z.ZodType<string>> = {
   trace_retention_days: z.string().regex(/^[1-9][0-9]*$/, 'must be a positive integer string'),
   scan_interval_ms: z.string().regex(/^[1-9][0-9]*$/, 'must be a positive integer string'),
   ai_translate_enabled: z.enum(['true', 'false']),
+  translate_after_attempts: z.string().regex(/^[1-9][0-9]?$/, 'must be an integer 1-99'),
   engine_enabled: z.enum(['true', 'false']),
   'provider:SUBHD_ENABLED': z.enum(['true', 'false']),
   'provider:ZIMUKU_ENABLED': z.enum(['true', 'false']),
