@@ -4,15 +4,15 @@
 
 **Website**: https://subtitlescout.com · **Live demo**: https://demo.subtitlescout.com （只读演示站 / read-only demo）
 
-subtitle-scout watches a media library, finds a matching Chinese subtitle, verifies it, and writes it next to the video. It scans filesystem roots; it does not depend on Jellyfin, Emby, or Plex.
+subtitle-scout watches a media library, finds a matching subtitle in your target language, verifies it, and writes it next to the video. Chinese has the deepest source coverage; English, Japanese, and Korean are fully supported; Spanish, French, German, Portuguese, Russian, and Italian are configurable with basic coverage (see [Target languages](#目标语言支持分层)). It scans filesystem roots; it does not depend on Jellyfin, Emby, or Plex.
 
-**What it does:** discover titles missing Chinese sidecars → search and rank candidates → install; season packs; optional directory repair against TMDB (reversible); a dashboard with an activity log.
+**What it does:** discover titles missing target-language sidecars → search and rank candidates → install; season packs; optional directory repair against TMDB (reversible); a dashboard with an activity log.
 
 ![Subtitle Scout — engine data flow](docs/diagrams/architecture.png)
 
 *Engine data flow. Interactive version: [docs/diagrams/architecture.html](docs/diagrams/architecture.html)*
 
-subtitle-scout 盯着媒体库，自动找到、验证并放好最合适的中文字幕。直接扫描媒体根目录，不依赖任何媒体服务器。字幕落盘后由播放器自行刷新。
+subtitle-scout 盯着媒体库，自动找到、验证并放好目标语言的最合适字幕。中文源覆盖最厚；英、日、韩为正式支持；西、法、德、葡、俄、意可配置（基础覆盖，详见[目标语言支持分层](#目标语言支持分层)）。直接扫描媒体根目录，不依赖任何媒体服务器。字幕落盘后由播放器自行刷新。
 
 ---
 
