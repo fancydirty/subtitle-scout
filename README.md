@@ -18,6 +18,38 @@ subtitle-scout 盯着媒体库，自动找到、验证并放好最合适的中�
 
 ![Subtitle Scout — media detail page](docs/screenshots/app-detail-en.png)
 
+## Deploy with your AI agent
+
+Subtitle Scout ships an [Agent Skill](https://agentskills.io) at
+[`skills/subtitle-scout-wizard/SKILL.md`](skills/subtitle-scout-wizard/SKILL.md) that walks your
+coding agent through deployment, configuration, and troubleshooting, end to end.
+
+**Option 1 — paste this to your agent** (Claude Code, Codex, Gemini CLI,
+Cursor, or any agent that can fetch URLs and run shell commands):
+
+> Fetch https://raw.githubusercontent.com/fancydirty/subtitle-scout/main/skills/subtitle-scout-wizard/SKILL.md
+> and follow it to deploy and configure Subtitle Scout for me. If it references
+> other files, fetch them from the same base path — or clone
+> https://github.com/fancydirty/subtitle-scout and work from `skills/subtitle-scout-wizard/`.
+
+**Option 2 — clone first** (offline-friendly; you need the repo to self-host anyway):
+
+> Clone https://github.com/fancydirty/subtitle-scout, read `skills/subtitle-scout-wizard/SKILL.md`,
+> and follow it to deploy and configure Subtitle Scout for me.
+
+**Option 3 — install as a skill** (harnesses supporting the Agent Skills standard):
+
+```bash
+npx skills add fancydirty/subtitle-scout
+```
+
+Then tell your agent: *"Use the subtitle-scout-wizard skill to deploy Subtitle Scout."*
+
+The agent will ask before anything destructive. Review what it proposes —
+this skill has the same trust model as any install script you run from the internet.
+
+Prefer doing it by hand? The manual path is below.
+
 ## Quick Start (5 Minutes)
 
 Get subtitle-scout running from zero to dashboard in under 5 minutes.
@@ -172,6 +204,38 @@ That's it. Subtitle-scout is now monitoring your library and will fetch subtitle
 For detailed configuration, troubleshooting, and development setup, see the sections below.
 
 ---
+
+## 让你的 AI agent 替你部署
+
+本仓库自带 [Agent Skill](https://agentskills.io)：
+[`skills/subtitle-scout-wizard/SKILL.md`](skills/subtitle-scout-wizard/SKILL.md)，
+可引导你的编码 agent 全程完成部署、配置与排障。
+
+**方式一——把这段话粘贴给你的 agent**（Claude Code / Codex / Gemini CLI /
+Cursor，或任何能抓取 URL 并执行命令的 agent）：
+
+> 抓取 https://raw.githubusercontent.com/fancydirty/subtitle-scout/main/skills/subtitle-scout-wizard/SKILL.md
+> 并按其中指引为我部署并配置 Subtitle Scout。若其中引用了其他文件，
+> 从同一路径前缀抓取，或直接 clone https://github.com/fancydirty/subtitle-scout
+> 后在 `skills/subtitle-scout-wizard/` 目录下操作。
+
+**方式二——先 clone**（可离线；自托管本来也需要仓库）：
+
+> Clone https://github.com/fancydirty/subtitle-scout，阅读
+> `skills/subtitle-scout-wizard/SKILL.md`，并按其中指引为我部署并配置 Subtitle Scout。
+
+**方式三——按 skill 标准安装**（支持 Agent Skills 标准的 harness）：
+
+```bash
+npx skills add fancydirty/subtitle-scout
+```
+
+然后对 agent 说：「用 subtitle-scout-wizard skill 部署 Subtitle Scout」。
+
+Agent 执行任何破坏性操作前会先询问。请审阅它提出的方案——
+此 skill 的信任模型与任何来自互联网的安装脚本相同。
+
+更喜欢自己动手？往下看手动路线。
 
 ## 快速上手
 
