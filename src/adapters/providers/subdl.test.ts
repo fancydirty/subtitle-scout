@@ -36,6 +36,17 @@ describe('SubdlClient.search', () => {
     expect(url).toContain('api_key=k')
   })
 
+  // 探偵ときたら实案：film_name 英文名 "can't find film"，tmdb_id 逐集命中——tmdbId 通道优先于
+  // film_name（imdb>tmdb>film_name 三级优先，imdb 优先见上一用例）。
+  it('tmdb_id 优先于 film_name（仅 tmdbId 时 URL 含 tmdb_id 不含 film_name）', async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(jsonRes(200, searchJson))
+    const client = new SubdlClient({ apiKey: 'k', fetchImpl })
+    await client.search({ filmName: 'Detectives These Days Are Crazy!', tmdbId: 262377, type: 'tv', languages: ['zh'] })
+    const url = String(fetchImpl.mock.calls[0][0])
+    expect(url).toContain('tmdb_id=262377')
+    expect(url).not.toContain('film_name=')
+  })
+
   it('TV 参数（season/episode）拼进查询', async () => {
     const fetchImpl = vi.fn().mockResolvedValueOnce(jsonRes(200, '{"status":true,"subtitles":[]}'))
     const client = new SubdlClient({ apiKey: 'k', fetchImpl })

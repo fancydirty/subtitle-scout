@@ -3,6 +3,10 @@ import { candidateKey, type CandidateRef, type SubtitleCandidate } from '../core
 export interface FetchArgs {
   queries: string[]
   imdb?: string
+  /** id 索引型源（SubDL tmdb_id）的精准检索通道——探偵ときたら实案（tmdb:262377）：film_name
+   *  英文名反复 "can't find film" 而 tmdb_id 逐集命中。照 imdb 先例由 agent 显式传参（任务
+   *  itemId 形如 tmdb:<id>，事实就在 agent 手里），不做 deps 自动注入。 */
+  tmdb?: string
   year?: number
   season?: number
   episode?: number

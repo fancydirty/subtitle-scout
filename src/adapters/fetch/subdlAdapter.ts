@@ -19,12 +19,15 @@ function toCandidate(sub: SubdlSubtitle): SubtitleCandidate {
   }
 }
 
-/** 从 FetchArgs 组装 SubDL 搜索参数：优先 imdb（精准），movie/tv 按 season/episode 有无判定。 */
+/** 从 FetchArgs 组装 SubDL 搜索参数：id 优先（imdb>tmdb>film_name，优先级判断在 client），
+ *  movie/tv 按 season/episode 有无判定。 */
 function toSearchArgs(args: FetchArgs): SubdlSearchArgs {
   const isTv = args.season != null
   return {
     filmName: args.queries[0],
     imdbId: args.imdb,
+    // 非数字串不传（宁缺勿错——tmdb_id 只收纯数字）；imdb/tmdb 同给时两者都透传，裁剪归 client。
+    tmdbId: args.tmdb != null && /^\d+$/.test(args.tmdb) ? Number(args.tmdb) : undefined,
     type: isTv ? 'tv' : 'movie',
     languages: args.languages ?? ['zh'],
     season: args.season,

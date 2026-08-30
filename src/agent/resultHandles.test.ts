@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { makeFileResultSetStore } from './resultHandles.js'
 import type { SubtitleCandidate } from '../core/schemas.js'
 import { makeSearchSourceTool, makeListCandidatesTool, makeGetCandidateTool, summarizeCandidate, type CandidateSummary } from './resultHandles.js'
-import type { FetchAdapter } from '../adapters/fetchLib.js'
+import type { FetchAdapter, FetchArgs } from '../adapters/fetchLib.js'
 
 let dir: string
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'scout-resultsets-')) })
@@ -204,6 +204,27 @@ describe('search_source / list_candidates / get_candidate tools', () => {
       await searchSource.execute!({ queries: ['q'] }, { toolCallId: 't1', messages: [] } as any)
       expect(log.searched).toBe(true)
     })
+  })
+
+  // SubDL tmdb_id 通道（探偵ときたら实案，tmdb:262377）：agent 把任务 itemId 里的 tmdb 数字
+  // 显式传入 search_source（照 imdb 先例，绝不 deps 自动注入）。schema 必须收下 tmdb（zod 默认
+  // strip 未声明键——没有 schema 字段就会在解析时被静默吃掉），execute 的 {...args} 展开再把它
+  // 透传进 FetchArgs 到达各 adapter。
+  it('search_source schema 收 tmdb 并透传进 FetchArgs（SubDL tmdb_id 精准检索通道）', async () => {
+    const store = makeFileResultSetStore(dir)
+    const seen: FetchArgs[] = []
+    const recording: FetchAdapter = {
+      name: 'subdl',
+      enabled: () => true,
+      search: async (a) => { seen.push(a); return [fakeCandidate('1', 'A')] },
+      resolve: async () => { throw new Error('not used in this test') },
+    }
+    const searchSource = makeSearchSourceTool({ adapters: [recording], store })
+    const schema = searchSource.inputSchema as import('zod').ZodType
+    const parsed = schema.parse({ queries: ['Detectives These Days Are Crazy!'], tmdb: '262377' }) as { queries: string[]; tmdb?: string }
+    expect(parsed.tmdb).toBe('262377')
+    await searchSource.execute!(parsed, { toolCallId: 't1', messages: [] } as any)
+    expect(seen[0].tmdb).toBe('262377')
   })
 
   // Same string-encoding class as download_candidate.fileIndex: the real model string-encodes the

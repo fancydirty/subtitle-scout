@@ -150,6 +150,10 @@ export function makeSearchSourceTool(deps: SearchSourceDeps) {
       'query variants per call — plan queries accordingly. Only pass `imdb` when your task ' +
       'facts explicitly provide one — NEVER invent or derive it from a tmdb id (a wrong imdb ' +
       'makes providers query the wrong identity and silently return zero results). ' +
+      'When your task itemId is of the form `tmdb:<id>`, you may pass that numeric id as ' +
+      '`tmdb` — id-indexed international providers (SubDL) match it more precisely than a ' +
+      'title search, which can miss under alternate titles. The same rule applies: only pass ' +
+      'a `tmdb` your task facts actually contain. ' +
       'When this task has a target whose item already has another file with a subtitle (a ' +
       'duplicate/replica), that subtitle appears in your results as a provider:"local" candidate ' +
       '— treat it exactly like any other candidate (same belonging judgment, same download/install ' +
@@ -157,6 +161,7 @@ export function makeSearchSourceTool(deps: SearchSourceDeps) {
     inputSchema: z.object({
       queries: z.array(z.string()).min(1),
       imdb: z.string().optional(),
+      tmdb: z.string().optional(),
       // Real models string-encode these ("2020"/"1"/"12") — coerce so this first-of-every-run tool
       // call does not die on tool-arg validation; empty-string sentinels become undefined (not 0).
       year: coercibleOptionalInt,
