@@ -67,6 +67,7 @@ services:
       # TMDB 反代/代理（墙内直连常被墙时用；网络层基建，key 本身在向导里配）
       TMDB_BASE_URL: ${TMDB_BASE_URL:-}
       TMDB_PROXY_URL: ${TMDB_PROXY_URL:-}
+      TMDB_IMAGE_BASE_URL: ${TMDB_IMAGE_BASE_URL:-}
       # 目标字幕语言与扫描节奏(dashboard 设置页优先)
       TARGET_LANGUAGES: ${TARGET_LANGUAGES:-}
       SCAN_INTERVAL_MS: ${SCAN_INTERVAL_MS:-}

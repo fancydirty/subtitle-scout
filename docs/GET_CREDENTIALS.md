@@ -62,6 +62,10 @@ https://developer.themoviedb.org/docs/getting-started
 
 向导第二步 **TMDB**：粘贴 → **测试** → 保存。之后可在 Settings 的 TMDB 卡片修改。
 
+### 大陆访问
+
+`api.themoviedb.org` 在大陆常被墙。Key 照常申请，连通问题在部署层用 `TMDB_BASE_URL` / `TMDB_IMAGE_BASE_URL` / `TMDB_PROXY_URL` 解决——官方旧域名兜底、自建反代（仓库自带 Worker 模板）、本地代理三条路线，见 README 的[「大陆网络环境：TMDB 直连不通怎么办」](../README.md#大陆网络环境tmdb-直连不通怎么办)。
+
 ---
 
 ## 2. ASSRT Token

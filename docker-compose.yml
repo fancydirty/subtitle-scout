@@ -43,6 +43,7 @@ services:
       # TMDB 反代/代理（墙内直连常被墙时用;不配则默认直连官方 API）——网络层基建，非凭证
       TMDB_BASE_URL: ${TMDB_BASE_URL:-}
       TMDB_PROXY_URL: ${TMDB_PROXY_URL:-}
+      TMDB_IMAGE_BASE_URL: ${TMDB_IMAGE_BASE_URL:-}
       # LLM_EXTRA_BODY：env-only 高级项（spec §12，向导不收）——畸形 JSON 会在启动时显式报错
       LLM_EXTRA_BODY: ${LLM_EXTRA_BODY:-}
       # 目标字幕语言与扫描节奏(dashboard 设置页的行为级配置优先于这两个种子值)

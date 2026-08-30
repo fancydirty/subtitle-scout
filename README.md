@@ -45,6 +45,8 @@ TMDB powers media file recognition. Without it, subtitle-scout cannot identify y
 
 **→ [TMDB](docs/GET_CREDENTIALS.en.md#1-tmdb-api-key)** · [中文](docs/GET_CREDENTIALS.md#1-tmdb-api-key)
 
+> **Mainland China note**: `api.themoviedb.org` is blocked in mainland China. Subtitle Scout exposes `TMDB_BASE_URL` / `TMDB_IMAGE_BASE_URL` / `TMDB_PROXY_URL` so you can point it at the still-reachable official legacy domain (`https://api.tmdb.org/3`) or your own reverse proxy — a ready-to-paste Cloudflare Worker template ships in [docs/tmdb-proxy-worker.js](docs/tmdb-proxy-worker.js). Full walkthrough (Chinese): [大陆网络环境：TMDB 直连不通怎么办](#大陆网络环境tmdb-直连不通怎么办).
+
 #### Strongly recommended: ASSRT Token (Free)
 
 ASSRT is the primary Chinese subtitle source. The wizard lets you skip it; don't, if you want Chinese subs.
@@ -262,6 +264,51 @@ subtitle-scout 直接扫描媒体根目录发现文件，靠 TMDB 识别标题/�
 
 **填哪**：设置向导（或设置页）的 TMDB 卡片。填完即生效（向导落库同进程点火，不用重启容器）。
 
+### 大陆网络环境：TMDB 直连不通怎么办
+
+`api.themoviedb.org` 在大陆长期被墙（DNS 污染为主，部分地区连 IP 也封）；图片域 `image.tmdb.org` 时好时坏。doctor 的 tmdb 行报网络错误、或识别总卡在超时，八成是这个原因。按下面顺序处理——这几项都是**部署基建 env**（写进 compose 的 `environment` 或 `.env`），不是向导凭证：
+
+**① 零成本先试：官方旧域名**
+
+```yaml
+environment:
+  TMDB_BASE_URL: https://api.tmdb.org/3
+```
+
+`api.tmdb.org` 是 TMDB 的官方旧域名，当前大陆多数地区免代理可直连（无保证，随时可能变化）。只解决 API 不解决图片，但识别功能就此恢复。
+
+**② 主推：自建反代（一个域名同时解决 API + 图片）**
+
+前提：一个 Cloudflare 免费账号 + 一个自有域名。**必须绑自定义域名**——`*.workers.dev` 与 `*.vercel.app` 本体在大陆被墙，不绑等于白建。三步走：
+
+1. 部署仓库自带模板 [docs/tmdb-proxy-worker.js](docs/tmdb-proxy-worker.js)：`npx wrangler deploy docs/tmdb-proxy-worker.js --name tmdb-proxy --compatibility-date 2026-08-01`，或在 Cloudflare dashboard 新建 Worker 整段粘贴该文件
+2. 给 Worker 绑定自有域名（Worker → Settings → Domains & Routes → Custom domain）
+3. 把域名填进 compose：
+
+```yaml
+environment:
+  TMDB_BASE_URL: https://tmdb.example.com/3
+  TMDB_IMAGE_BASE_URL: https://tmdb.example.com
+```
+
+不想用 Cloudflare 的话，[imaliang/tmdb-proxy](https://github.com/imaliang/tmdb-proxy)（中文 NAS 社区事实标准）提供 Vercel 一键部署，同样必须绑自有域名。
+
+顺带一提：Jellyfin 的 TMDb 插件不支持自定义 API 基址，大陆用户只能进容器改 hosts；subtitle-scout 原生把反代基址暴露成配置。
+
+**③ 已有代理的：直接指过去**
+
+```yaml
+environment:
+  TMDB_PROXY_URL: http://192.168.1.2:7890
+```
+
+指向本地 Clash / sing-box 的 HTTP 代理端口即可——只有 TMDB 请求走这个代理，其余流量不受影响。
+
+**④ 不推荐的偏方**
+
+- **公共第三方 TMDB 镜像**：两重问题——你的 TMDB API key 会明文经过陌生人的服务器（隐私风险）；且屡屡失效，2026 年就有知名公共镜像死亡的先例。自建反代成本几乎为零，别用公共镜像。
+- **hosts 指 IP**：IP 变更频繁，极易过期，不展开。
+
 ### OpenSubtitles / Jimaku
 
 OpenSubtitles 是面向**中文用户和海外用户**的国际源，不是「只给翻译用」才值得配。专业中文站覆盖不到的片目可以在这里找到；非中文用户也把它当作常用源。向导允许跳过，**仍应配置**。
@@ -434,7 +481,8 @@ docker compose exec subtitle-scout node dist/cli/index.js translate-item "/hostr
 |------|------|--------|
 | `MEDIA_ROOTS` | 媒体根目录首启种子（逗号分隔，**容器内**路径 = `/hostroot` + 宿主机绝对路径，如 `/hostroot/mnt/media/Movies`；**首启播种一次**，之后以 dashboard 设置页为准）。留空即推荐做法——在设置页用目录浏览器点选 | 空 |
 | `TARGET_LANGUAGES` | 目标字幕语言（逗号分隔 BCP-47；设置页 target_languages 优先于此）。支持程度分层，见[目标语言支持分层](#目标语言支持分层) | `zh` |
-| `TMDB_BASE_URL` / `TMDB_PROXY_URL` | TMDB 反代/代理（墙内直连常被墙时用；网络层基建，key 本身在向导里配） | 空 |
+| `TMDB_BASE_URL` / `TMDB_PROXY_URL` | TMDB 反代/代理（墙内直连常被墙时用；网络层基建，key 本身在向导里配）。配置示例见[大陆网络环境](#大陆网络环境tmdb-直连不通怎么办) | 空 |
+| `TMDB_IMAGE_BASE_URL` | TMDB 图片（海报等）基址。值含 `{path}` 时按模板整体替换（`{path}` = `/t/p/w400/xxx.jpg` 这样的完整图片路径）；不含则作为 `https://image.tmdb.org` 的前缀替换 | 空 |
 | `TZ` | 容器时区（影响日志与"今天"统计） | `Asia/Shanghai` |
 | `SKIP_CHINESE_ORIGIN` | 国产内容跳过处理 | `true` |
 | `TRANSLATE_CRITIC` | 语义判官开关（关闭后仅靠确定性质量闸，仍 fail-closed） | `on` |
