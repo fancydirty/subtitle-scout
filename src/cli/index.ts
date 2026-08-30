@@ -22,7 +22,7 @@ import { makeRealFetchSourceSub } from './fetchSourceSub.js'
 import {
   checkAssrt, checkOpenSubtitles, checkZimuku, checkLlm, checkTmdb, checkMediaRoots,
   checkDatabase, checkStuckJobs, checkMountCapabilities, checkJimaku, checkR3sub, checkSubdl, checkSubhd,
-  formatDoctorReport, overallOk, withTimeout, type DoctorResult,
+  formatDoctorReport, overallOk, withTimeout, relevantSourceForDoctor, type DoctorResult,
 } from './doctor.js'
 import { detectChallenge } from '../adapters/providers/yunsuo.js'
 import { ZIMUKU_BASE } from '../adapters/providers/zimuku.js'
@@ -788,6 +788,8 @@ async function cmdDoctor() {
         const repo = new SettingsRepo(snapDb)
         for (const name of SECRET_NAMES) secretSnap.set(`secret:${name}`, repo.get(`secret:${name}`))
         for (const flag of ['SUBHD_ENABLED', 'ZIMUKU_ENABLED']) secretSnap.set(`provider:${flag}`, repo.get(`provider:${flag}`))
+        // 目标语言也进同一份快照（doctor 按语言分流无关源用）——与凭据同源同时刻，不另开连接。
+        secretSnap.set('target_languages', repo.get('target_languages'))
       } finally {
         snapDb.close()
       }
@@ -802,6 +804,17 @@ async function cmdDoctor() {
   // dashboard 向导，绝不再看 process.env（旧回落会让"compose 里塞了 env"的部署得到一张
   // 全绿的假体检单，而 watch 实际根本不认那些 env）。
   const cfg = makeAdapterConfigResolver(process.env, (k) => secretSnap.get(k) ?? null)
+
+  // 源×语言分流（2026-08-30 E2E 实案）：en 目标下未配置的 ASSRT 曾被记 ✗、把整体判成"2 项
+  // 未通过"——注册表世界里它对 en 用户是"无关"不是"缺失"。目标语言与 watch 同源
+  // （settings 行为级、未设默认 zh——languagesNow 同款 resolveTargetLanguages({}, …) 口径）。
+  // 分流规则见 doctor.ts relevantSourceForDoctor：不相关且未配 → skip；已配置照旧真探测；
+  // 相关但未配保持既有语义（assrt ✗ / jimaku skip）。TMDB/LLM/OS/SubDL 等相关项行为不变。
+  const { targetLanguages: doctorTargets } = resolveTargetLanguages({}, secretSnap.get('target_languages') ?? null)
+  const skipIrrelevant = (name: string): DoctorResult => ({
+    name, ok: true, skip: true,
+    detail: `未配置(与目标语言 ${doctorTargets.join(',')} 无关)——在 dashboard 设置页配置后 doctor 仍会体检`,
+  })
 
   // env 缺失走诊断项（✗ + hint、exit 1），不 requireEnv 急切崩溃（那是 exit 2 的”用法错误”通道）
   // TMDB 排最前:它是 watch 的硬前置(缺 key 直接拒绝启动),缺它 doctor 必须 ✗ 而非
@@ -818,7 +831,9 @@ async function cmdDoctor() {
   }
 
   const assrtToken = cfg.secret('ASSRT_TOKEN').value
-  if (!assrtToken) {
+  if (relevantSourceForDoctor(doctorTargets, 'assrt', !!assrtToken) === 'skip-irrelevant') {
+    results.push(skipIrrelevant('assrt'))
+  } else if (!assrtToken) {
     results.push({
       name: 'assrt', ok: false, detail: 'ASSRT_TOKEN 未配置',
       hint: '注册/获取：https://assrt.net → 登录 → 用户中心复制 API token。',
@@ -843,7 +858,9 @@ async function cmdDoctor() {
   }
 
   const jimakuKey = cfg.secret('JIMAKU_API_KEY').value
-  if (!jimakuKey) {
+  if (relevantSourceForDoctor(doctorTargets, 'jimaku', !!jimakuKey) === 'skip-irrelevant') {
+    results.push(skipIrrelevant('jimaku'))
+  } else if (!jimakuKey) {
     results.push({ name: 'jimaku', ok: true, skip: true, detail: '未配置(可选 provider)', hint: '在 dashboard 设置页配置 JIMAKU_API_KEY 启用（jimaku.cc 账号设置复制）。' })
   } else {
     const jk = new JimakuClient({ apiKey: jimakuKey })
@@ -854,7 +871,9 @@ async function cmdDoctor() {
   // 真实登录 / 带 key 搜索探测（与 dashboard validate 探针同构）。
   const r3subEmail = cfg.secret('R3SUB_EMAIL').value
   const r3subPassword = cfg.secret('R3SUB_PASSWORD').value
-  if (!r3subEmail || !r3subPassword) {
+  if (relevantSourceForDoctor(doctorTargets, 'r3sub', !!(r3subEmail && r3subPassword)) === 'skip-irrelevant') {
+    results.push(skipIrrelevant('r3sub'))
+  } else if (!r3subEmail || !r3subPassword) {
     results.push(await checkR3sub(null))
   } else {
     const r3 = new R3subClient({
@@ -874,7 +893,9 @@ async function cmdDoctor() {
   }
 
   const zimukuEnabled = cfg.flag('ZIMUKU_ENABLED').enabled
-  if (!zimukuEnabled) {
+  if (relevantSourceForDoctor(doctorTargets, 'zimuku', zimukuEnabled) === 'skip-irrelevant') {
+    results.push(skipIrrelevant('zimuku'))
+  } else if (!zimukuEnabled) {
     results.push(await checkZimuku(null))
   } else {
     results.push(await checkZimuku({
@@ -886,8 +907,14 @@ async function cmdDoctor() {
     }))
   }
 
-  results.push(await checkSubhd(() =>
-    withTimeout(curlFetch(process.env.SUBHD_BASE_URL ?? SUBHD_BASE, { signal: AbortSignal.timeout(10_000) }).then((r) => r.status), 10_000, 'subhd')))
+  // subhd 是无 key 的 toggle 源：既有语义对 zh 目标是"无条件探首页可达性"（开关只管引擎出网，
+  // doctor 反正探的是公开首页）——保持不变；语言不相关且开关未开 → skip（开了就检，同上分流规则）。
+  if (relevantSourceForDoctor(doctorTargets, 'subhd', cfg.flag('SUBHD_ENABLED').enabled) === 'skip-irrelevant') {
+    results.push(skipIrrelevant('subhd'))
+  } else {
+    results.push(await checkSubhd(() =>
+      withTimeout(curlFetch(process.env.SUBHD_BASE_URL ?? SUBHD_BASE, { signal: AbortSignal.timeout(10_000) }).then((r) => r.status), 10_000, 'subhd')))
+  }
 
   const llmBase = cfg.secret('LLM_BASE_URL').value
   const llmKey = cfg.secret('LLM_API_KEY').value

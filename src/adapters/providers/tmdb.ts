@@ -92,10 +92,18 @@ export class TmdbClient {
   private dispatcherP: Promise<unknown>
   constructor(private opts: TmdbClientOpts) {
     this.fetchImpl = opts.fetchImpl ?? fetch
-    this.base = (opts.baseUrl ?? BASE).replace(/\/+$/, '')
-    this.dispatcherP = opts.proxyUrl
+    // 空白串一律视为未设（口径同 v2/secrets.ts 头注释）——2026-08-30 E2E 全新容器实测：
+    // stock compose 三份都写 `TMDB_BASE_URL: ${TMDB_BASE_URL:-}`，宿主不设时容器内是**空字符串**，
+    // `??` 不挡空串 → base='' → 所有请求 URL 变相对路径直接
+    // `TypeError: Failed to parse URL from /search/movie?...`，新装用户 100% 命中。
+    const rawBase = opts.baseUrl?.trim()
+    this.base = (rawBase || BASE).replace(/\/+$/, '')
+    // proxyUrl 同族：空白串不得启用 proxy 分支（'  ' 会让 ProxyAgent 构造抛 Invalid URL，
+    // dispatcherP 从此常驻拒绝态，每个请求都在 `await this.dispatcherP` 处裸炸）。
+    const proxyUrl = opts.proxyUrl?.trim() || undefined
+    this.dispatcherP = proxyUrl
       ? import('undici').then(
-          (u) => new u.ProxyAgent(opts.proxyUrl!),
+          (u) => new u.ProxyAgent(proxyUrl),
           (e) => { console.error(`TMDB_PROXY_URL 设置了但 undici 不可用，继续直连: ${String(e)}`); return undefined },
         )
       : Promise.resolve(undefined)

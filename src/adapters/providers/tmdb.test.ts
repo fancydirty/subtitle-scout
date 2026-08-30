@@ -790,6 +790,46 @@ describe('TmdbClient baseUrl/proxyUrl deployment knobs', () => {
     expect(await client.getOriginLanguage('tv', '1')).toBe('ja')
   })
 
+  // 2026-08-30 E2E 全新容器实测：stock compose 三份都写 `TMDB_BASE_URL: ${TMDB_BASE_URL:-}`——
+  // 宿主不设该变量时容器内是**空字符串**，`??` 不挡空串 → base='' → 所有请求 URL 变相对路径
+  // 直接 `TypeError: Failed to parse URL from /search/movie?...`，新装用户 100% 命中。
+  // 口径对齐 v2/secrets.ts 头注释：空白串 env 一律视为未设。
+  it('baseUrl 空串（compose `:-` 注入形态）→ 视为未设，仍打官方域', async () => {
+    const fetchImpl = vi.fn(async (_url: string | URL) => new Response(JSON.stringify({ results: [] }), { status: 200 }))
+    const client = new TmdbClient({
+      apiKey: 'k'.repeat(32), baseUrl: '', fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    await client.search('movie', 'The Matrix')
+    expect(String(fetchImpl.mock.calls[0][0]).startsWith('https://api.themoviedb.org/3')).toBe(true)
+  })
+
+  it('baseUrl 纯空白串 → 同样视为未设，仍打官方域', async () => {
+    const fetchImpl = vi.fn(async (_url: string | URL) => new Response(JSON.stringify({ results: [] }), { status: 200 }))
+    const client = new TmdbClient({
+      apiKey: 'k'.repeat(32), baseUrl: '  ', fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    await client.search('movie', 'The Matrix')
+    expect(String(fetchImpl.mock.calls[0][0]).startsWith('https://api.themoviedb.org/3')).toBe(true)
+  })
+
+  // proxyUrl 同族：空白串不得启用 proxy 分支（'  ' 会让 ProxyAgent 构造抛 Invalid URL，
+  // dispatcherP 拒绝后**每个**请求都在 `await this.dispatcherP` 处裸炸）。
+  it('proxyUrl 空串/纯空白串 → 不启用 proxy 分支（init 不含 dispatcher，请求正常直连）', async () => {
+    for (const proxyUrl of ['', '  ']) {
+      let seenInit: RequestInit | undefined
+      const fetchImpl = vi.fn(async (_url: string | URL, init?: RequestInit) => {
+        seenInit = init
+        return new Response(JSON.stringify({ results: [] }), { status: 200 })
+      })
+      const client = new TmdbClient({
+        apiKey: 'k'.repeat(32), proxyUrl, fetchImpl: fetchImpl as unknown as typeof fetch,
+      })
+      await client.search('movie', 'The Matrix')
+      expect(seenInit).toBeDefined()
+      expect('dispatcher' in (seenInit as Record<string, unknown>)).toBe(false)
+    }
+  })
+
   it('缺省零变化：URL 前缀仍为官方，init 不含 dispatcher 键', async () => {
     let seenInit: RequestInit | undefined
     const fetchImpl = vi.fn(async (_url: string | URL, init?: RequestInit) => {

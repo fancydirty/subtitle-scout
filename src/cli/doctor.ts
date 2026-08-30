@@ -1,4 +1,5 @@
 import { MIGRATIONS } from '../v2/db.js'
+import { sourcesForLanguages, type SourceId } from '../core/sourceRegistry.js'
 import type { MountCapabilities } from '../files/mountCapabilities.js'
 
 export interface DoctorResult {
@@ -8,6 +9,27 @@ export interface DoctorResult {
   skip?: boolean
   detail: string
   hint?: string
+}
+
+/** doctor 按目标语言分流无关源（2026-08-30 E2E 实案：en 目标下未配置的 ASSRT 被记 ✗，整体判成
+ *  "2 项未通过"，还把 agent 带偏去推荐中文源——源×语言注册表（core/sourceRegistry.ts）世界里，
+ *  ASSRT/subhd/zimuku/r3sub 对 en 用户是"无关"不是"缺失"）。
+ *
+ *  纯分流判据，cmdDoctor 接线层消费：
+ *  - 'skip-irrelevant'：语言不相关**且**未配置 → 接线层直接 push 一条 skip 结果，不调真探测；
+ *  - 'probe'：其余一切 → 走既有接线语义不动——已配置的照旧真探测（用户配了就检，哪怕语言
+ *    不相关）；相关但未配的保持现状（assrt 对 zh 是 ✗、jimaku 对 ja 是 skip，由接线层决定，
+ *    本函数不越权改判）。
+ *  targets 空沿用 sourcesForLanguages 的 fail-open（全部相关）；TMDB/LLM/db 等非"字幕源"检查
+ *  项不经过本函数。 */
+export function relevantSourceForDoctor(
+  targets: readonly string[],
+  sourceId: SourceId,
+  configured: boolean,
+): 'probe' | 'skip-irrelevant' {
+  if (configured) return 'probe'
+  const relevant = sourcesForLanguages(targets).some((s) => s.id === sourceId)
+  return relevant ? 'probe' : 'skip-irrelevant'
 }
 
 export async function checkAssrt(assrt: { quota(): Promise<{ status: number; user?: { quota: number } }> }): Promise<DoctorResult> {

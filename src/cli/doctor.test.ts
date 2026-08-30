@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { checkAssrt, checkOpenSubtitles, checkZimuku, checkJimaku, checkR3sub, checkSubdl, checkSubhd, checkLlm, checkTmdb, checkMediaRoots, formatDoctorReport, overallOk, withTimeout, checkDatabase, checkStuckJobs, checkMountCapabilities } from './doctor.js'
+import { checkAssrt, checkOpenSubtitles, checkZimuku, checkJimaku, checkR3sub, checkSubdl, checkSubhd, checkLlm, checkTmdb, checkMediaRoots, formatDoctorReport, overallOk, withTimeout, checkDatabase, checkStuckJobs, checkMountCapabilities, relevantSourceForDoctor } from './doctor.js'
 import { MIGRATIONS } from '../v2/db.js'
 
 describe('doctor 远端三项', () => {
@@ -306,5 +306,39 @@ describe('checkR3sub / checkSubdl（registry spec §4.4）', () => {
     const r = await checkSubdl(async () => { throw new Error('HTTP 401') })
     expect(r).toMatchObject({ name: 'subdl', ok: false })
     expect(r.hint).toBeDefined()
+  })
+})
+
+// 2026-08-30 E2E 实测（en 目标）：未配置的 ASSRT 被记 ✗，整体判成"2 项未通过"，还把 agent 带偏
+// 去推荐中文源——源×语言注册表世界里，ASSRT/subhd/zimuku/r3sub 对 en 用户是"无关"不是"缺失"。
+// 本函数是 cmdDoctor 接线层的分流判据：只回答"该不该短路成 skip-irrelevant"；'probe' 表示
+// 走既有接线语义（相关但未配保持现状：assrt 对 zh 是 ✗、jimaku 对 ja 是 skip，由接线层决定）。
+describe('relevantSourceForDoctor（doctor 按目标语言分流无关源）', () => {
+  it('相关但未配（zh 目标 × assrt）→ probe（保持现状语义：✗ 还是 skip 由接线层决定）', () => {
+    expect(relevantSourceForDoctor(['zh'], 'assrt', false)).toBe('probe')
+  })
+  it('不相关且未配（en 目标 × assrt）→ skip-irrelevant', () => {
+    expect(relevantSourceForDoctor(['en'], 'assrt', false)).toBe('skip-irrelevant')
+  })
+  it('不相关但已配（en 目标 × assrt）→ probe（用户配了就检）', () => {
+    expect(relevantSourceForDoctor(['en'], 'assrt', true)).toBe('probe')
+  })
+  it("'*' 通用源（subdl/opensubtitles）对任何目标恒 probe", () => {
+    expect(relevantSourceForDoctor(['en'], 'subdl', false)).toBe('probe')
+    expect(relevantSourceForDoctor(['ja'], 'opensubtitles', false)).toBe('probe')
+  })
+  it('targets 空 → fail-open 全相关 → probe（sourcesForLanguages 既有口径）', () => {
+    expect(relevantSourceForDoctor([], 'assrt', false)).toBe('probe')
+  })
+  it('BCP-47 主码归一：zh-Hant 目标 × subhd/zimuku → probe', () => {
+    expect(relevantSourceForDoctor(['zh-Hant'], 'subhd', false)).toBe('probe')
+    expect(relevantSourceForDoctor(['zh-Hant'], 'zimuku', false)).toBe('probe')
+  })
+  it('ja 目标 × jimaku → probe；zh 目标 × jimaku 未配 → skip-irrelevant', () => {
+    expect(relevantSourceForDoctor(['ja'], 'jimaku', false)).toBe('probe')
+    expect(relevantSourceForDoctor(['zh'], 'jimaku', false)).toBe('skip-irrelevant')
+  })
+  it('多目标并集：en,zh × assrt 未配 → probe（zh 在场即相关）', () => {
+    expect(relevantSourceForDoctor(['en', 'zh'], 'assrt', false)).toBe('probe')
   })
 })
