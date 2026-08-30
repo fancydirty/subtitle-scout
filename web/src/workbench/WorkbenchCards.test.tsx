@@ -15,6 +15,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { render, screen, cleanup, within } from '@testing-library/react'
 import { I18nProvider } from '../i18n/useT.js'
 import { RunCard } from './WorkbenchCards.js'
+import type { Target } from './targetState.js'
 import { zh } from '../i18n/zh.js'
 
 afterEach(cleanup)
@@ -56,12 +57,11 @@ describe('RunCard 步骤条（StageBar）', () => {
     expect(nodes[2]!.getAttribute('data-stage')).toBe('translate')
   })
 
-  it('字幕流：stage=download 点亮第 2 节点（四段与翻译流不同）', () => {
+  // 🔴 Task 9：字幕流的四步条**退役**（被覆盖格 + ticker 取代，见下面的新形态 describe）。
+  // StageBar 组件本身与翻译流用法保留——上面那两条翻译流用例就是它的现行守卫。
+  it('🔴 字幕流不再画四步条（stage=download 映射得进 SUBTITLE_STAGES 也不画——Task 9 退役）', () => {
     const { container } = mount({ kind: 'subtitle', stage: 'download' })
-    const nodes = container.querySelectorAll('.wb-stage-node')
-    expect(nodes.length).toBe(4)
-    expect(nodes[1]!.getAttribute('data-stage')).toBe('download')
-    expect(nodes[1]!.getAttribute('data-stage-active')).toBe('true')
+    expect(container.querySelectorAll('.wb-stage-node').length).toBe(0)
   })
 
   // 阳性对照 + 诚实降级：阶段不在本流的 4 段里（比如字幕流收到 glossary），
@@ -105,8 +105,10 @@ describe('RunCard 步骤条（StageBar）', () => {
   // 共同前缀一被截断，三个节点就退化成同一个字符串。
   // 所以判据有两条：整串互不相同，**且截断到首字后仍互不相同**——后者才是
   // 截图上真正坏掉的那条，也是节点文案必须避开共同前缀的原因。
+  // ⚠️ Task 9 起只遍历翻译流：字幕流的四步条已退役（上面那条退役用例在守），
+  // RunCard 挂 kind='subtitle' 再也渲染不出 .wb-stage-label。
   it('🔴 一张卡片里的四个节点标签互不相同（截断到首字也不许撞）', () => {
-    for (const [kind, stage] of [['subtitle', 'review'], ['translate', 'translate']] as const) {
+    for (const [kind, stage] of [['translate', 'translate']] as const) {
       cleanup()
       const { container } = mount({ kind, stage })
       const labels = Array.from(container.querySelectorAll('.wb-stage-label')).map((n) =>
@@ -169,9 +171,11 @@ describe('RunCard cue 级进度条', () => {
     expect(container.querySelector('.wb-run-step')).toBeNull()
   })
 
-  it('无 cue 时步骤文案仍走 .wb-run-step', () => {
+  // ⚠️ Task 9 起 .wb-run-step 是翻译台专属（字幕台的步骤句改由 ticker 承载）：
+  // 翻译早段（source/glossary，cue 还没来）仍靠它上屏。
+  it('无 cue 时步骤文案仍走 .wb-run-step（翻译台早段）', () => {
     const { container } = mount({
-      kind: 'subtitle', stage: 'download', stepLabel: '正在搜源',
+      kind: 'translate', stage: 'source', stepLabel: '正在搜源',
     })
     expect(container.querySelector('.wb-run-step')!.textContent).toBe('正在搜源')
   })
@@ -221,6 +225,55 @@ describe('RunCard 日志合并', () => {
     // 阳性对照：更早的行必须已经被切掉
     expect(text).not.toContain('l1')
     expect(text).not.toContain('l2')
+  })
+})
+
+// ── 🔴 Task 9：字幕分支的新形态——覆盖格 + ticker 取代四步条与 0/N 死进度条 ──
+// 生产实测的那个 bug：作品级 done 在整轮装盘期间恒 0（total=N），进度条一根死条。
+// targets 在场时字幕卡改画覆盖格（逐格状态）+ ticker；缺席（旧后端）回退旧进度条。
+describe('🔴 RunCard 字幕分支：覆盖格 + ticker（Task 9 装配）', () => {
+  const gridTargets: Target[] = [
+    { key: 's01e01', label: 'E01', state: 'installed' },
+    { key: 's01e02', label: 'E02', state: 'active' },
+  ]
+
+  it('🔴 targets 在场 → 覆盖格上屏，0/N 进度条与 .wb-run-step 都不画', () => {
+    const { container } = mount({
+      kind: 'subtitle', stage: 'install',
+      progress: { done: 0, total: 2 },
+      stepLabel: '正在安装', stepTool: 'install_subtitle',
+      targets: gridTargets,
+    })
+    expect(container.querySelector('[data-testid="wb-grid-count"]')).toBeTruthy()
+    expect(container.querySelectorAll('[data-testid="wb-grid-cell"]').length).toBe(2)
+    // 0/N 死条与旧步骤行都退役了
+    expect(container.querySelector('[role="progressbar"]')).toBeNull()
+    expect(container.querySelector('.wb-card-progress')).toBeNull()
+    expect(container.querySelector('.wb-run-step')).toBeNull()
+    expect(container.querySelectorAll('.wb-stage-node').length).toBe(0)
+    // ticker：raw 工具 id 经 tickerPhrase 词表翻译后上屏（不是 raw 串）
+    expect(container.querySelector('[data-testid="wb-ticker"]')!.textContent).toContain(zh.wb_step_install)
+    expect(container.textContent).not.toContain('install_subtitle')
+  })
+
+  it('targets 缺席 → 回退旧 done/total 进度条（旧后端/识别兼容）', () => {
+    const { container } = mount({ kind: 'subtitle', progress: { done: 1, total: 4 } })
+    expect(container.querySelector('[role="progressbar"]')).toBeTruthy()
+    expect(container.querySelector('.wb-card-progress')!.textContent).toContain('1 / 4')
+    expect(container.querySelector('[data-testid="wb-grid-count"]')).toBeNull()
+    expect(container.querySelector('[data-testid="wb-grid-pill"]')).toBeNull()
+  })
+
+  it('🔴 翻译分支一字不动：targets 即使误传也不画覆盖格/ticker，StageBar + cue 条照旧', () => {
+    const { container } = mount({
+      kind: 'translate', stage: 'translate',
+      cueProgress: { done: 30, total: 194 },
+      targets: gridTargets, stepTool: 'update_row',
+    })
+    expect(container.querySelectorAll('.wb-stage-node').length).toBe(4)
+    expect(container.querySelector('[data-cue-bar]')).toBeTruthy()
+    expect(container.querySelector('[data-testid="wb-grid-count"]')).toBeNull()
+    expect(container.querySelector('[data-testid="wb-ticker"]')).toBeNull()
   })
 })
 

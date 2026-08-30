@@ -7,6 +7,9 @@
 import { useState, type HTMLAttributes, type ReactNode } from 'react'
 import { backdropUrl } from '../api/client.js'
 import { useT } from '../i18n/useT.js'
+import { CoverageGrid } from './CoverageGrid.js'
+import { ActivityTicker } from './ActivityTicker.js'
+import type { Target } from './targetState.js'
 
 /** 卡片的图。加载失败 → 交给父级走无图降级（父级据 `failed` 置 data-noimg）。
  *  `alt=""` 是刻意的：图是纯装饰，标题就在旁边的文字里，读屏器再念一遍片名是噪音。 */
@@ -80,9 +83,10 @@ export function SplitHero({
 }
 
 /** 阶段步骤条：4 个节点，当前阶段高亮 + pulse 动画，已完成阶段打勾。
- *  字幕流: source → download → review → install
- *  翻译流: source → glossary → translate → install（用 cueProgress 画进度）
- *  调用方传入 stage（来自 stageOf(tool)），据此确定高亮位置。 */
+ *  翻译流: source → glossary → translate → install（用 cueProgress 画进度）。
+ *  ⚠️ Task 9 起**字幕流对它的使用退役**（字幕卡改画覆盖格 + ticker）——组件与
+ *  SUBTITLE_STAGES 保留（语义正确、翻译台在用 kind 分流），只是 RunCard 不再以
+ *  kind='subtitle' 调它。调用方传入 stage（来自 stageOf(tool)），据此确定高亮位置。 */
 const SUBTITLE_STAGES = ['source', 'download', 'review', 'install'] as const
 const TRANSLATE_STAGES = ['source', 'glossary', 'translate', 'install'] as const
 
@@ -128,7 +132,11 @@ function mergeLogLines(lines: string[]): string[] {
 }
 
 /**
- * 「正在跑」的卡片。SplitHero + 右栏阶段步骤条 / 进度 / cue 进度 / log。
+ * 「正在跑」的卡片。SplitHero + 右栏两套形态：
+ *  · 翻译分支（kind='translate'）：阶段步骤条 / cue 进度 / log——Task 9 一字不动。
+ *  · 字幕分支（kind='subtitle' 或缺省）：targets 在场 → 覆盖格 + ticker（Task 9 装配，
+ *    四步线性条与 0/N 作品级死进度条就此退役）；targets 缺席（旧后端/快照没带）→
+ *    回退旧 done/total 进度条兜底。
  *
  * `progress` 是 `{ done, total }`；index/total 为 null 时不传——**诚实的 null**，
  * 不编 "0/0"、不画 progressbar。`cueProgress` 是翻译的 cue 级进度（done/total 句），
@@ -137,7 +145,7 @@ function mergeLogLines(lines: string[]): string[] {
  * 有图时不渲染 `.wb-run-fade`（不许再罩一层把图压暗）。
  */
 export function RunCard(
-  { face, stage, kind, progress, cueProgress, staleNote, stepLabel, logLines, elapsedLabel }:
+  { face, stage, kind, progress, cueProgress, staleNote, stepLabel, logLines, elapsedLabel, targets, stepTool }:
   {
     face: WorkbenchCardFace
     stage?: string | null
@@ -148,6 +156,12 @@ export function RunCard(
     stepLabel?: string | null
     logLines?: string[]
     elapsedLabel?: string | null
+    /** 覆盖格的全量 per-target 快照（字幕分支专用；翻译分支不读它）。 */
+    targets?: Target[] | null
+    /** raw 工具 id，只交给 ActivityTicker。⚠️ 这**不违反**上面「禁塞 raw tool id」的
+     *  纪律：那条禁的是把 raw 串画上屏幕，而 ActivityTicker 内部走 tickerPhrase 词表
+     *  翻译（未知工具落 wb_step_working），吐上屏的永远是译文，raw id 不过是查表键。 */
+    stepTool?: string | null
   },
 ) {
   const { t } = useT()
@@ -162,6 +176,10 @@ export function RunCard(
   const cueFinite = typeof cueDone === 'number' && Number.isFinite(cueDone)
     && typeof cueTotal === 'number' && Number.isFinite(cueTotal)
     && cueTotal > 0
+  const isTranslate = kind === 'translate'
+  // 字幕分支的覆盖格判据：非空数组才算在场（空数组 = 没有覆盖情况可画，走兜底）。
+  // 翻译分支恒 null——即使误传 targets 也不改翻译卡的形态（Task 9「翻译分支一字不动」）。
+  const gridTargets = !isTranslate && Array.isArray(targets) && targets.length > 0 ? targets : null
   return (
     <SplitHero
       className="wb-run-card"
@@ -171,7 +189,9 @@ export function RunCard(
     >
       <span className="wb-card-title">{face.title}</span>
       <span className="wb-card-sub">{subtitle}</span>
-      <StageBar stage={stage ?? null} kind={kind ?? 'subtitle'} />
+      {/* 四步线性条只剩翻译台在用（字幕台 Task 9 退役，改画覆盖格）。 */}
+      {isTranslate ? <StageBar stage={stage ?? null} kind="translate" /> : null}
+      {gridTargets ? <CoverageGrid targets={gridTargets} /> : null}
       {cueFinite ? (
         <div className="wb-cue-progress">
           <span className="wb-cue-label">{stepLabel ?? ''} {cueProgress!.done} / {cueProgress!.total} {t('wb_run_cues_done_suffix')}</span>
@@ -190,7 +210,9 @@ export function RunCard(
           </div>
         </div>
       ) : null}
-      {finite && !cueFinite ? (
+      {/* 作品级 done/total 进度条：覆盖格在场时**不画**——整轮装盘期间 done 恒 0（0/N
+          死条，Task 9 要终结的那个 bug），逐格状态才是真读数。targets 缺席时保留兜底。 */}
+      {finite && !cueFinite && !gridTargets ? (
         <>
           <span className="wb-card-progress">
             {`${done} / ${total} ${t('wb_run_files_done_suffix')}`}
@@ -209,7 +231,10 @@ export function RunCard(
           </div>
         </>
       ) : null}
-      {stepLabel && !cueFinite ? <span className="wb-run-step">{stepLabel}</span> : null}
+      {/* 字幕分支的「正在做什么」由 ticker 承载（.wb-run-step 退役；tool 为 null 时
+          组件自己不渲染）。放在兜底进度条之后 = 旧 .wb-run-step 的位置。 */}
+      {!isTranslate ? <ActivityTicker tool={stepTool ?? null} object={null} /> : null}
+      {isTranslate && stepLabel && !cueFinite ? <span className="wb-run-step">{stepLabel}</span> : null}
       {lines.length > 0 ? (
         <div className="wb-run-log" role="log">
           {lines.map((line, i) => (

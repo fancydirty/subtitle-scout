@@ -1330,6 +1330,114 @@ describe('🔴-1 首连不是重连（审计：每次挂载多打一次 /health 
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
+// 🔴 Task 9：字幕卡装配覆盖格 + ticker，四步线性条与 0/N 死进度条退役
+// ═══════════════════════════════════════════════════════════════════════════
+// 生产实测的那个 0/N bug：作品级 done 在整轮装盘期间恒为 0（total=N），进度条一动不动，
+// 用户看到的是一根死条——而后端明明在逐集装盘。progress 帧现在带全量 targets 快照，
+// 字幕卡改画覆盖格（逐格状态）+ ticker（正在做什么），四步线性条只留给翻译台。
+describe('🔴 Task 9：字幕卡覆盖格 + ticker（四步条退役、0/N 死进度条终结）', () => {
+  /** 三格剧集快照（key 唯一）。data 是 Record<string, unknown>，形状照后端全量帧。 */
+  const targets3 = (states: Array<'pending' | 'active' | 'installed' | 'pending-source'>) =>
+    states.map((state, i) => ({ key: `s01e0${i + 1}`, label: `E0${i + 1}`, state }))
+
+  it('字幕卡渲染覆盖格而非四步条', async () => {
+    const view = renderPage()
+    await ready()
+    act(() => {
+      bus().emit(ev({
+        type: 'activity', message: '正在找字幕：Queued Show', title: 'Queued Show',
+        workbench: 'subtitle', data: { workId: 'tmdb:1' },
+      }))
+      bus().emit(ev({
+        type: 'progress', message: '第 0/3 个', title: 'Queued Show', workbench: 'subtitle',
+        data: { done: 0, total: 3, step: 'search_source', workId: 'tmdb:1', targets: targets3(['active', 'pending', 'pending']) },
+      }))
+    })
+    await waitFor(() => expect(screen.getByTestId('wb-grid-count')).toBeInTheDocument())
+    expect(screen.getAllByTestId('wb-grid-cell')).toHaveLength(3)
+    // 🔴 四步线性条退役：step='search_source' 映射得进 SUBTITLE_STAGES（旧实现必画）——
+    // 新形态下字幕卡上不许再有它。
+    expect(view.container.querySelector('.wb-stage-bar')).toBeNull()
+    // ticker 在场且是词表译文；raw 工具 id 不上屏（ActivityTicker 内部走 tickerPhrase）
+    expect(screen.getByTestId('wb-ticker').textContent).toContain(en.wb_step_search)
+    expect(screen.getByTestId('wb-run-card').textContent).not.toContain('search_source')
+  })
+
+  it('🔴 装盘推进：targets installed 数增长反映在计数行（0/N 死进度条回归锁）', async () => {
+    renderPage()
+    await ready()
+    act(() => {
+      bus().emit(ev({
+        type: 'activity', message: '正在找字幕：Queued Show', title: 'Queued Show',
+        workbench: 'subtitle', data: { workId: 'tmdb:1' },
+      }))
+      bus().emit(ev({
+        type: 'progress', message: '装盘', title: 'Queued Show', workbench: 'subtitle',
+        data: { done: 0, total: 3, step: 'install_subtitle', workId: 'tmdb:1', targets: targets3(['installed', 'active', 'pending']) },
+      }))
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('wb-grid-count').textContent).toContain(`1 ${en.wb_grid_installed}`)
+    })
+    // 🔴 0/N 那根死条不在场：作品级 done 恒 0，画出来就是一根一动不动的假条。
+    expect(screen.queryByRole('progressbar')).toBeNull()
+    expect(screen.getByTestId('wb-run-card').textContent).not.toContain(`0 / 3 ${en.wb_run_files_done_suffix}`)
+
+    // 第二帧：装盘推进（done 仍是 0——正是那个 bug 的形态），计数行必须动。
+    act(() => {
+      bus().emit(ev({
+        type: 'progress', message: '装盘', title: 'Queued Show', workbench: 'subtitle',
+        data: { done: 0, total: 3, step: 'install_subtitle', workId: 'tmdb:1', targets: targets3(['installed', 'installed', 'active']) },
+      }))
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('wb-grid-count').textContent).toContain(`2 ${en.wb_grid_installed}`)
+    })
+  })
+
+  it('收尾态 partial success：installed 与 pending-source 并存渲染', async () => {
+    renderPage()
+    await ready()
+    act(() => {
+      bus().emit(ev({
+        type: 'activity', message: '正在找字幕：Queued Show', title: 'Queued Show',
+        workbench: 'subtitle', data: { workId: 'tmdb:1' },
+      }))
+      bus().emit(ev({
+        type: 'progress', message: '收尾', title: 'Queued Show', workbench: 'subtitle',
+        data: { done: 0, total: 3, step: 'finalize', workId: 'tmdb:1', targets: targets3(['installed', 'pending-source', 'installed']) },
+      }))
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('wb-grid-cell-s01e02')).toHaveAttribute('data-state', 'pending-source')
+    })
+    expect(screen.getByTestId('wb-grid-cell-s01e01')).toHaveAttribute('data-state', 'installed')
+    const count = screen.getByTestId('wb-grid-count').textContent ?? ''
+    expect(count).toContain(`2 ${en.wb_grid_installed}`)
+    // pendingSource > 0 时那一段必须出现（0 时不出现——CoverageGrid.test 守）
+    expect(count).toContain(`1 ${en.wb_grid_pending_source}`)
+  })
+
+  it('targets 缺席（识别台/旧后端）→ 回退旧 done/total 进度条', async () => {
+    renderPage()
+    await ready()
+    act(() => {
+      bus().emit(ev({
+        type: 'progress', message: '第 2/5 个', title: 'Show A', workbench: 'subtitle',
+        data: { done: 2, total: 5 },
+      }))
+    })
+    const bar = await screen.findByRole('progressbar')
+    expect(bar).toHaveAttribute('aria-valuenow', '2')
+    expect(bar).toHaveAttribute('aria-valuemax', '5')
+    expect(screen.getByTestId('wb-run-card').textContent).toContain(`2 / 5 ${en.wb_run_files_done_suffix}`)
+    // 覆盖格没有数据就不画（不编一排全灰的假格子）
+    expect(screen.queryByTestId('wb-grid-count')).toBeNull()
+    expect(screen.queryByTestId('wb-grid-pill')).toBeNull()
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
 // 🟡-2 通道掉线 → 「你看到的读数可能已经过期」必须**说出来**
 // ═══════════════════════════════════════════════════════════════════════════
 // 审计实测（连接进入 CLOSED 之后）：

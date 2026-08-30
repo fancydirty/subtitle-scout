@@ -142,6 +142,8 @@ function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Cu
         lastStep: null,
         cueDone: null,
         cueTotal: null,
+        // 新作品开工：覆盖格归零——上一部的格子不许贴到新卡上（同 lastStep 归 null 的口径）。
+        targets: undefined,
       })
       return
     }
@@ -152,6 +154,8 @@ function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Cu
       const step = nonemptyString(d?.step)
       const cueDoneVal = num(d?.cueDone)
       const cueTotalVal = num(d?.cueTotal)
+      // 覆盖格 targets：后端每条里程碑帧带**全量**快照（非增量），所以本条有就整包覆盖。
+      const targetsVal = Array.isArray(d?.targets) ? d?.targets as Current['targets'] : undefined
       setCurrent((prev) => {
         const sameKind = prev?.kind === kind
         return {
@@ -164,6 +168,8 @@ function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Cu
           lastStep: step ?? (sameKind ? (prev?.lastStep ?? null) : null),
           cueDone: cueDoneVal ?? (sameKind ? (prev?.cueDone ?? null) : null),
           cueTotal: cueTotalVal ?? (sameKind ? (prev?.cueTotal ?? null) : null),
+          // 本条有就覆盖、缺席同台保留（节流帧不带 targets，不许把里程碑帧的格子抹掉）。
+          targets: targetsVal ?? (sameKind ? (prev?.targets ?? undefined) : undefined),
         }
       })
     }
@@ -516,6 +522,14 @@ function TabPanel({
   return (
     <div>
       <div className="wb-section-head">{t('wb_section_running')}</div>
+      {/* Task 9（字幕分支装配覆盖格 + ticker）——传给 RunCard 的三个新读数：
+          · targets 直接透传（SSE progress / health 快照同型同源）；
+          · stepTool 是 raw 工具 id——ActivityTicker 内部走 tickerPhrase 词表翻译，
+            raw id 不上屏（不违反 stepLabel 的禁令）。object 暂无独立来源（后端 trace
+            桥接帧只带工具名），恒 null → ticker 走降级句（旧 8 句语义）；等 object
+            通道接通后具体对象句自动生效；
+          · log 只留给翻译台：字幕卡的 5 行滚动 log 被 ticker 取代（useStepLog 是
+            hook 不能条件调用，故在这里掐输出，不掐 hook 本身）。 */}
       {current && current.kind === tab ? (
         <RunCard
           face={{
@@ -537,7 +551,9 @@ function TabPanel({
               : null
           }
           stepLabel={current.lastStep ? t(stepActionKey(current.lastStep)) : null}
-          logLines={logLines}
+          targets={current.targets ?? null}
+          stepTool={current.lastStep ?? null}
+          logLines={current.kind === 'translate' ? logLines : []}
           elapsedLabel={typeof current.startedAt === 'number' ? relAgoLabel(now - current.startedAt, lang) : null}
           staleNote={live === 'live' ? null : t('wb_run_maybe_stale')}
         />

@@ -280,6 +280,31 @@ describe('在跑卡上的元素不许用 --color-accent（新栈近黑 = 隐形�
   })
 })
 
+// ── Task 9 装配：字幕卡的新骨架（覆盖格 + ticker）─────────────────────────────
+// 四步线性条从字幕卡退役后，卡上的动感全靠这两块承载——样式段丢了组件就成裸 DOM。
+// 强调色纪律与上面 INK_ON_CARD 同一条：--color-accent 被 scout.css 遮蔽成近黑，
+// 深色卡上等于隐形，覆盖格/ticker 一律走 --color-ring。
+describe('覆盖格 + ticker 样式在活动页段里（Task 9 字幕卡新形态的骨架）', () => {
+  it('🔴 .wb-grid / .wb-grid-pill / .wb-ticker 的规则块都存在', () => {
+    for (const sel of ['.wb-grid {', '.wb-grid-cell {', '.wb-grid-pill {', '.wb-ticker {', '.wb-ticker-dot {']) {
+      expect(WB_CSS, `${sel} 不在活动页段里——覆盖格/ticker 会渲染成裸 DOM`).toContain(sel)
+    }
+  })
+
+  it('🔴 覆盖格/ticker 的着色块不引用 --color-accent（近黑 = 隐形）', () => {
+    for (const sel of [
+      ".wb-grid-cell[data-state='installed']",
+      ".wb-grid-cell[data-state='active']",
+      ".wb-grid-pill[data-state='installed']",
+      '.wb-ticker-dot',
+    ]) {
+      const body = new RegExp(`${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*(?:,[^{]*)?\\{([^}]*)\\}`).exec(WB_CSS)?.[1]
+      expect(body, `选择器 ${sel} 在活动页段里找不到——改名了就把这条一起改`).toBeTruthy()
+      expect(body).not.toContain('var(--color-accent)')
+    }
+  })
+})
+
 // ── 2026-08-26 视觉验收抓到的「四个节点同显一个词」 ────────────────────────
 // 步骤条节点当初写成 `flex: 1`，它展开是 `1 1 0%`：flex-basis 0 让四格恒等宽 25%，
 // 不管文案多长。窄卡上标签立刻撞到 .wb-stage-label 的 nowrap + ellipsis，中文
