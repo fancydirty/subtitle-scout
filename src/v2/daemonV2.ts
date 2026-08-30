@@ -916,13 +916,14 @@ export class ScoutDaemonV2 {
     }
     // 识别工作台**收工**（审计 🔴-2：F-6 的同型小尺度复发）。
     //
-    // 为什么必须有这一条：ScoutEventBus 的 current 快照只在收到带 workbench 的事件时推进，
-    // 只在收到不带 workbench 的事件时清空。阶段 2 结束到阶段 3 第一条 emit（:687）之间，
-    // 隔着 judge（:638，大库上分钟级）与停牌复查闸（:650）**两段无 emit 的时间**。
-    // 没有这一条的话，/api/v2/health 在这几分钟里会稳定地说「正在识别 W9，第 47/47 个」
-    // ——而识别台早已空了。那正是 F-6 被修的那个缺陷，只是尺度从"跨巡检"缩到"跨阶段"。
+    // 为什么必须有这一条：ScoutEventBus 的 currents 三槽快照只在收到带 workbench 的事件时
+    // 推进对应槽，只在收到不带 workbench 的事件时清空全部三槽。阶段 2 结束到阶段 3 第一条
+    // emit（:687）之间，隔着 judge（:638，大库上分钟级）与停牌复查闸（:650）**两段无 emit
+    // 的时间**。没有这一条的话，/api/v2/health 在这几分钟里 identify 槽会稳定地说
+    // 「正在识别 W9，第 47/47 个」——而识别台早已空了。那正是 F-6 被修的那个缺陷，
+    // 只是尺度从"跨巡检"缩到"跨阶段"。
     //
-    // 不带 workbench = 归属巡检级 = 总线据此清空 current（与巡检开始/完成/失败同一口径）。
+    // 不带 workbench = 归属巡检级 = 总线据此清空全部三槽（与巡检开始/完成/失败同一口径）。
     // 只在真的识别过东西时发，空跑不发（避免每天给用户一条"识别完成 0 个"的噪音）。
     if (identifyQueue.length > 0) {
       this.emit({ type: 'activity', message: `识别完成，处理了 ${identifyQueue.length} 个目录` })
@@ -1026,7 +1027,7 @@ export class ScoutDaemonV2 {
         // 里程碑帧稀疏、会被 trace 帧洪流挤出 50 槽 replay 缓冲，中途打开时 replay 里就一条带
         // targets 的都没有 → 覆盖格建不起来。让每条桥接帧都捎上当前快照，replay 里任意一条即可重建。
         // **不打 milestone**：它是高频源，仍归 1s 节流管辖（否则 trace 帧洪流刷屏）；快照在
-        // 总线的节流门之前落进 current，故即便这一条被折叠不推送，它的 targets 也已进 current。
+        // 总线的节流门之前落进 subtitle 槽，故即便这一条被折叠不推送，它的 targets 也已进快照。
         this.emit({
           type: 'progress',
           message: e.tool,
@@ -1165,7 +1166,13 @@ export class ScoutDaemonV2 {
     }
     // 字幕工作台**收工**（同上，审计 🔴-2）。翻译流已不再挂在巡检尾部（2026-08-20 用户
     // 裁决：C32 节流废弃，翻译改为 run() 里的独立 translateLoop 车道持续排干）——这里若
-    // 不清 current，它会一直停在最后一个字幕作品上，直到明天巡检开始才被清掉。
+    // 不清，subtitle 槽会一直停在最后一个字幕作品上，直到明天巡检开始才被清掉。
+    //
+    // ⚠️ 三槽化（2026-08-30）后的既有残留，如实记：这条无 workbench 的收工事件语义上只该
+    // 清 subtitle 槽，现状却把 in-flight 的 translate 槽一并抹掉（总线口径：巡检级 = 三槽
+    // 全清）。属"发布方零改动"裁决下的已知代价，且会**自愈**——translateLoop 的下一条
+    // trace 桥接/progress 帧就把 translate 槽重建回来（每帧带全量快照）。真要根治得给
+    // 收工事件分工作台语义，那是总线口径的变更，不在这里顺手改。
     if (subtitleQueue.length > 0) {
       this.emit({ type: 'activity', message: `字幕工作台跑完，处理了 ${subtitleQueue.length} 个作品` })
     }

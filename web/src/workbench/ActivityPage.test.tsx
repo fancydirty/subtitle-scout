@@ -1585,6 +1585,63 @@ describe('🔴 三槽 currents：subtitle/translate 两 tab 各读各槽（双�
     // 字幕 tab 的在跑卡没有被识别帧顶掉
     expect(screen.getByTestId('wb-run-card').textContent).toContain('Show A')
   })
+
+  // ── 🔴 useStepLog 车道过滤（三槽化唯一的行为级伴随改动，复核补锁）──────────────
+  // 这份滚动 log 只被翻译卡渲染。单槽时代字幕事件一来整张翻译卡都没了，log 被字幕 step
+  // 污染这件事**不可见**；三槽下翻译卡常驻，不过滤的话：字幕 progress 的 step 会 append
+  // 进翻译卡的 log、字幕 activity 会把翻译卡的 log 清空。此用例在无车道过滤的实现上必红。
+  it('🔴 翻译卡 log 只收翻译车道：字幕车道的 step 不窜入、字幕开工不清空', async () => {
+    renderPage()
+    await ready()
+    // ① 翻译车道把 log 建起来（两条不同 step，免得 mergeLogLines 折叠成一行）。
+    // ⚠️ 同类型事件分开 act：四层 Context 每型只存"最后一条"，同一拍连发两条 progress
+    // 会让第一条根本到不了 effect。
+    act(() => {
+      bus().emit(ev({
+        type: 'activity', message: '正在翻译：Trans Show', title: 'Trans Show',
+        workbench: 'translate', data: { workId: 'tmdb:9' },
+      }))
+    })
+    act(() => {
+      bus().emit(ev({
+        type: 'progress', message: 'g', title: 'Trans Show', workbench: 'translate',
+        data: { done: 0, total: 4, step: 'freeze_glossary', workId: 'tmdb:9' },
+      }))
+    })
+    act(() => {
+      bus().emit(ev({
+        type: 'progress', message: 't', title: 'Trans Show', workbench: 'translate',
+        data: { done: 0, total: 4, step: 'update_rows', workId: 'tmdb:9' },
+      }))
+    })
+    fireEvent.click(screen.getByRole('tab', { name: en.wb_tab_translate }))
+    // 阳性对照：log 确实建起来了（一个"从不 append"的坏实现在这里就红）
+    await waitFor(() => {
+      expect(screen.getByTestId('wb-run-card').querySelectorAll('[data-log-line]')).toHaveLength(2)
+    })
+    const before = [...screen.getByTestId('wb-run-card').querySelectorAll('[data-log-line]')]
+      .map((el) => el.textContent)
+    expect(before).toEqual([en.wb_step_glossary, en.wb_step_translate])
+
+    // ② 字幕车道并发插进来：开工 + 带 step 的 progress（download → 'Downloading'）
+    act(() => {
+      bus().emit(ev({
+        type: 'activity', message: '正在找字幕：Queued Show', title: 'Queued Show',
+        workbench: 'subtitle', data: { workId: 'tmdb:1' },
+      }))
+      bus().emit(ev({
+        type: 'progress', message: 'd', title: 'Queued Show', workbench: 'subtitle',
+        data: { done: 0, total: 3, step: 'download_candidate', workId: 'tmdb:1' },
+      }))
+    })
+
+    // 🔴 翻译卡的 log：行数不变、内容不变、无字幕词条窜入、没有被清空
+    const card = screen.getByTestId('wb-run-card')
+    expect(card.textContent).toContain('Trans Show')
+    const after = [...card.querySelectorAll('[data-log-line]')].map((el) => el.textContent)
+    expect(after).toEqual(before)
+    expect(card.textContent).not.toContain(en.wb_step_download)
+  })
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
