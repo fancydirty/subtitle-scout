@@ -114,7 +114,7 @@ export interface ScoutCurrent {
   cueTotal: number | null
   /** 活动卡覆盖格 per-target 状态（2026-08-30）。字幕流才有；识别/翻译恒 undefined。
    *  全量数组——每条里程碑帧带完整快照，重连后下一帧即完整真相，免增量对账。 */
-  targets?: Array<{ key: string; label: string; state: string }>
+  targets?: Array<{ key: string; label: string; state: 'pending' | 'active' | 'installed' | 'pending-source' }>
 }
 
 export interface ScoutEvent extends ScoutEventInput {

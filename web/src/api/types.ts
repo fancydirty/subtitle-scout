@@ -378,6 +378,9 @@ export interface ScoutCurrentDTO {
   /** 翻译 cue 级进度（2026-08-21 活动页重做）。字幕/识别流恒 null。 */
   cueDone: number | null
   cueTotal: number | null
+  /** 活动卡覆盖格 per-target 状态（2026-08-30，对齐后端 ScoutCurrent.targets）。字幕流才有；
+   *  识别/翻译恒 undefined。全量数组——每条里程碑帧带完整快照，重连后下一帧即完整真相。 */
+  targets?: Array<{ key: string; label: string; state: 'pending' | 'active' | 'installed' | 'pending-source' }>
 }
 
 /** 一个认不出来的作品目录。**刻意只有两个字段**——后端点名的信息量边界
