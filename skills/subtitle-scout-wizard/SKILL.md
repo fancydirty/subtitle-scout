@@ -26,6 +26,18 @@ user in the user's language.** Two operating principles:
 
 ## Iron rules
 
+- **Interview before inspection.** Do not probe hosts, scan for existing containers, or
+  read local files (especially `.env` or any credential store) before the user names the
+  deployment target and hands things over. If you stumble onto credentials anywhere,
+  never enumerate or display them — they are out of scope unless the user explicitly
+  offers them. (Field-tested: an agent that inventoried the user's machines and listed
+  their credential files before asking a single question rightly alarmed them.)
+- **Credential verdicts come only from `POST /api/v2/setup/validate`.** The product
+  knows each provider's real auth shape (e.g. TMDB accepts both a v3 hex key via query
+  param and a v4 `eyJ…` JWT via Bearer header — a hand-rolled curl testing a v4 token
+  the v3 way returns 401 and produces a false "bad key" diagnosis; this exact
+  misdiagnosis happened in testing). Raw probes are allowed only to isolate *network*
+  reachability, never to judge a credential.
 - **Credentials go through the API into the DB, never into `.env`.** `.env` holds only
   `TZ` and network-layer infra (`TMDB_BASE_URL`/`TMDB_PROXY_URL`/`TMDB_IMAGE_BASE_URL`).
   Env credentials silently do nothing.
@@ -79,7 +91,11 @@ failure branch.
   exact 32-hex string.
 
 ### 5. Credential collection (routed by target language)
-- **Do**: collect TMDB + LLM triple (mandatory gate), then the subtitle sources for the
+- **Do**: first persist the interview's target language — `PUT /api/v2/settings` with
+  `{"target_languages":"<codes>"}` (it defaults to unset; skipping this leaves the
+  engine judging against the wrong language and the Settings page showing the wrong
+  source lineup — an agent under test caught this only by noticing the null itself).
+  Then collect TMDB + LLM triple (mandatory gate), then the subtitle sources for the
   user's language per the routing table in `references/credentials.md` (zh → ASSRT,
   r3sub, SubDL, OpenSubtitles + SubHD/Zimuku toggles; ja → Jimaku, OpenSubtitles,
   SubDL; other → OpenSubtitles, SubDL). Deliver the LLM tier warning; mainland users →
