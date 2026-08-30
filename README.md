@@ -569,6 +569,6 @@ This product uses the TMDB API but is not endorsed or certified by TMDB.
 
 ## License
 
-GPL-3.0-only — see [LICENSE](./LICENSE).
+AGPL-3.0-only — see [LICENSE](./LICENSE). Network use counts as distribution: if you run a modified Subtitle Scout as a service, you must offer its source to your users.
 
-GPL-3.0-only，全文见 [LICENSE](./LICENSE) 文件。
+AGPL-3.0-only，全文见 [LICENSE](./LICENSE) 文件。网络使用即分发：若你把修改版 Subtitle Scout 作为服务提供，须向其用户提供源码。

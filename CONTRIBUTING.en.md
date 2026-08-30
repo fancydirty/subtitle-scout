@@ -58,4 +58,6 @@ subtitle-scout/
 
 ## License
 
-Contributions are licensed under **GPL-3.0-only**.
+Contributions are licensed under **AGPL-3.0-only**.
+
+This is a maintainer-led project: contributions are welcome, but scope and direction decisions rest with the maintainer (no CLA for now).

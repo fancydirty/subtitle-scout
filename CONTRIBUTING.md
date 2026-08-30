@@ -142,5 +142,7 @@ subtitle-scout/
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the **GPL-3.0-only** license.
+By contributing, you agree that your contributions will be licensed under the **AGPL-3.0-only** license.
+
+本项目由维护者个人主导：贡献欢迎，但功能取舍与项目方向由维护者最终裁定（暂不设 CLA）。
 
