@@ -581,10 +581,17 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           })
         }
 
-        // 探测端点：任何态放行（前端 app-shell 靠它决定去 /setup、/login 还是正常渲染）
+        // 探测端点：任何态放行（前端 app-shell 靠它决定去 /setup、/login 还是正常渲染）。
+        // tmdbImageBase：TMDB 大陆可达线（2026-08-30）——TMDB_IMAGE_BASE_URL 是 daemon 的部署层
+        // env，前端拼海报/剧照 URL 要用（web/src/api/client.ts setTmdbImageBase）。挂在这里而非
+        // 新端点：AuthGate 首载必拉、三态都可达（海报登录后才用得上，提前拿到无害）。
+        // 空串视同未配置 → null。env 走注入面（opts.env，默认 process.env），与 deploy 展示同源。
         if (rawPath === '/api/v2/auth/status' && req.method === 'GET') {
           res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ initialized: auth.isInitialized(), authenticated: authed }))
+          res.end(JSON.stringify({
+            initialized: auth.isInitialized(), authenticated: authed,
+            tmdbImageBase: env.TMDB_IMAGE_BASE_URL || null,
+          }))
           return
         }
 

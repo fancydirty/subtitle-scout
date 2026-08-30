@@ -1048,18 +1048,27 @@ describe('auth 前置门（A1：统一门，spec §2）', () => {
     expect((await fetch(`${base}/api/v2/mediaLibrary`, { headers: { 'x-api-key': 'wrong' } })).status).toBe(401)
   })
   it('auth/status：未初始化 {initialized:false,...}；登录后 authenticated:true', async () => {
-    const { base } = await start(distWith('x'))
+    // env 显式给空串：锁"TMDB_IMAGE_BASE_URL 空串视同未配置 → null"，同时隔离开发机的真实 env。
+    const { base } = await start(distWith('x'), undefined, { TMDB_IMAGE_BASE_URL: '' })
     const s1 = await fetch(`${base}/api/v2/auth/status`)
-    expect(await s1.json()).toEqual({ initialized: false, authenticated: false })
+    expect(await s1.json()).toEqual({ initialized: false, authenticated: false, tmdbImageBase: null })
     const setup = await fetch(`${base}/api/v2/auth/setup`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ username: 'admin', password: 'hunter2222' }),
     })
     const cookie = (setup.headers.get('set-cookie') ?? '').split(';')[0]
     const s2 = await fetch(`${base}/api/v2/auth/status`, { headers: { cookie } })
-    expect(await s2.json()).toEqual({ initialized: true, authenticated: true })
+    expect(await s2.json()).toEqual({ initialized: true, authenticated: true, tmdbImageBase: null })
     const s3 = await fetch(`${base}/api/v2/auth/status`)
-    expect(await s3.json()).toEqual({ initialized: true, authenticated: false })
+    expect(await s3.json()).toEqual({ initialized: true, authenticated: false, tmdbImageBase: null })
+  })
+  it('auth/status 下发 tmdbImageBase（TMDB 大陆可达线：TMDB_IMAGE_BASE_URL → 前端图片基址管道）', async () => {
+    // 挂在 auth/status 而非新端点：AuthGate 首载必拉、三态（未初始化/未登录/已登录）都可达——
+    // 未初始化态就得拿到（海报登录后才用得上，提前无害），下面刻意用未初始化裸 fetch 验证。
+    const template = 'https://wsrv.nl/?url=https://image.tmdb.org{path}'
+    const { base } = await start(distWith('x'), undefined, { TMDB_IMAGE_BASE_URL: template })
+    const s = await fetch(`${base}/api/v2/auth/status`)
+    expect(await s.json()).toEqual({ initialized: false, authenticated: false, tmdbImageBase: template })
   })
   it('legacy DASHBOARD_TOKEN：未初始化+带旧 token → API 照常通（旧部署零破坏）', async () => {
     const { base } = await start(distWith('x'), 'legacy-tok')

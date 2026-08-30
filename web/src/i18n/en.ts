@@ -354,6 +354,14 @@ export const en = {
   wizard_tmdb_label: 'API key',
   wizard_tmdb_placeholder: 'TMDB API key or read access token',
   wizard_tmdb_hint: 'Free at themoviedb.org → Settings → API. No key, no Scout — this step has no skip.',
+  // TMDB 大陆可达线（2026-08-30）：预设是**部署层 env 引导**，不是即点即生效的开关——文案
+  // 必须说清"复制→贴进 compose→重启"，不许暗示点了就好。
+  wizard_tmdb_cn_preset: 'Mainland China preset',
+  wizard_tmdb_cn_note: 'api.themoviedb.org is blocked in mainland China. These are deploy-level env vars: paste them into the environment block of your compose file (or .env), then restart the container. Nothing is applied from this page.',
+  wizard_tmdb_cn_copy: 'Copy',
+  wizard_tmdb_cn_copied: 'Copied',
+  wizard_tmdb_cn_copy_failed: 'Copy failed — select the text above and copy it manually',
+  wizard_tmdb_cn_readme: 'Full walkthrough in the README',
 
   wizard_llm_base_label: 'Base URL',
   wizard_llm_base_hint: 'Usually ends with /v1.',

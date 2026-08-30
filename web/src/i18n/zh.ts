@@ -296,6 +296,12 @@ export const zh = {
   wizard_tmdb_label: 'API 密钥',
   wizard_tmdb_placeholder: 'TMDB API key 或 read access token',
   wizard_tmdb_hint: '在 themoviedb.org → Settings → API 免费申请。没有 key 就没有 Scout——此步不可跳过。',
+  wizard_tmdb_cn_preset: '大陆网络预设',
+  wizard_tmdb_cn_note: 'api.themoviedb.org 在大陆被墙。以下是部署层 env：粘贴进 compose 的 environment 块（或 .env）后重启容器——本页不会实际改动任何配置。',
+  wizard_tmdb_cn_copy: '复制',
+  wizard_tmdb_cn_copied: '已复制',
+  wizard_tmdb_cn_copy_failed: '复制失败——请手动选中上方文本复制',
+  wizard_tmdb_cn_readme: 'README 完整攻略',
 
   wizard_llm_base_label: 'Base URL',
   wizard_llm_base_hint: '通常以 /v1 结尾。',

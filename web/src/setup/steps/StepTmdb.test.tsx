@@ -11,6 +11,7 @@ import type { WizardStepProps } from './types.js'
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 const BASE: SetupStatusDTO = {
@@ -112,5 +113,40 @@ describe('StepTmdb', () => {
     expect(await screen.findByText('Test unavailable, retry')).toBeInTheDocument()
     expect(screen.queryByText(/HTTP 500/)).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Save & continue' })).toBeDisabled()
+  })
+})
+
+// TMDB 大陆可达线（2026-08-30）：向导「大陆网络预设」引导。⚠️ 基址是部署层 env
+// （README「网络层基建走 env」口径），向导按钮**改不了容器 env**——裁决做纯引导：
+// 就地展开可复制的 compose env 两行 + README 大陆节链接，按钮文案不许暗示"点了就生效"。
+describe('StepTmdb 大陆网络预设（部署 env 引导，零后端改动）', () => {
+  it('输入屏有预设按钮；默认收起；点开 → env 两行片段 + 复制钮 + README 链接', () => {
+    renderStep()
+    expect(screen.queryByText(/wsrv\.nl/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Mainland China preset' }))
+    // 预设定案：API 走 TMDB 官方旧域名，图片走 wsrv.nl 包装模板（URL 不含 key，隐私无虞）。
+    expect(screen.getByText(/TMDB_BASE_URL: https:\/\/api\.tmdb\.org\/3/)).toBeInTheDocument()
+    expect(
+      screen.getByText(/TMDB_IMAGE_BASE_URL: https:\/\/wsrv\.nl\/\?url=https:\/\/image\.tmdb\.org\{path\}/),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument()
+    const readme = screen.getByRole('link', { name: /README/i })
+    expect(readme.getAttribute('href')).toContain('大陆网络环境tmdb-直连不通怎么办')
+    // 再点一次收回去（就地展开是开关，不是一次性）。
+    fireEvent.click(screen.getByRole('button', { name: 'Mainland China preset' }))
+    expect(screen.queryByText(/wsrv\.nl/)).not.toBeInTheDocument()
+  })
+
+  it('复制钮走 copyText（clipboard 桩）→ Copied 反馈；剪贴板内容是两行 env', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
+    renderStep()
+    fireEvent.click(screen.getByRole('button', { name: 'Mainland China preset' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    expect(await screen.findByText('Copied')).toBeInTheDocument()
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining('TMDB_BASE_URL: https://api.tmdb.org/3'))
+    expect(writeText).toHaveBeenCalledWith(
+      expect.stringContaining('TMDB_IMAGE_BASE_URL: https://wsrv.nl/?url=https://image.tmdb.org{path}'),
+    )
   })
 })

@@ -4,11 +4,14 @@
 // 抽取 `{error: string}` 字段；抽不出来（响应体不是 JSON、或没有 error 字段）时回落 "path →
 // status"，不炸调用方。
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { api, backdropUrl, stillUrl, heroPosterUrl } from './client.js'
+import { api, backdropUrl, stillUrl, heroPosterUrl, posterUrl, setTmdbImageBase } from './client.js'
 
 afterEach(() => {
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+  // setTmdbImageBase 是模块级状态——测试间必须复位，否则本文件里先跑的模板用例会把
+  // 后跑的"默认直连"断言染成模板 URL。
+  setTmdbImageBase(null)
 })
 
 describe('backdropUrl / stillUrl（详情页 hero + 逐集剧照 CDN 拼接）', () => {
@@ -23,6 +26,43 @@ describe('backdropUrl / stillUrl（详情页 hero + 逐集剧照 CDN 拼接）',
     expect(heroPosterUrl('/p.jpg')).toBe('https://image.tmdb.org/t/p/w780/p.jpg')
     expect(heroPosterUrl('https://image.tmdb.org/t/p/w342/p.jpg')).toBe('https://image.tmdb.org/t/p/w342/p.jpg')
     expect(heroPosterUrl(null)).toBeNull()
+  })
+})
+
+// TMDB 大陆可达线（2026-08-30）：图片基址可配。部署层 env TMDB_IMAGE_BASE_URL 经
+// GET /api/v2/auth/status 下发，useAuthStatus 收到即喂 setTmdbImageBase。三形态语义
+// README env 表已写死（照实现）：null=现状 image.tmdb.org 直连；含 {path}=整体模板替换
+// （{path} = /t/p/w400/xx.jpg 完整路径段，wsrv.nl 包装式）；否则=前缀替换（自建反代域）。
+describe('setTmdbImageBase（图片基址三形态）', () => {
+  it('null（未配置/复位）→ 现状 image.tmdb.org 直连', () => {
+    setTmdbImageBase(null)
+    expect(posterUrl('/p.jpg')).toBe('https://image.tmdb.org/t/p/w400/p.jpg')
+    expect(backdropUrl('/bd.jpg')).toBe('https://image.tmdb.org/t/p/w1280/bd.jpg')
+  })
+
+  it('前缀形态 → 替换 https://image.tmdb.org、保留 /t/p/wXXX 路径段；尾斜杠去掉防双斜杠', () => {
+    setTmdbImageBase('https://tmdb.example.com')
+    expect(posterUrl('/p.jpg')).toBe('https://tmdb.example.com/t/p/w400/p.jpg')
+    expect(backdropUrl('/bd.jpg')).toBe('https://tmdb.example.com/t/p/w1280/bd.jpg')
+    expect(stillUrl('/s.jpg')).toBe('https://tmdb.example.com/t/p/w300/s.jpg')
+    expect(heroPosterUrl('/p.jpg')).toBe('https://tmdb.example.com/t/p/w780/p.jpg')
+    setTmdbImageBase('https://tmdb.example.com/')
+    expect(posterUrl('/p.jpg')).toBe('https://tmdb.example.com/t/p/w400/p.jpg')
+  })
+
+  it('模板形态（含 {path}）→ 整体替换，{path} 是含尺寸段的完整路径（wsrv.nl 实例）', () => {
+    setTmdbImageBase('https://wsrv.nl/?url=https://image.tmdb.org{path}')
+    expect(posterUrl('/p.jpg')).toBe('https://wsrv.nl/?url=https://image.tmdb.org/t/p/w400/p.jpg')
+    expect(backdropUrl('/bd.jpg')).toBe('https://wsrv.nl/?url=https://image.tmdb.org/t/p/w1280/bd.jpg')
+    expect(stillUrl('/s.jpg')).toBe('https://wsrv.nl/?url=https://image.tmdb.org/t/p/w300/s.jpg')
+  })
+
+  it('demo 完整 URL 形态在模板配置下仍透传（短路在模板替换之前）；null path 恒 null；空串视同未配置', () => {
+    setTmdbImageBase('https://wsrv.nl/?url=https://image.tmdb.org{path}')
+    expect(heroPosterUrl('https://image.tmdb.org/t/p/w342/p.jpg')).toBe('https://image.tmdb.org/t/p/w342/p.jpg')
+    expect(posterUrl(null)).toBeNull()
+    setTmdbImageBase('')
+    expect(posterUrl('/p.jpg')).toBe('https://image.tmdb.org/t/p/w400/p.jpg')
   })
 })
 

@@ -112,6 +112,10 @@ export type SettingsPatch = Partial<Record<SettingsKey, string>>
 export interface AuthStatusDTO {
   initialized: boolean
   authenticated: boolean
+  /** TMDB 大陆可达线（2026-08-30）：部署层 env TMDB_IMAGE_BASE_URL 的下发管道——非空则前端
+   *  图片 URL 改走它（{path} 模板/前缀两态，见 client.ts imageUrl），null=未配置（直连
+   *  image.tmdb.org）。挂在 auth/status：AuthGate 首载必拉、三态都可达。 */
+  tmdbImageBase: string | null
 }
 
 /** 鉴权 A3：GET /api/v2/auth/security 响应体——Settings Security 区展示用（username + 完整

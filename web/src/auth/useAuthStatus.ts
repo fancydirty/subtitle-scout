@@ -8,7 +8,7 @@
 // 初始化）。改为如实进"连接错误 + 重试"态。fetch 带超时（AbortController），避免服务器接了 socket
 // 却不回包时 status 永远卡 null → 永久白屏。
 import { useCallback, useEffect, useState } from 'react'
-import { api } from '../api/client.js'
+import { api, setTmdbImageBase } from '../api/client.js'
 import { UNAUTHORIZED_EVENT } from '../api/client.js'
 import type { AuthStatusDTO } from '../api/types.js'
 
@@ -30,7 +30,14 @@ export function useAuthStatus(): AuthStatusState {
     const ac = new AbortController()
     const timer = setTimeout(() => ac.abort(), PROBE_TIMEOUT_MS)
     api.authStatus(ac.signal)
-      .then((s) => { setStatus(s); setError(false) })
+      .then((s) => {
+        // TMDB 大陆可达线：auth/status 是 tmdbImageBase 的下发管道，收到即喂 client 的模块级
+        // 基址（AuthGate 是它的唯一消费点，接线放这里而不是 AuthGate 渲染体——渲染期不做副作用）。
+        // `?? null`：滚动升级窗口内旧后端没这个字段，undefined 按未配置处理。
+        setTmdbImageBase(s.tmdbImageBase ?? null)
+        setStatus(s)
+        setError(false)
+      })
       .catch(() => { setStatus(null); setError(true) })
       .finally(() => clearTimeout(timer))
   }, [])

@@ -40,40 +40,65 @@ export function withToken(path: string): string {
   return `${path}${path.includes('?') ? '&' : '?'}token=${encodeURIComponent(t)}`
 }
 
-/** TMDB 海报 CDN 前缀——公开、免 key，浏览器直连（决策 D3，见去 Jellyfin 化设计文档）。 */
-const TMDB_IMAGE_BASE = 'https://image.tmdb.org/t/p/w400'
+/** TMDB 海报 CDN 尺寸段——默认公开、免 key，浏览器直连（决策 D3，见去 Jellyfin 化设计文档）。 */
+const TMDB_IMAGE_BASE = '/t/p/w400'
 
-/** 海报 URL：直接拼 TMDB CDN，不再经服务端代理。无 posterPath 时返回 null，让调用方渲染占位。 */
-export function posterUrl(posterPath: string | null): string | null {
-  if (!posterPath) return null
-  return `${TMDB_IMAGE_BASE}${posterPath}`
+/** TMDB 大陆可达线（2026-08-30）：图片基址可配。部署层 env TMDB_IMAGE_BASE_URL 经
+ *  GET /api/v2/auth/status 下发（AuthGate 首载必拉、三态都可达），useAuthStatus 收到 status
+ *  即调 setTmdbImageBase 喂进来。模块级单值：图片 URL 是纯拼串热路径，不值得为它上 Context。 */
+let tmdbImageTemplate: string | null = null
+
+/** auth/status 下发管道的落点。空串/空值一律视同未配置（回落直连）。 */
+export function setTmdbImageBase(v: string | null): void {
+  tmdbImageTemplate = v ? v : null
 }
 
-/** 背景大图（hero 用）与逐集剧照的 CDN 前缀——详情页重设计 item B。背景走 w1280 大图，剧照
- *  走 w300 缩略，皆浏览器直连 TMDB（同 posterUrl 的免 key 直连策略）。 */
-const TMDB_BACKDROP_BASE = 'https://image.tmdb.org/t/p/w1280'
-const TMDB_STILL_BASE = 'https://image.tmdb.org/t/p/w300'
+/** 图片 URL 三形态（README env 表已写死的语义，照实现）：
+ *  · 未配置 → 现状 `https://image.tmdb.org${sizeSeg}${path}` 直连；
+ *  · 含 `{path}` → 整体模板替换，`{path}` = `/t/p/w400/xx.jpg` 这样的完整路径段
+ *    （wsrv.nl 包装式：`https://wsrv.nl/?url=https://image.tmdb.org{path}`——URL 不含 key，
+ *    走第三方图片 CDN 隐私无虞）；
+ *  · 其余 → 作为 `https://image.tmdb.org` 的前缀替换（自建反代域），去尾斜杠防双斜杠。 */
+function imageUrl(sizeSeg: string, path: string): string {
+  if (tmdbImageTemplate === null) return `https://image.tmdb.org${sizeSeg}${path}`
+  if (tmdbImageTemplate.includes('{path}')) return tmdbImageTemplate.replace('{path}', sizeSeg + path)
+  return `${tmdbImageTemplate.replace(/\/+$/, '')}${sizeSeg}${path}`
+}
+
+/** 海报 URL：拼 TMDB CDN（或配置的替代基址），不经服务端代理。无 posterPath 时返回 null，
+ *  让调用方渲染占位。 */
+export function posterUrl(posterPath: string | null): string | null {
+  if (!posterPath) return null
+  return imageUrl(TMDB_IMAGE_BASE, posterPath)
+}
+
+/** 背景大图（hero 用）与逐集剧照的尺寸段——详情页重设计 item B。背景走 w1280 大图，剧照
+ *  走 w300 缩略，皆浏览器直连 TMDB（同 posterUrl 的免 key 直连策略，基址同受
+ *  setTmdbImageBase 支配）。 */
+const TMDB_BACKDROP_BASE = '/t/p/w1280'
+const TMDB_STILL_BASE = '/t/p/w300'
 
 /** 背景大图 URL（hero 用），无 path → null 让调用方降级纯排印头部。 */
 export function backdropUrl(path: string | null): string | null {
   if (!path) return null
-  return `${TMDB_BACKDROP_BASE}${path}`
+  return imageUrl(TMDB_BACKDROP_BASE, path)
 }
 
 /** hero 手机档（≤640px）的竖版海报 URL——w780 档（390 CSS px × 2 DPR ≈ 780 设备像素，
  *  posterUrl 的 w400 在全宽 hero 下会糊）。demo 假后端的 posterPath 是完整 URL 形态，
- *  以 http 开头时透传不拼前缀。null → null（调用方回落 backdrop）。 */
-const TMDB_POSTER_HERO_BASE = 'https://image.tmdb.org/t/p/w780'
+ *  以 http 开头时透传不拼前缀——该短路在 imageUrl 的模板/前缀替换**之前**，配置任何基址
+ *  都不碰完整 URL。null → null（调用方回落 backdrop）。 */
+const TMDB_POSTER_HERO_BASE = '/t/p/w780'
 export function heroPosterUrl(posterPath: string | null): string | null {
   if (!posterPath) return null
   if (posterPath.startsWith('http')) return posterPath
-  return `${TMDB_POSTER_HERO_BASE}${posterPath}`
+  return imageUrl(TMDB_POSTER_HERO_BASE, posterPath)
 }
 
 /** 逐集剧照缩略图 URL，无 path → null 让调用方不渲染 img。 */
 export function stillUrl(path: string | null): string | null {
   if (!path) return null
-  return `${TMDB_STILL_BASE}${path}`
+  return imageUrl(TMDB_STILL_BASE, path)
 }
 
 /** 从失败响应体尝试抽取 `{error: string}` 形状的诚实消息（server.ts 端点失败时的既有约定），
