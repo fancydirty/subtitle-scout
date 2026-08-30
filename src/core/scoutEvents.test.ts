@@ -443,4 +443,50 @@ describe('ScoutEventBus（R-F10 SSE 事件总线）', () => {
       expect(bus.getCurrent()).toBeNull()
     })
   })
+
+  // ── targets 里程碑帧旁路节流 + 快照（Task 4：修 0/N 死进度条）─────────────────────
+  // 装盘里程碑帧（同一毫秒的密集 tick）会被 1s/per-workbench 节流折叠丢掉，覆盖格就永远停在
+  // 0/N。判据是"data.targets 是否在场"——带 targets 的里程碑帧一律放行且不占用节流窗口，
+  // 纯 ticker 文本帧照旧节流。同时 targets 全量数组落进快照，断线重连后下一帧即完整真相。
+  describe('🔴 targets 里程碑帧（Task 4：装盘进度不被节流折叠丢）', () => {
+    it('🔴 带 targets 的 progress 不被节流（里程碑帧必达）', () => {
+      const { bus } = mkBus()
+      const { got } = collect(bus)
+      // 同一时刻连发：第一条纯 ticker 放行，第二条纯 ticker 被节流吃
+      bus.publish({ type: 'progress', message: 's1', workbench: 'subtitle', data: { step: 'search_source' } })
+      bus.publish({ type: 'progress', message: 's2', workbench: 'subtitle', data: { step: 'get_candidate' } })
+      // 第三条带 targets（里程碑）：必达，不被节流
+      bus.publish({ type: 'progress', message: 'm', workbench: 'subtitle', data: { targets: [{ key: 's1e1', label: 'S01E01', state: 'installed' }] } })
+      expect(got.filter((e) => (e.data as any)?.targets).length).toBe(1)
+      expect(got.filter((e) => (e.data as any)?.step && !(e.data as any)?.targets).length).toBe(1) // 只第一条纯 ticker 过
+    })
+
+    it('🔴 里程碑帧旁路节流但不占用节流窗口（不顶掉纯 ticker 的记账）', () => {
+      const { bus, tick } = mkBus()
+      const { got } = collect(bus)
+      bus.publish({ type: 'progress', message: 't1', workbench: 'subtitle', data: { step: 'a' } })  // t=0 放行，窗口起点=0
+      tick(500)
+      // 里程碑放行，但若它（错误地）把 lastProgressAt 记到 t=500，t2 就会被误折叠
+      bus.publish({ type: 'progress', message: 'm', workbench: 'subtitle', data: { targets: [{ key: 'k', label: 'L', state: 'installed' }] } })
+      tick(700)  // 距 t1 放行整 1200ms ≥ 1000 → t2 本该放行
+      bus.publish({ type: 'progress', message: 't2', workbench: 'subtitle', data: { step: 'b' } })
+      expect(got.map((e) => e.message)).toEqual(['t1', 'm', 't2'])
+    })
+
+    it('🔴 updateCurrent 把 targets 落进快照（重连可恢复）', () => {
+      const { bus } = mkBus()
+      bus.publish({ type: 'progress', message: 'x', workbench: 'subtitle', data: { targets: [{ key: 's1e1', label: 'S01E01', state: 'installed' }] } })
+      expect(bus.getCurrent()?.targets?.[0]?.state).toBe('installed')
+    })
+
+    it('🔴 targets 在同工作台缺席时保留上一条、跨台归 undefined', () => {
+      const { bus, tick } = mkBus()
+      bus.publish({ type: 'progress', message: 'm', workbench: 'subtitle', data: { targets: [{ key: 'k', label: 'L', state: 'installed' }] } })
+      tick(PROGRESS_THROTTLE_MS)
+      bus.publish({ type: 'progress', message: 'p', workbench: 'subtitle', data: { done: 1, total: 2 } })  // 缺 targets，同台 → 保留
+      expect(bus.getCurrent()?.targets?.[0]?.state).toBe('installed')
+      bus.publish({ type: 'progress', message: 'q', workbench: 'translate', data: { done: 0, total: 3 } })  // 跨台 → undefined
+      expect(bus.getCurrent()?.targets).toBeUndefined()
+    })
+  })
 })

@@ -112,6 +112,9 @@ export interface ScoutCurrent {
   /** 翻译 cue 级进度（2026-08-21 活动页重做）。字幕/识别流恒 null。 */
   cueDone: number | null
   cueTotal: number | null
+  /** 活动卡覆盖格 per-target 状态（2026-08-30）。字幕流才有；识别/翻译恒 undefined。
+   *  全量数组——每条里程碑帧带完整快照，重连后下一帧即完整真相，免增量对账。 */
+  targets?: Array<{ key: string; label: string; state: string }>
 }
 
 export interface ScoutEvent extends ScoutEventInput {
@@ -283,6 +286,11 @@ export class ScoutEventBus {
         const step = nonemptyString(d?.step)
         const cueDoneVal = num(d?.cueDone)
         const cueTotalVal = num(d?.cueTotal)
+        // targets 是全量数组（里程碑帧带完整快照）。本条带数组就整体覆盖；缺席才保留上一条，
+        // 且只在同一工作台——跨台保留就是拿字幕流的覆盖格贴到翻译流，与 workId 保留口径一致。
+        const targetsVal = Array.isArray(d?.targets)
+          ? (d?.targets as ScoutCurrent['targets'])
+          : (sameKind ? this.current?.targets : undefined)
         this.current = {
           kind: input.workbench,
           title: input.title ?? null,
@@ -297,6 +305,7 @@ export class ScoutEventBus {
           lastStep: step ?? (sameKind ? (this.current?.lastStep ?? null) : null),
           cueDone: cueDoneVal ?? (sameKind ? (this.current?.cueDone ?? null) : null),
           cueTotal: cueTotalVal ?? (sameKind ? (this.current?.cueTotal ?? null) : null),
+          targets: targetsVal,
         }
       }
       // health（带 workbench，当前生产无此点）不动 current：它是异常播报，不是"在处理谁"。
@@ -331,7 +340,11 @@ export class ScoutEventBus {
       // "断线/丢事件时仍能问出真实当前态"，让它跟着丢是自废武功。
       this.updateCurrent(input)
       const at = this.nowFn()
-      if (input.type === 'progress') {
+      // 里程碑帧（带 targets 数组）旁路节流、且不参与节流窗口记账：装盘里程碑是同一毫秒的
+      // 密集 tick，被 1s 节流折叠掉覆盖格就永远停在 0/N。它一律放行；同时不 set lastProgressAt——
+      // 否则里程碑帧会把纯 ticker 的节流窗口顶掉，纯 ticker 的限速语义就被里程碑污染了。
+      const hasTargets = input.type === 'progress' && Array.isArray(input.data?.targets)
+      if (input.type === 'progress' && !hasTargets) {
         // 未记录过 → 视为 -Infinity（第一条无条件放行）。注意 Map 里可能存着 0
         // （注入时钟从 0 起的测试），故必须用 `?? -Infinity` 而不是 `|| -Infinity`。
         const last = this.lastProgressAt.get(input.workbench) ?? -Infinity
