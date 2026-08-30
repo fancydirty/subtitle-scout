@@ -546,4 +546,93 @@ describe('ScoutDaemonV2 · R-F10 事件发布（端到端走 run()）', () => {
       db.close()
     })
   })
+
+  // ── 活动卡覆盖格 per-target 编排（2026-08-30，收口 0/N 死进度条 bug）────────────
+  //
+  // ⚠️ 这三条**必须过真 ScoutEventBus**（bus.publish 当 emit、bus.subscribe 收帧），不用
+  // mkEmit 的捕获函数。理由：0/N bug 的根因是装盘里程碑帧被 1s 节流折叠——装盘回调在同一
+  // 毫秒密集 tick，若走捕获函数（不经节流门）则覆盖格看着一直在动，测试假绿；生产上帧被
+  // 总线吃掉，覆盖格永远停在全 pending。只有过真总线才能证明「里程碑帧带 targets → 旁路
+  // 节流 → 真的到达订阅者」这条链。
+  describe('活动卡覆盖格 per-target（过真 ScoutEventBus）', () => {
+    /** 过真总线跑一个字幕作品：emit=bus.publish，同时 bus.subscribe 收帧。 */
+    function seedBusRig(db: ReturnType<typeof openDb>, files: string[], worker?: any) {
+      const bus = new ScoutEventBus()
+      const frames: ScoutEventInput[] = []
+      bus.subscribe((e) => { frames.push(e) })
+      const daemon = new ScoutDaemonV2(mkDeps(db, {
+        emit: (e: ScoutEventInput) => bus.publish(e),
+        roots: ['/media'], listVideoFiles: () => files,
+        statFile: () => ({ mtimeMs: 1000, size: BIG }), fileExists: () => true,
+        ...(worker ? { subtitleWorker: worker } : {}),
+      }))
+      return { bus, frames, daemon }
+    }
+    const subProg = (frames: ScoutEventInput[]) =>
+      frames.filter((e) => e.type === 'progress' && e.workbench === 'subtitle')
+
+    it('开工即发全 pending 的 targets（分母确定，过真总线）', async () => {
+      const db = openDb(':memory:')
+      seedSubtitleWork(db, '/media/Show/E01.mkv', 1)
+      seedSubtitleWork(db, '/media/Show/E02.mkv', 2)
+      const { frames, daemon } = seedBusRig(db, ['/media/Show/E01.mkv', '/media/Show/E02.mkv'])
+      await runOneInspection(daemon)
+      // 首帧带 targets 的 progress（里程碑帧，旁路节流必达订阅者）
+      const withTargets = subProg(frames).filter((e) => Array.isArray(e.data?.targets))
+      expect(withTargets.length).toBeGreaterThan(0)
+      const first = withTargets[0].data!.targets as Array<{ key: string; label: string; state: string }>
+      expect(first).toHaveLength(2)                        // 分母 = 文件数
+      expect(first.every((t) => t.state === 'pending')).toBe(true)
+      expect(first.map((t) => t.key).sort()).toEqual(['s1e1', 's1e2'])
+      expect(first.map((t) => t.label).sort()).toEqual(['S01E01', 'S01E02'])
+      db.close()
+    })
+
+    it('🔴 装盘里程碑帧过总线不被吃，targets 逐格 installed（0/N bug 回归锁）', async () => {
+      const db = openDb(':memory:')
+      seedSubtitleWork(db, '/media/Show/E01.mkv', 1)
+      seedSubtitleWork(db, '/media/Show/E02.mkv', 2)
+      const { frames, daemon } = seedBusRig(db, ['/media/Show/E01.mkv', '/media/Show/E02.mkv'],
+        async () => ({
+          installed: [{
+            itemId: 'tmdb:42/s1e1', installedPath: '/media/Show/E01.zh-Hans.srt',
+            installedLanguage: 'zh-Hans', candidateProvider: 'assrt', candidateProviderId: 'x', reason: 'ok',
+          }],
+          no_safe_match: [], retry_later: [], hardsub_assumed: [],
+        }))
+      await runOneInspection(daemon)
+      // 装盘那一帧带 targets、且 s1e1 已 installed——关键是它**真的过了总线到达订阅者**
+      // （里程碑帧旁路节流）。若没旁路，同毫秒 tick 会被 1s 窗口折叠，这帧收不到。
+      const installedFrame = subProg(frames).find((e) => {
+        const t = e.data?.targets as Array<{ key: string; state: string }> | undefined
+        return Array.isArray(t) && t.some((x) => x.key === 's1e1' && x.state === 'installed')
+      })
+      expect(installedFrame).toBeDefined()
+      db.close()
+    })
+
+    it('收尾把 no_safe_match/retry_later 落成 pending-source（过真总线）', async () => {
+      const db = openDb(':memory:')
+      seedSubtitleWork(db, '/media/Show/E01.mkv', 1)
+      seedSubtitleWork(db, '/media/Show/E02.mkv', 2)
+      const { frames, daemon } = seedBusRig(db, ['/media/Show/E01.mkv', '/media/Show/E02.mkv'],
+        async () => ({
+          installed: [{
+            itemId: 'tmdb:42/s1e1', installedPath: '/media/Show/E01.zh-Hans.srt',
+            installedLanguage: 'zh-Hans', candidateProvider: 'assrt', candidateProviderId: 'x', reason: 'ok',
+          }],
+          no_safe_match: [{ itemId: 'tmdb:42/s1e2', reason: 'no-match' }],
+          retry_later: [], hardsub_assumed: [],
+        }))
+      await runOneInspection(daemon)
+      // 末帧（收尾里程碑）：s1e1 installed、s1e2 pending-source
+      const last = subProg(frames).filter((e) => Array.isArray(e.data?.targets)).at(-1)
+      expect(last).toBeDefined()
+      const targets = last!.data!.targets as Array<{ key: string; state: string }>
+      const byKey = new Map(targets.map((t) => [t.key, t.state]))
+      expect(byKey.get('s1e1')).toBe('installed')
+      expect(byKey.get('s1e2')).toBe('pending-source')
+      db.close()
+    })
+  })
 })

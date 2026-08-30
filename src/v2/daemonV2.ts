@@ -16,6 +16,7 @@ import { toMediaFileRow, isScannable, PARSER_VERSION } from './scanner.js'
 import type { ScoutDb } from './db.js'
 import { listIdentifyQueue, runIdentifyWorkDir, type IdentifySchedulerDeps } from './identifyScheduler.js'
 import { listSubtitleQueue, runSubtitleWorkDir, subtitleJobId, type SubtitleQueueItem } from './subtitleScheduler.js'
+import { targetKey, targetLabel, itemIdToKey } from './subtitleTargets.js'
 import type { RunsRepo } from './runsRepo.js'
 import { judgePendingFiles } from './judgePending.js'
 import { tagsForLanguage } from '../agent/languages.js'
@@ -982,6 +983,15 @@ export class ScoutDaemonV2 {
       //    活动页「在跑」卡片看起来已经跑完，而文件还一个都没动。
       const face = this.workFaceData(item)
       const fileTotal = item.files.length
+      // 活动卡覆盖格 per-target 状态（2026-08-30，收口 0/N 死进度条）。开工建 map + 全 pending，
+      // 首帧就把分母（文件数）钉死。声明在 try 之前：trace 桥接、装盘回调、收尾段都要读它。
+      // 全量数组语义（每条里程碑帧带完整快照）见 scoutEvents.ts ScoutCurrent.targets 注释。
+      const targetsState = new Map<string, { key: string; label: string; state: string }>()
+      for (const f of item.files) {
+        const k = targetKey(item.workId, f.season, f.episode)
+        targetsState.set(k, { key: k, label: targetLabel(f.season, f.episode), state: 'pending' })
+      }
+      const targetsArr = () => [...targetsState.values()]
       this.emit({
         type: 'activity',
         message: `正在找字幕：${item.title}（${item.files.length} 个文件）`,
@@ -997,7 +1007,8 @@ export class ScoutDaemonV2 {
         message: `0/${fileTotal} 个文件`,
         title: item.title,
         workbench: 'subtitle',
-        data: { done: 0, total: fileTotal, ...face },
+        // targets 首帧全 pending：这是带 targets 的里程碑帧，旁路节流必达（分母确定）。
+        data: { done: 0, total: fileTotal, ...face, targets: targetsArr() },
       })
       // C34：把这个作品的 staging 沙盒目录名登记为"在飞行"，跑完（含抛错）必须摘掉。
       // 登记必须在**剔除之后**：整簇消失的作品若也登记一次，这个 jobId 就白白免疫一次 GC。
@@ -1021,14 +1032,19 @@ export class ScoutDaemonV2 {
       try {
         const report = await runSubtitleWorkDir(
           this.deps.db, this.deps.subtitleWorker, item, this.deps.targetLanguage, this.deps.runs,
-          (d, t) => {
+          (d, t, key) => {
             done = d
+            // 装盘置该格 installed。这条带 targets → 里程碑帧旁路节流必达（正是修 0/N 的关键：
+            // 装盘回调同毫秒密集 tick，纯 ticker 帧会被 1s 节流折叠，覆盖格永远停在全 pending）。
+            if (key && targetsState.has(key)) {
+              targetsState.set(key, { ...targetsState.get(key)!, state: 'installed' })
+            }
             this.emit({
               type: 'progress',
               message: `${d}/${t} 个文件`,
               title: item.title,
               workbench: 'subtitle',
-              data: { done: d, total: t, ...face },
+              data: { done: d, total: t, ...face, targets: targetsArr() },
             })
           },
           this.deps.translateAfterAttempts?.(),
@@ -1088,6 +1104,29 @@ export class ScoutDaemonV2 {
           // ①**不能取代**它：① 只看本作品这几个文件，而全量扫描还负责删除差集、
           // 用户手放字幕的发现、其他作品的 B 档轮转。
           this.requestScan()
+        }
+        // ── 收尾里程碑帧：把本轮"搜过没有 / 源站拒答"的格落成 pending-source ──
+        // 不管 installed 是否 >0 都发一次（判无的作品也要把 pending→pending-source 反映出来，
+        // 否则覆盖格永远停在全 pending，与 0/N 同型）。installed 格已在装盘回调点亮，这里不重复动。
+        // report 为 null（worker 抛错，runSubtitleWorkDir 内部按失败轨记完账后返回 null）时**不落**：
+        // 那几集这一轮什么信息都没产生（不是"源站说没有"），状态留 pending 待下轮重试，跳过收尾帧。
+        if (report) {
+          for (const bucket of [report.no_safe_match, report.retry_later]) {
+            for (const u of bucket) {
+              if (u.itemId == null) continue   // nullableTolerant：反解不出归属的条目跳过
+              const k = itemIdToKey(u.itemId)
+              const cur = targetsState.get(k)
+              // 已 installed 的格不被覆盖（同一格不会既装上又没找到，但防御性保住 installed）。
+              if (cur && cur.state !== 'installed') targetsState.set(k, { ...cur, state: 'pending-source' })
+            }
+          }
+          this.emit({
+            type: 'progress',
+            message: `${done}/${total} 个文件`,
+            title: item.title,
+            workbench: 'subtitle',
+            data: { done, total, ...face, targets: targetsArr() },
+          })
         }
       } catch (e) {
         // ── C13 计数单调的兜底（"finally 保证回写"这条路的实现）──
