@@ -1594,8 +1594,9 @@ describe('🔴 三槽 currents：subtitle/translate 两 tab 各读各槽（双�
     renderPage()
     await ready()
     // ① 翻译车道把 log 建起来（两条不同 step，免得 mergeLogLines 折叠成一行）。
-    // ⚠️ 同类型事件分开 act：四层 Context 每型只存"最后一条"，同一拍连发两条 progress
-    // 会让第一条根本到不了 effect。
+    // （历史注：这里曾必须分开 act——context last-wins 槽会把同一拍的两条 progress
+    // 合并吞帧。逐帧消费已改直订阅 eventsBus，同拍连发的回归锁见「连发窗口不吞帧」段；
+    // 本用例保持分拍形态，专守车道过滤。）
     act(() => {
       bus().emit(ev({
         type: 'activity', message: '正在翻译：Trans Show', title: 'Trans Show',
@@ -1641,6 +1642,76 @@ describe('🔴 三槽 currents：subtitle/translate 两 tab 各读各槽（双�
     const after = [...card.querySelectorAll('[data-log-line]')].map((el) => el.textContent)
     expect(after).toEqual(before)
     expect(card.textContent).not.toContain(en.wb_step_download)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🔴 连发窗口不吞帧（2026-08-30 demo 双车道实案 → 产品级：重连 replay 是 50 帧连发）
+// ═══════════════════════════════════════════════════════════════════════════
+// 机制：Context 的 last-wins 槽（useEventSlot 每类只存最后一条）+ 消费方
+// `useEffect(()=>applyEvent(x),[x])`。同类型两条事件在同一个 passive-effect 窗口内
+// 连发时，React 只带最终值跑一次 effect——前一条对 applyEvent **永久不可见**。
+// demo 站双车道每 tick 成对连发 subtitle→translate progress，subtitle 帧每次被吞，
+// 字幕 tab 的 currents 槽建不起来。修法：逐帧消费者直订阅 eventsBus（每条同步回调，
+// 无合并）。下面两条在旧 context 消费路径上必红。
+describe('🔴 连发窗口不吞帧：逐帧消费者直订阅 eventsBus（demo 双车道/重连 replay 回归锁）', () => {
+  const targetsOf = (states: Array<'pending' | 'active' | 'installed' | 'pending-source'>) =>
+    states.map((state, i) => ({ key: `s01e0${i + 1}`, label: `E0${i + 1}`, state }))
+
+  it('🔴 同一拍连发 subtitle→translate 两条 progress：字幕覆盖格建起**且**翻译槽也在', async () => {
+    renderPage()
+    await ready()
+    // demo 双车道每 tick 的真实形态：两条 progress 在同一个同步窗口里成对到达
+    // （<一帧间隔）。产品级等价物：SSE 重连 replay 的 50 帧连发突发。
+    act(() => {
+      bus().emit(ev({
+        type: 'progress', message: '装盘', title: 'Queued Show', workbench: 'subtitle',
+        data: { done: 0, total: 3, step: 'install_subtitle', workId: 'tmdb:1', targets: targetsOf(['installed', 'active', 'pending']) },
+      }))
+      bus().emit(ev({
+        type: 'progress', message: '翻译中', title: 'Trans Show', workbench: 'translate',
+        data: { done: 0, total: 4, step: 'translate_subtitle', workId: 'tmdb:9', cueDone: 5, cueTotal: 100 },
+      }))
+    })
+    // 🔴 字幕 tab 的覆盖格必须建起来。旧 context 路径：两条同为 progress，last-wins
+    // 槽只剩 translate 那条 → subtitle 帧对 applyEvent 不可见 → 格永远建不起来 → 红。
+    await waitFor(() => expect(screen.getByTestId('wb-grid-count')).toBeInTheDocument())
+    expect(screen.getAllByTestId('wb-grid-cell')).toHaveLength(3)
+    expect(screen.getByTestId('wb-run-card').textContent).toContain('Queued Show')
+    // 且翻译槽同时在场（不是"保住前帧就丢后帧"的另一种坏实现）
+    fireEvent.click(screen.getByRole('tab', { name: en.wb_tab_translate }))
+    await waitFor(() => expect(screen.getByTestId('wb-run-card').textContent).toContain('Trans Show'))
+    expect(screen.getByTestId('wb-run-card').textContent).toContain(`5 / 100 ${en.wb_run_cues_done_suffix}`)
+  })
+
+  it('🔴 useStepLog：同一拍连发两条不同 step 的 translate progress → log 两行都在', async () => {
+    renderPage()
+    await ready()
+    act(() => {
+      bus().emit(ev({
+        type: 'activity', message: '正在翻译：Trans Show', title: 'Trans Show',
+        workbench: 'translate', data: { workId: 'tmdb:9' },
+      }))
+    })
+    // 两条不同 step **同一拍**连发（不同句免得折叠）。旧路径：ProgressContext 只剩
+    // 第二条 → log 只有一行 → 红。
+    act(() => {
+      bus().emit(ev({
+        type: 'progress', message: 'g', title: 'Trans Show', workbench: 'translate',
+        data: { done: 0, total: 4, step: 'freeze_glossary', workId: 'tmdb:9' },
+      }))
+      bus().emit(ev({
+        type: 'progress', message: 't', title: 'Trans Show', workbench: 'translate',
+        data: { done: 0, total: 4, step: 'update_rows', workId: 'tmdb:9' },
+      }))
+    })
+    fireEvent.click(screen.getByRole('tab', { name: en.wb_tab_translate }))
+    await waitFor(() => {
+      expect(screen.getByTestId('wb-run-card').querySelectorAll('[data-log-line]')).toHaveLength(2)
+    })
+    const lines = [...screen.getByTestId('wb-run-card').querySelectorAll('[data-log-line]')]
+      .map((el) => el.textContent)
+    expect(lines).toEqual([en.wb_step_glossary, en.wb_step_translate])
   })
 })
 

@@ -44,7 +44,16 @@ const ProgressContext = createContext<EventSlot>(null)
 const StatusContext = createContext<EventsStatus>('connecting')
 
 /** 一类事件订阅 + 存最后一条。每类各调一次——四个独立的 useState，
- *  于是四次 setState 互不相干（这就是"四层"在实现上的落点）。 */
+ *  于是四次 setState 互不相干（这就是"四层"在实现上的落点）。
+ *
+ *  ⚠️ 消费边界（2026-08-30 demo 双车道实案）：**last-wins 槽只服务快照型消费者**
+ *  （found/health/巡检态这类"只关心最新一条"的读法）；**逐帧消费者必须直订阅
+ *  eventsBus**（subscribeEvents，每条同步回调、无合并）。原因：同类型两条事件在
+ *  同一个 passive-effect 窗口内连发（<一帧间隔）时，这里的 setSlot 被 React 批处理，
+ *  消费方 `useEffect(()=>apply(x),[x])` 只带最终值跑一次——**前一条永久丢失**。
+ *  demo 每 tick 成对连发 subtitle→translate progress，subtitle 帧每次被吞；产品级
+ *  等价物是 SSE 重连 replay 的 50 帧连发突发。见 ActivityPage 的 useCurrentState /
+ *  useStepLog（已改直订阅）。 */
 function useEventSlot(type: ScoutEventType): EventSlot {
   const [slot, setSlot] = useState<EventSlot>(null)
   useEffect(() => subscribeEvents(type, setSlot), [type])

@@ -61,8 +61,9 @@ import { Button } from '../components/ui/button.js'
 import { api } from '../api/client.js'
 import { useActivity, useHealth } from '../api/hooks.js'
 import {
-  useActivityEvent, useHealthEvent, useProgressEvent, useEventsStatus,
+  useActivityEvent, useHealthEvent, useEventsStatus,
 } from '../events/EventsProvider.js'
+import { subscribeEvents } from '../events/eventsBus.js'
 import { useResumeEdge } from '../events/resumeEdge.js'
 import { useT, type Lang } from '../i18n/useT.js'
 import { localizeError } from '../lib/errorText.js'
@@ -121,14 +122,12 @@ function nonemptyString(v: unknown): string | null {
  * 故只在两个时刻用快照：① 首载 ② SSE 从非 open 恢复到 open。
  */
 function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Currents {
-  const activity = useActivityEvent()
-  const progress = useProgressEvent()
   const status = useEventsStatus()
 
   /** 三槽本地当前态。某槽 null = 那个工作台没在跑。 */
   const [currents, setCurrents] = useState<Currents>(EMPTY_CURRENTS)
-  /** 已经把哪一条事件折进去了（按 id 去重——四层 Context 存的是"最后一条"，
-   *  组件因别的原因重渲染时会再读到同一条，不去重会重复应用）。 */
+  /** 已经把哪一条事件折进去了（按 id 去重）。直订阅下每条事件只回调一次，这份记账的
+   *  现役职责是 seeded 播种门的判据（appliedId===0 = 还没应用过任何事件）与重连归零。 */
   const appliedId = useRef(0)
 
   // ── SSE 增量 ──────────────────────────────────────────────────────────
@@ -139,8 +138,8 @@ function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Cu
   //  · progress + 有 workbench       → 推进**该槽**的 index/total（他槽原样不动——修复本体）
   // ⚠️ 两处实现同形是**有意的冗余**：断线时前端只有事件流，必须自己能推导；
   // 而重连后 health 快照会覆盖它——快照是权威，这份推导只是断线期间的近似。
-  const applyEvent = useCallback((e: ScoutEvent | null) => {
-    if (!e || e.id <= appliedId.current) return
+  const applyEvent = useCallback((e: ScoutEvent) => {
+    if (e.id <= appliedId.current) return
     appliedId.current = e.id
     const lane = laneOf(e)
     if (lane === 'patrol') {
@@ -202,8 +201,19 @@ function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Cu
     }
   }, [])
 
-  useEffect(() => { applyEvent(activity) }, [activity, applyEvent])
-  useEffect(() => { applyEvent(progress) }, [progress, applyEvent])
+  // ── 🔴 逐帧消费：直订阅 eventsBus，**不走** Context 的 last-wins 槽 ──────────
+  // 2026-08-30 demo 双车道实案：Context 槽每类只存最后一条，消费方靠
+  // `useEffect(()=>applyEvent(x),[x])` 时，同类型两条事件在同一个 passive-effect
+  // 窗口内连发（<一帧间隔）会被 React 合并成一次 effect——前一条对 applyEvent
+  // **永久不可见**。demo 每 tick 成对连发 subtitle→translate progress，subtitle 帧
+  // 每次被吞，字幕 tab 的 currents 槽建不起来；产品级等价物是 SSE 重连 replay 的
+  // 50 帧连发突发（REPLAY_BUFFER_CAP）。eventsBus 的 subscribeEvents 每条事件同步
+  // 回调一次、无合并；applyEvent 内部全用函数式 setCurrents，逐帧调用天然安全。
+  useEffect(() => {
+    const un1 = subscribeEvents('activity', applyEvent)
+    const un2 = subscribeEvents('progress', applyEvent)
+    return () => { un1(); un2() }
+  }, [applyEvent])
 
   // ── 首载：health 快照播种（三槽整包）─────────────────────────────────────
   // ⚠️ 只在**还没应用过任何事件**时播种：首载的 health 响应可能比第一条 SSE 事件晚到，
@@ -245,8 +255,6 @@ function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Cu
  *  step 会窜进翻译卡的 log、字幕台开工会把翻译卡的 log 清空。单槽时代这条漏看不见
  *  （字幕事件一来整张翻译卡都没了）；三槽下翻译卡常驻，必须把车道滤干净。 */
 function useStepLog(workId: string | null | undefined): string[] {
-  const activity = useActivityEvent()
-  const progress = useProgressEvent()
   const status = useEventsStatus()
   const { t } = useT()
   const [lines, setLines] = useState<string[]>([])
@@ -272,24 +280,35 @@ function useStepLog(workId: string | null | undefined): string[] {
     prevWorkId.current = workId
   }, [workId])
 
-  useEffect(() => {
-    if (!activity || activity.id <= appliedAct.current) return
-    appliedAct.current = activity.id
+  // ── 🔴 逐帧消费：直订阅 eventsBus（同 useCurrentState 的论证）───────────────
+  // 这份 log 的每条 progress.step 都有信息量——两条不同 step 在同一个 passive-effect
+  // 窗口内连发时，Context 的 last-wins 槽只让最后一条进 append，log 静默丢行。
+  // activity（清 log 边界）一并直订阅：清与追加必须按**事件到达顺序**执行，
+  // 一半走同步回调、一半走 passive effect 会把"开工后追加的行"倒序清掉。
+  const onActivity = useCallback((e: ScoutEvent) => {
+    if (e.id <= appliedAct.current) return
+    appliedAct.current = e.id
     // 字幕/识别车道的开工不清翻译卡的 log（见头注释）；巡检级照清——翻译台此刻已归零。
-    const lane = laneOf(activity)
+    const lane = laneOf(e)
     if (lane === 'subtitle' || lane === 'identify') return
     setLines([])
-  }, [activity])
+  }, [])
 
-  useEffect(() => {
-    if (!progress || progress.id <= appliedProg.current) return
-    appliedProg.current = progress.id
-    if (laneOf(progress) !== 'translate') return
-    const step = nonemptyString(progress.data?.step)
+  const onProgress = useCallback((e: ScoutEvent) => {
+    if (e.id <= appliedProg.current) return
+    appliedProg.current = e.id
+    if (laneOf(e) !== 'translate') return
+    const step = nonemptyString(e.data?.step)
     if (!step) return
     const phrase = t(stepActionKey(step))
     setLines((prev) => [...prev, phrase].slice(-5))
-  }, [progress, t])
+  }, [t])
+
+  useEffect(() => {
+    const un1 = subscribeEvents('activity', onActivity)
+    const un2 = subscribeEvents('progress', onProgress)
+    return () => { un1(); un2() }
+  }, [onActivity, onProgress])
 
   return lines
 }
