@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Subtitle Scout — Engine Data Flow",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "viewBox": [1370, 618]
+  },
+  "components": [
+    { "id": "media", "type": "database", "label": "Media Library", "sublabel": "filesystem roots", "tag": "bind mount", "pos": [20, 250], "size": [130, 64] },
+    { "id": "scan", "type": "backend", "label": "Scan", "sublabel": "walk media roots", "pos": [230, 250], "size": [120, 64] },
+    { "id": "identify", "type": "backend", "label": "Identify Agent", "sublabel": "TMDB + LLM", "pos": [430, 250], "size": [140, 64] },
+    { "id": "judge", "type": "backend", "label": "Judge", "sublabel": "needs_subtitle?", "tag": "origin-language skip", "pos": [650, 250], "size": [150, 64] },
+    { "id": "find", "type": "backend", "label": "Find-Subtitle Agent", "sublabel": "evidence-based, fail-closed", "pos": [880, 250], "size": [170, 64] },
+    { "id": "install", "type": "backend", "label": "Install", "sublabel": "atomic sidecar write", "pos": [1130, 250], "size": [150, 64] },
+    { "id": "translate", "type": "backend", "label": "Translate Agent", "sublabel": "AI subtitle translation", "pos": [880, 402], "size": [170, 64] },
+    { "id": "db", "type": "database", "label": "SQLite", "sublabel": "cache/scout.db", "pos": [480, 402], "size": [150, 64] },
+    { "id": "dashboard", "type": "frontend", "label": "Dashboard", "sublabel": "HTTP + SSE :8099", "pos": [230, 402], "size": [160, 64] },
+    { "id": "user", "type": "external", "label": "Browser", "sublabel": "live activity page", "pos": [230, 530], "size": [160, 64] },
+    { "id": "llm", "type": "external", "label": "LLM Endpoint", "sublabel": "BYOK, all agents", "pos": [1130, 530], "size": [160, 64] },
+    { "id": "tmdb", "type": "external", "label": "TMDB API", "sublabel": "titles, season tables", "pos": [340, 64], "size": [160, 64] },
+    { "id": "srcCn", "type": "external", "label": "Chinese Sources", "sublabel": "ASSRT, SubHD, Zimuku, r3sub", "pos": [720, 64], "size": [225, 64] },
+    { "id": "srcIntl", "type": "external", "label": "Intl / JP Sources", "sublabel": "OpenSubtitles, SubDL, Jimaku", "pos": [985, 64], "size": [225, 64] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Single container: daemon + dashboard + SQLite", "wraps": ["scan", "identify", "judge", "find", "install", "translate", "db", "dashboard"] }
+  ],
+  "connections": [
+    { "id": "media-scan", "from": "media", "to": "scan", "label": "walk roots", "variant": "emphasis" },
+    { "id": "scan-identify", "from": "scan", "to": "identify", "label": "new files", "variant": "emphasis" },
+    { "id": "identify-judge", "from": "identify", "to": "judge", "label": "identified", "variant": "emphasis" },
+    { "id": "judge-find", "from": "judge", "to": "find", "label": "needs sub", "variant": "emphasis" },
+    { "id": "find-install", "from": "find", "to": "install", "label": "verified", "variant": "emphasis" },
+    { "id": "install-scan", "from": "install", "to": "scan", "label": "re-scan sidecar", "variant": "dashed", "fromSide": "right", "toSide": "top", "via": [[1330, 282], [1330, 26], [290, 26]] },
+    { "id": "scan-db", "from": "scan", "to": "db", "label": "covered (R24: scan-only)", "fromSide": "bottom", "toSide": "top" },
+    { "id": "identify-tmdb", "from": "identify", "to": "tmdb", "label": "lookup", "fromSide": "top", "toSide": "bottom" },
+    { "id": "find-srcCn", "from": "find", "to": "srcCn", "label": "fan-out search x7", "fromSide": "top", "toSide": "bottom" },
+    { "id": "find-srcIntl", "from": "find", "to": "srcIntl", "fromSide": "top", "toSide": "bottom" },
+    { "id": "find-translate", "from": "find", "to": "translate", "label": "after N daily misses", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "labelDy": 24 },
+    { "id": "translate-llm", "from": "translate", "to": "llm", "label": "BYO LLM", "fromSide": "bottom", "toSide": "top" },
+    { "id": "dashboard-db", "from": "dashboard", "to": "db", "label": "state, runs" },
+    { "id": "user-dashboard", "from": "user", "to": "dashboard", "label": "SSE live activity", "fromSide": "top", "toSide": "bottom" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Daily inspection pipeline", "items": [
+      "Scan walks the media roots directly; no media server required",
+      "Identify agent binds each file to a TMDB work (TMDB + LLM)",
+      "Judge decides needs_subtitle, incl. origin-language skip"
+    ] },
+    { "dot": "emerald", "title": "Find-subtitle agent", "items": [
+      "Fans out to 7 sources: ASSRT, OpenSubtitles, Jimaku, r3sub, SubDL, SubHD, Zimuku",
+      "Evidence-based verdict per candidate; fail-closed when uncertain",
+      "Atomic sidecar install; the next scan verifies it on disk (R24)"
+    ] },
+    { "dot": "violet", "title": "Translate lane & observability", "items": [
+      "After translate_after_attempts daily misses (default 7), hand off to the AI translate agent (BYO LLM)",
+      "Dashboard streams live activity over SSE; state lives in SQLite (cache/scout.db)"
+    ] }
+  ]
+}

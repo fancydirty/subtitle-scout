@@ -26,6 +26,13 @@ docs/*
 !docs/tmdb-proxy-worker.js
 !docs/screenshots/
 !docs/screenshots/**
+# 架构图产物（Archify 生成；只入库四件套，visual-check 旁证 PNG/receipt 留本地）
+!docs/diagrams/
+docs/diagrams/*
+!docs/diagrams/architecture.json
+!docs/diagrams/architecture.html
+!docs/diagrams/architecture.png
+!docs/diagrams/share-card.png
 jellyfin-config/
 cache/
 

@@ -8,6 +8,10 @@ subtitle-scout watches a media library, finds a matching Chinese subtitle, verif
 
 **What it does:** discover titles missing Chinese sidecars → search and rank candidates → install; season packs; optional directory repair against TMDB (reversible); a dashboard with an activity log.
 
+![Subtitle Scout — engine data flow](docs/diagrams/architecture.png)
+
+*Engine data flow. Interactive version: [docs/diagrams/architecture.html](docs/diagrams/architecture.html)*
+
 subtitle-scout 盯着媒体库，自动找到、验证并放好最合适的中文字幕。直接扫描媒体根目录，不依赖任何媒体服务器。字幕落盘后由播放器自行刷新。
 
 ---
@@ -407,11 +411,15 @@ scout.example.com {
 
 ## 它怎么工作
 
+![Subtitle Scout——引擎数据流全景](docs/diagrams/architecture.png)
+
+*引擎数据流全景（图内标签为英文，与英文区共用同一张技术图）。交互版：[docs/diagrams/architecture.html](docs/diagrams/architecture.html)*
+
 五步白话：
 
 1. **自扫描发现**：程序周期性直接扫描媒体根目录（不依赖任何媒体服务器的播放/入库事件），把新出现或变化的路径解析出剧名/季集号并配上 TMDB，直接写自己的库（SQLite），判定这一集/这部片是否已有目标语言字幕
 2. **智能调度**：发现变化后派发一次编排判断——先核对这部剧实际的目录/命名排布是否跟 TMDB 季表对得上，对不上就先派"整理"任务把文件挪回该在的位置（多层安全校验：先出计划、留痕可回滚、失败不改一个字节），排布没问题才派"找字幕"任务
-3. **搜索候选**：大模型驱动的搜索 worker 自己规划搜索词（原名 + 中文译名 + 年份等组合），扇出搜索五个字幕源（ASSRT、SubHD、Zimuku、OpenSubtitles、Jimaku，各按其配置与语言门是否满足决定是否参与）
+3. **搜索候选**：大模型驱动的搜索 worker 自己规划搜索词（原名 + 中文译名 + 年份等组合），扇出搜索七个字幕源（ASSRT、SubHD、Zimuku、OpenSubtitles、Jimaku、r3sub、SubDL，各按其配置与语言门是否满足决定是否参与）
 4. **挑最靠谱**：候选逐个下载进一次性沙盒目录，结构性体检（cue 数量级、时间轴跨度是否匹配片长、简繁判定、编码可解码性等）之后，大模型看着这些证据终审"是/不是这一集"
 5. **验证写盘**：确认后把字幕写到视频同目录——你用的媒体服务器（Jellyfin/Emby/Plex 或者压根没有）该怎么发现这个新文件是它自己的事，scout 不参与也不需要参与
 
