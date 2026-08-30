@@ -39,6 +39,9 @@ export interface ReasoningAgentOptions<TOOLS extends ToolSet, SCHEMA extends z.Z
   /** 痕迹通道 C：每步结算后对该步每个工具调用触发一次（finalize 也算）。缺席=零行为差异。
    *  回调抛错被吞——痕迹是增益，绝不许反噬 agent 循环。 */
   onStepEvent?: (e: Omit<TraceEvent, 'runKey' | 'seq'>) => void
+  /** 工具开始执行即触发（ticker 实时性）——与 onStepEvent（结束后落格/计时）互补。
+   *  抛错必须被吞（痕迹是增益，绝不反噬循环，同 onStepEvent 纪律）。 */
+  onToolStart?: (e: { tool: string; argsSummary: string; at: number }) => void
 }
 
 /** argsSummary/resultSummary 都走这个 cap——JSON.stringify 失败（理论上不该发生，工具输入/
@@ -129,6 +132,16 @@ export function makeReasoningAgent<TOOLS extends ToolSet, SCHEMA extends z.ZodTy
     stopWhen: [opts.stopWhen ?? stepCountIs(20), hasToolCall(FINALIZE_TOOL_NAME)],
     reasoning: opts.reasoning ?? 'high',
     telemetry: opts.telemetry,
+    // ticker 实时性：工具开始执行即发（onStepEnd 只在该步结算后触发，一次长搜索期间 UI 干等）。
+    // 走同一 as-cast，不需额外类型断言；payload 字段名以 ai/dist/index.d.ts 的
+    // ToolExecutionStartEvent（e.toolCall.toolName / e.toolCall.input）为准。
+    onToolExecutionStart: opts.onToolStart
+      ? (e: { toolCall: { toolName: string; input?: unknown } }) => {
+          try {
+            opts.onToolStart!({ tool: e.toolCall.toolName, argsSummary: summarizeForTrace(e.toolCall.input), at: Date.now() })
+          } catch { /* 痕迹增益，绝不反噬 agent 循环（同 onStepEvent 纪律） */ }
+        }
+      : undefined,
     // Diagnostic capture only — does not affect the loop's control flow or output. See the
     // lastStepToolCalls declaration above for why this is the only reachable seam. Also the sole
     // bridge for 痕迹通道 C's onStepEvent (below) — same seam, two independent consumers.

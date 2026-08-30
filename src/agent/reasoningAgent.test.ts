@@ -269,6 +269,72 @@ describe('makeReasoningAgent (finalize-tool mode)', () => {
     expect(result.steps.length).toBe(2)
   })
 
+  // ticker 实时性：onToolStart 在工具「开始执行」时即触发（onStepEvent 只在该步结算后才落格），
+  // 一次 90 秒的搜索期间 UI 不再干等到工具返回才更新单行 ticker。
+  it('onToolStart 在工具执行开始时触发，带工具名与参数摘要', async () => {
+    let call = 0
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => {
+        call++
+        if (call === 1) return toolCall('c1', 'peek', { q: 'hello' })
+        return finalizeCall('f1', { verdict: 'match', reason: 'metadata lines up' })
+      },
+    })
+
+    const starts: Array<{ tool: string; argsSummary: string; at: number }> = []
+    const { agent, readFinalized } = makeReasoningAgent({
+      model,
+      tools: {
+        peek: tool({
+          description: 'peek at something',
+          inputSchema: z.object({ q: z.string() }),
+          execute: async () => ({ found: true }),
+        }),
+      },
+      schema: DecisionSchema,
+      onToolStart: (e) => starts.push(e),
+    })
+
+    await agent.generate({ prompt: 'is this a match?', abortSignal: AbortSignal.timeout(30_000) })
+
+    expect(readFinalized()).toEqual({ verdict: 'match', reason: 'metadata lines up' })
+    // 至少 peek 一条（finalize 也走 execute，故通常两条）；断言 peek 那条的工具名与参数摘要。
+    expect(starts.length).toBeGreaterThan(0)
+    const peekStart = starts.find((s) => s.tool === 'peek')
+    expect(peekStart).toBeDefined()
+    expect(peekStart!.argsSummary).toContain('hello')
+    expect(typeof peekStart!.at).toBe('number')
+  })
+
+  it('onToolStart 抛错不影响 agent 循环与 readFinalized', async () => {
+    let call = 0
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => {
+        call++
+        if (call === 1) return toolCall('c1', 'peek', {})
+        return finalizeCall('f1', { verdict: 'no_match', reason: 'nothing found' })
+      },
+    })
+
+    const { agent, readFinalized } = makeReasoningAgent({
+      model,
+      tools: {
+        peek: tool({
+          description: 'peek at something',
+          inputSchema: z.object({}),
+          execute: async () => ({ ok: true }),
+        }),
+      },
+      schema: DecisionSchema,
+      onToolStart: () => { throw new Error('boom — ticker sink misbehaving') },
+    })
+
+    const result = await agent.generate({ prompt: 'p', abortSignal: AbortSignal.timeout(30_000) })
+
+    expect(readFinalized()).toEqual({ verdict: 'no_match', reason: 'nothing found' })
+    expect(result.steps.length).toBe(2)
+  })
+
   // D1 回执截断治理：dispatch_* 工具返回 JSON 回执，200 字符 cap 会拦腰截断导致下游解析失败，
   // 因此仅其 resultSummary 放宽到 400；argsSummary 和其他工具维持 200 不变。
   it('dispatch_* 工具 resultSummary cap 放宽到 400，其余 cap 保持 200', async () => {
