@@ -16,6 +16,7 @@ import type { FindSubtitleTask, FindSubtitleTargetFact } from '../agent/findSubt
 import { traceBus } from '../core/traceBus.js'
 import { clusterDueNow, clusterEarliestRetryAt } from './backoffCluster.js'
 import { recordFound } from './notificationsRepo.js'
+import { targetKey } from './subtitleTargets.js'
 import type { RunsRepo } from './runsRepo.js'
 import { capDetail } from './findSubtitleWorkerTask.js'
 
@@ -339,9 +340,11 @@ export async function runSubtitleWorkDir(
    *  /api/v2/runs 端点还活着却永远返回空数组。可选依赖（同 findSubtitleWorkerTask 的 `runs?`
    *  惯例）：缺席时不抛错、照常排空 trace 缓冲（防同 runKey 残留随时间无界增长），只是不落账。 */
   runs?: Pick<RunsRepo, 'insert'>,
-  /** 每成功 markInstalled 一次回调 `(done, total)`。`total` = 本作品文件数，不是队列长度。
-   *  放在 `runs` 之后，既有调用点一字不改。缺席 = 不发 tick。 */
-  onFileInstalled?: (done: number, total: number) => void,
+  /** 每成功 markInstalled 一次回调 `(done, total, installedKey?)`。`total` = 本作品文件数，
+   *  不是队列长度。第三参 `installedKey` = 刚点亮那一集的 target key（`targetKey(workId,
+   *  season, episode)`，剧集 `sNeM`／电影 `movie`），供活动卡覆盖格逐格点亮定位。
+   *  放在 `runs` 之后，第三参可选，既有调用点一字不改。缺席 = 不发 tick。 */
+  onFileInstalled?: (done: number, total: number, installedKey?: string) => void,
   /** 翻译移交阈值（settings `translate_after_attempts` 经 clampTranslateAfterAttempts 后的值）。
    *  缺席=HANDOFF_THRESHOLD（R10 默认 7）。daemon 每次派发新鲜读 settings（同 targetLanguage/
    *  hardsubMode 的既有先例），改设置下一个任务即生效，不用重启。 */
@@ -582,7 +585,7 @@ export async function runSubtitleWorkDir(
       installedLabels.push(runsLabelOf(f))
       markInstalled.run(now2 + DAY_MS, IMMEDIATE_RECHECK, now2, f.path)
       installedDone++
-      onFileInstalled?.(installedDone, installedTotal)
+      onFileInstalled?.(installedDone, installedTotal, targetKey(item.workId, f.season, f.episode))
       // ── R-F3：通知流水（通知页的持久化数据源）────────────────────────────────
       // 写入点与 SSE `found` 事件**同一口径**（daemonV2 在 runSubtitleWorkDir 返回后按
       // report.installed.length 发一条），但落点不同、缺一不可：SSE 只把新的推给正在看的人

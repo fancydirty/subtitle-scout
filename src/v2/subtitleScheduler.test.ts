@@ -252,6 +252,19 @@ describe('runSubtitleWorkDir（死循环修复回写）', () => {
     expect((db.prepare('SELECT sub_recheck_at FROM files WHERE path = ?').get(fail) as any).sub_recheck_at).toBe(future)
   })
 
+  it('onFileInstalled 回调带 target key（季集号）', async () => {
+    // 活动卡覆盖格要在装盘时点亮对应格子，需要回调把"装了哪一集"（target key）带出来。
+    // itemId / installedPath / 断言的 key 三者对齐到 item 首集（s1e1）。
+    const keys: string[] = []
+    const worker = async () => ({
+      installed: [{ itemId: 'tmdb:95897/s1e1', installedPath: '/media/TV/Overflow/Overflow - 01.zh-Hans.ass', installedLanguage: 'zh', candidateProvider: 'assrt', candidateProviderId: 'x', reason: '' }],
+      no_safe_match: [], retry_later: [], hardsub_assumed: [],
+    })
+    await runSubtitleWorkDir(db, worker as any, item, 'zh', undefined,
+      (_d, _t, key) => { if (key) keys.push(key) })
+    expect(keys).toContain('s1e1')
+  })
+
   it('🔴🔴 季集 NULL 的多文件共享裸 itemId → 每次安装各自入账，不塌缩到第一个文件（2026-08-19 SPY 实案）', async () => {
     // 生产实案（SPY x FAMILY / tmdb:120089）：11 个 `[Moozzi2] Spy x Family S2 - NN [ abs ]`
     // BD 文件机械解析不出季集（Jellyfin 也认错的知名 hard case）→ buildSubtitleTask 给它们
