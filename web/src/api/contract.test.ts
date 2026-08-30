@@ -104,7 +104,7 @@ const HEALTH_OK = {
   lastInspectAt: 1, nextInspectAt: 1 + 24 * 60 * 60 * 1000, workPermitted: true, engineEnabled: true, setupSatisfied: true,
   roots: [{ path: '/media', ok: null, lastError: null, lastCheckedAt: null }],
   unidentified: { dirCount: 0, dirs: [] },
-  current: null,
+  currents: { identify: null, subtitle: null, translate: null },
 }
 
 describe('HEALTH_SHAPE（判据①②：全局壳的判决源）', () => {
@@ -140,8 +140,8 @@ describe('HEALTH_SHAPE（判据①②：全局壳的判决源）', () => {
     expect(v?.path).toBe('unidentified.dirCount')
   })
 
-  it('current 是 null 时放行（合法：现在没在处理任何东西）', () => {
-    expect(checkShape({ ...HEALTH_OK, current: null }, HEALTH_SHAPE)).toBeNull()
+  it('currents 三槽全 null 时放行（合法：现在没有任何工作台在跑）', () => {
+    expect(checkShape({ ...HEALTH_OK, currents: { identify: null, subtitle: null, translate: null } }, HEALTH_SHAPE)).toBeNull()
   })
 
   // ── 下面两条来自一次**没红的变异**（本轮实测，如实记录）──────────────────────

@@ -213,10 +213,12 @@ export type C_ValidateTarget_FeToBe = Assert<Satisfies<Fe.ValidateTarget, BeSetu
 // src/dashboard/server.ts（健康端点）
 export type C_HealthRootDTO = Assert<Satisfies<BeServer.HealthRootDTO, Fe.HealthRootDTO>>
 export type C_HealthDTO = Assert<Satisfies<BeServer.HealthDTO, Fe.HealthDTO>>
-/** 后端 HealthDTO.current 的类型是 `ScoutCurrent | null`（core/scoutEvents.ts），
+/** 后端 HealthDTO.currents 的槽类型是 `ScoutCurrent | null`（core/scoutEvents.ts），
  *  前端手抄成了 `ScoutCurrentDTO | null`。上面那条 C_HealthDTO 已经隐含地对拍了它，
  *  这里单列一条是为了让漂移时的报错**指名道姓**（否则只会说 HealthDTO 不匹配）。 */
 export type C_ScoutCurrentDTO = Assert<Satisfies<BeScout.ScoutCurrent, Fe.ScoutCurrentDTO>>
+/** 三槽容器（2026-08-30 单槽 → per-workbench 三槽）。同上：单列一条让报错指名道姓。 */
+export type C_ScoutCurrentsDTO = Assert<Satisfies<BeScout.ScoutCurrents, Fe.ScoutCurrentsDTO>>
 
 // src/dashboard/subtitleVerifyApi.ts / subtitleCompareApi.ts
 export type C_SubtitleVerifyDTO = Assert<Satisfies<BeVerify.SubtitleVerifyDTO, Fe.SubtitleVerifyDTO>>

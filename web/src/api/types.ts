@@ -362,8 +362,9 @@ export interface HealthRootDTO {
   lastCheckedAt: number | null
 }
 
-/** 「现在在处理什么」的快照。SSE 是**变化**流，断线期间的变化会丢；这个是**当前态**，
- *  可随时查询——两者并列存在是后端 F-6 的设计裁决，不是冗余。 */
+/** 「某个工作台现在在处理什么」的快照——ScoutCurrentsDTO 的一个槽。SSE 是**变化**流，
+ *  断线期间的变化会丢；这个是**当前态**，可随时查询——两者并列存在是后端 F-6 的设计裁决，
+ *  不是冗余。 */
 export interface ScoutCurrentDTO {
   kind: 'identify' | 'subtitle' | 'translate'
   title: string | null
@@ -381,6 +382,18 @@ export interface ScoutCurrentDTO {
   /** 活动卡覆盖格 per-target 状态（2026-08-30，对齐后端 ScoutCurrent.targets）。字幕流才有；
    *  识别/翻译恒 undefined。全量数组——每条里程碑帧带完整快照，重连后下一帧即完整真相。 */
   targets?: Array<{ key: string; label: string; state: 'pending' | 'active' | 'installed' | 'pending-source' }>
+}
+
+/** 三个工作台各自的当前态快照（对齐后端 ScoutCurrents，2026-08-30 起 per-workbench 三槽）。
+ *
+ *  ⚠️ 曾是单槽 `current`——daemonV2 两车道并发（字幕/翻译）下后 emit 的车道把前一车道的
+ *  快照顶掉，字幕 tab 的覆盖格被翻译台高频帧反复抹掉（韩语 live test 实证）。
+ *  渲染纪律：subtitle tab 读 subtitle 槽、translate tab 读 translate 槽、顶部识别状态条读
+ *  identify 槽——**绝不许把某一槽当"任意在忙的台"用**（要"有没有台在忙"就三槽都判 null）。 */
+export interface ScoutCurrentsDTO {
+  identify: ScoutCurrentDTO | null
+  subtitle: ScoutCurrentDTO | null
+  translate: ScoutCurrentDTO | null
 }
 
 /** 一个认不出来的作品目录。**刻意只有两个字段**——后端点名的信息量边界
@@ -424,7 +437,9 @@ export interface HealthDTO {
   /** 「有几件活记着失败了，而且再也没人去重试」（🔴-4）。
    *  `count === 0` → 这段整段不渲染（沉默即好消息）。 */
   stalledJobs: StalledJobsDTO
-  current: ScoutCurrentDTO | null
+  /** 三个工作台各自的当前态（per-workbench 三槽，见 ScoutCurrentsDTO 头注释）。
+   *  后端不留旧 `current` 单槽字段：自部署产品前后端同镜像出货，一次切净。 */
+  currents: ScoutCurrentsDTO
 }
 
 /** `/api/v2/health` 的 `stalledJobs` 段——手抄自 src/dashboard/stalledJobsHealth.ts。
@@ -654,7 +669,7 @@ export interface FoundGroupDTO {
 // 手抄自 src/dashboard/activityApi.ts 的同名 interface（同本文件全文件的既有处置）。
 //
 // 🔴 这个端点**只回答"还有谁在等"**，不产出 total/index/当前在跑的是谁。
-// 那三样只信 SSE 与 /api/v2/health 的 `current`（冻结快照）。理由是 health 端点有一条
+// 那三样只信 SSE 与 /api/v2/health 的 `currents`（冻结快照，per-workbench 三槽）。理由是 health 端点有一条
 // 明令「不返回 queue」的裁决：`listSubtitleQueue` 是**实时重查**，与 R4 的**冻结快照**
 // 语义相反，拿它算「第 i/n 个」的 n 会与 SSE 那个冻结的 n 对不上、且随巡检推进越飘越远。
 // 完整论证见后端 activityApi.ts 的头注释。

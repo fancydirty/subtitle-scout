@@ -11,7 +11,8 @@
 //   │ 引擎不许可时的那一句（开关关了 / 凭据没配）                            │
 //   └────────────────────────────────────────────────────────────┘
 //   [ 字幕 | 翻译 ]  ← 两个 tab（R-F1：**只有两个**）
-//     正在跑：横版 backdrop 卡片（0 或 1 张——后端 current 是单数）
+//     正在跑：横版 backdrop 卡片（每 tab 0 或 1 张——后端 currents 是 per-workbench 三槽，
+//             字幕 tab 读 subtitle 槽、翻译 tab 读 translate 槽，**互不覆盖**）
 //     已排队：竖版 poster 卡片列表
 //
 // ══════════════════════════════════════════════════════════════════════════════
@@ -84,11 +85,28 @@ import { inspectFreshness, liveFreshness, relAgoLabel, relUntilLabel, msUntilNex
 import { RunCard, QueueCard, type WorkbenchCardFace } from './WorkbenchCards.js'
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 当前态：SSE 增量 + health 快照纠正
+// 当前态：SSE 增量 + health 快照纠正（per-workbench 三槽，2026-08-30）
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 「现在在处理什么」的本地视图 = ScoutCurrentDTO（workId / backdrop / lastStep 已在 DTO 上）。 */
+/** 一个槽的本地视图 = ScoutCurrentDTO（workId / backdrop / lastStep 已在 DTO 上）。 */
 type Current = ScoutCurrentDTO
+
+/**
+ * 三个工作台各自的当前态（对齐后端 ScoutCurrents / health.currents）。
+ *
+ * ── 为什么不是单个 current（韩语 live test 实证）──
+ * daemonV2 两车道并发（字幕/翻译），单槽下后到的事件把前一车道的本地态整个顶掉：
+ * 翻译台高频跑动时字幕 tab 的覆盖格反复被抹掉。三槽让每条带 workbench 的事件只写
+ * 自己的槽——subtitle tab 读 subtitle 槽、translate tab 读 translate 槽、
+ * 顶部识别状态条读 identify 槽，互不覆盖。
+ */
+type Currents = {
+  identify: Current | null
+  subtitle: Current | null
+  translate: Current | null
+}
+
+const EMPTY_CURRENTS: Currents = { identify: null, subtitle: null, translate: null }
 
 /** data 里的身份/步骤字段：空串与非字符串一律 null，**绝不 Number() 强转**。 */
 function nonemptyString(v: unknown): string | null {
@@ -96,28 +114,29 @@ function nonemptyString(v: unknown): string | null {
 }
 
 /**
- * SSE 事件 + health 快照 → 当前态。
+ * SSE 事件 + health 快照 → 三槽当前态。
  *
  * ── 纠正的触发时机是**重连**，不是时间（后端 useHealth 注释里点名的那条）──
  * 挂个 15 秒定时器等于在一条好好连着的 SSE 旁边再开一路轮询，正是 R-F6 要消灭的东西。
  * 故只在两个时刻用快照：① 首载 ② SSE 从非 open 恢复到 open。
  */
-function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Current | null {
+function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Currents {
   const activity = useActivityEvent()
   const progress = useProgressEvent()
   const status = useEventsStatus()
 
-  /** 本地当前态。null = 没有任何工作台在跑。 */
-  const [current, setCurrent] = useState<Current | null>(null)
+  /** 三槽本地当前态。某槽 null = 那个工作台没在跑。 */
+  const [currents, setCurrents] = useState<Currents>(EMPTY_CURRENTS)
   /** 已经把哪一条事件折进去了（按 id 去重——四层 Context 存的是"最后一条"，
    *  组件因别的原因重渲染时会再读到同一条，不去重会重复应用）。 */
   const appliedId = useRef(0)
 
   // ── SSE 增量 ──────────────────────────────────────────────────────────
   // 判据逐字照后端 ScoutEventBus.updateCurrent（那是同一件事的服务端实现）：
-  //  · 无 workbench（巡检级/扫描级）→ **清空**（巡检完成/失败/下一轮开始都走这条）
-  //  · activity + 有 workbench       → 新作品开工，index/total 归 null
-  //  · progress + 有 workbench       → 推进 index/total
+  //  · 无 workbench（巡检级/扫描级）→ **清空全部三槽**（巡检完成/失败/下一轮开始都走这条，
+  //    巡检边界 = 所有工作台归零）
+  //  · activity + 有 workbench       → 该槽新作品开工，index/total 归 null
+  //  · progress + 有 workbench       → 推进**该槽**的 index/total（他槽原样不动——修复本体）
   // ⚠️ 两处实现同形是**有意的冗余**：断线时前端只有事件流，必须自己能推导；
   // 而重连后 health 快照会覆盖它——快照是权威，这份推导只是断线期间的近似。
   const applyEvent = useCallback((e: ScoutEvent | null) => {
@@ -125,26 +144,29 @@ function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Cu
     appliedId.current = e.id
     const lane = laneOf(e)
     if (lane === 'patrol') {
-      setCurrent(null)
+      setCurrents(EMPTY_CURRENTS)
       return
     }
     // ⚠️ 识别（lane==='identify'）**照样推进当前态**——R-F1 管的是"不进 tab"，
-    // 不是"当它不存在"。它会被渲染在顶部状态条上（见 StatusBar）。
+    // 不是"当它不存在"。identify 槽会被渲染在顶部状态条上（见 StatusBar）。
     const kind = lane
     if (e.type === 'activity') {
       const d = e.data
-      setCurrent({
-        kind, title: e.title ?? null, index: null, total: null,
-        workId: nonemptyString(d?.workId),
-        backdropPath: nonemptyString(d?.backdropPath),
-        chineseTitle: nonemptyString(d?.chineseTitle),
-        startedAt: typeof e.at === 'number' ? e.at : Date.now(),
-        lastStep: null,
-        cueDone: null,
-        cueTotal: null,
-        // 新作品开工：覆盖格归零——上一部的格子不许贴到新卡上（同 lastStep 归 null 的口径）。
-        targets: undefined,
-      })
+      setCurrents((prev) => ({
+        ...prev,
+        [kind]: {
+          kind, title: e.title ?? null, index: null, total: null,
+          workId: nonemptyString(d?.workId),
+          backdropPath: nonemptyString(d?.backdropPath),
+          chineseTitle: nonemptyString(d?.chineseTitle),
+          startedAt: typeof e.at === 'number' ? e.at : Date.now(),
+          lastStep: null,
+          cueDone: null,
+          cueTotal: null,
+          // 新作品开工：覆盖格归零——上一部的格子不许贴到新卡上（同 lastStep 归 null 的口径）。
+          targets: undefined,
+        },
+      }))
       return
     }
     if (e.type === 'progress') {
@@ -154,22 +176,27 @@ function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Cu
       const step = nonemptyString(d?.step)
       const cueDoneVal = num(d?.cueDone)
       const cueTotalVal = num(d?.cueTotal)
-      // 覆盖格 targets：后端每条里程碑帧带**全量**快照（非增量），所以本条有就整包覆盖。
+      // 覆盖格 targets：后端每条帧带**全量**快照（非增量），所以本条有就整包覆盖。
       const targetsVal = Array.isArray(d?.targets) ? d?.targets as Current['targets'] : undefined
-      setCurrent((prev) => {
-        const sameKind = prev?.kind === kind
+      setCurrents((prev) => {
+        // slot 是**本槽**的旧值（同槽必同 kind——旧单槽实现的 sameKind 判断随槽位化退役）；
+        // "本条有就覆盖、缺席保留"的逐字段口径原样沿用，只是 prev 换成了本槽。
+        const slot = prev[kind]
         return {
-          kind, title: e.title ?? null,
-          index: num(d?.done), total: num(d?.total),
-          workId: nonemptyString(d?.workId) ?? (sameKind ? (prev?.workId ?? null) : null),
-          backdropPath: nonemptyString(d?.backdropPath) ?? (sameKind ? (prev?.backdropPath ?? null) : null),
-          chineseTitle: nonemptyString(d?.chineseTitle) ?? (sameKind ? (prev?.chineseTitle ?? null) : null),
-          startedAt: sameKind ? (prev?.startedAt ?? null) : null,
-          lastStep: step ?? (sameKind ? (prev?.lastStep ?? null) : null),
-          cueDone: cueDoneVal ?? (sameKind ? (prev?.cueDone ?? null) : null),
-          cueTotal: cueTotalVal ?? (sameKind ? (prev?.cueTotal ?? null) : null),
-          // 本条有就覆盖、缺席同台保留（节流帧不带 targets，不许把里程碑帧的格子抹掉）。
-          targets: targetsVal ?? (sameKind ? (prev?.targets ?? undefined) : undefined),
+          ...prev,
+          [kind]: {
+            kind, title: e.title ?? null,
+            index: num(d?.done), total: num(d?.total),
+            workId: nonemptyString(d?.workId) ?? slot?.workId ?? null,
+            backdropPath: nonemptyString(d?.backdropPath) ?? slot?.backdropPath ?? null,
+            chineseTitle: nonemptyString(d?.chineseTitle) ?? slot?.chineseTitle ?? null,
+            startedAt: slot?.startedAt ?? null,
+            lastStep: step ?? slot?.lastStep ?? null,
+            cueDone: cueDoneVal ?? slot?.cueDone ?? null,
+            cueTotal: cueTotalVal ?? slot?.cueTotal ?? null,
+            // 本条有就覆盖、缺席本槽保留（节流帧不带 targets，不许把里程碑帧的格子抹掉）。
+            targets: targetsVal ?? slot?.targets ?? undefined,
+          },
         }
       })
     }
@@ -178,14 +205,19 @@ function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Cu
   useEffect(() => { applyEvent(activity) }, [activity, applyEvent])
   useEffect(() => { applyEvent(progress) }, [progress, applyEvent])
 
-  // ── 首载：health 快照播种 ────────────────────────────────────────────────
+  // ── 首载：health 快照播种（三槽整包）─────────────────────────────────────
   // ⚠️ 只在**还没应用过任何事件**时播种：首载的 health 响应可能比第一条 SSE 事件晚到，
   // 无条件覆盖会把更新的事件态倒退回更旧的快照。
   const seeded = useRef(false)
   useEffect(() => {
     if (health && !seeded.current && appliedId.current === 0) {
       seeded.current = true
-      setCurrent(health.current)
+      // 逐槽显式取值而不是整包透传：老后端/脏响应缺槽时给 null，不让 undefined 溜进本地态。
+      setCurrents({
+        identify: health.currents?.identify ?? null,
+        subtitle: health.currents?.subtitle ?? null,
+        translate: health.currents?.translate ?? null,
+      })
     }
   }, [health])
 
@@ -203,10 +235,15 @@ function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Cu
   }, [reloadHealth])
   useResumeEdge(status, onResume)
 
-  return current
+  return currents
 }
 
-/** 滚动 log：只追加**实际送到浏览器**的 progress.step 译文，上限 5；新 activity 重置。 */
+/** 滚动 log：只追加**实际送到浏览器**的 progress.step 译文，上限 5；新 activity 重置。
+ *
+ *  ⚠️ **只收翻译车道**（2026-08-30 三槽化随手补的一致性）：这份 log 只被翻译卡渲染
+ *  （字幕卡的 5 行滚动 log 已被 ticker 取代），而两车道**并发**——不过滤的话，字幕台的
+ *  step 会窜进翻译卡的 log、字幕台开工会把翻译卡的 log 清空。单槽时代这条漏看不见
+ *  （字幕事件一来整张翻译卡都没了）；三槽下翻译卡常驻，必须把车道滤干净。 */
 function useStepLog(workId: string | null | undefined): string[] {
   const activity = useActivityEvent()
   const progress = useProgressEvent()
@@ -238,12 +275,16 @@ function useStepLog(workId: string | null | undefined): string[] {
   useEffect(() => {
     if (!activity || activity.id <= appliedAct.current) return
     appliedAct.current = activity.id
+    // 字幕/识别车道的开工不清翻译卡的 log（见头注释）；巡检级照清——翻译台此刻已归零。
+    const lane = laneOf(activity)
+    if (lane === 'subtitle' || lane === 'identify') return
     setLines([])
   }, [activity])
 
   useEffect(() => {
     if (!progress || progress.id <= appliedProg.current) return
     appliedProg.current = progress.id
+    if (laneOf(progress) !== 'translate') return
     const step = nonemptyString(progress.data?.step)
     if (!step) return
     const phrase = t(stepActionKey(step))
@@ -271,10 +312,10 @@ function useStepLog(workId: string | null | undefined): string[] {
  * 两者可以任意组合出现（实时通道好好的、而挂载掉了，是最常见的那一种）。
  */
 function StatusBar({
-  health, current, status, reloadHealth,
+  health, currents, status, reloadHealth,
 }: {
   health: HealthDTO | null
-  current: Current | null
+  currents: Currents
   status: EventsStatus
   reloadHealth: () => void
 }) {
@@ -285,10 +326,14 @@ function StatusBar({
   // 每秒重算会让整个状态条每秒重渲染，而显示的字一分钟才变一次。
   const now = useMemo(() => Date.now(), [health])
 
-  // running 跟 SSE `current`，不跟 health.current：POST 200 只是 queued，
-  // 快照可能整轮都是 null；收工后 patrol 已把 current 清掉，health 却可能还挂着旧的。
-  // 禁止 `current ?? health.current`——patrol 之后 SSE 是 null、中途快照仍可能非 null。
-  const fresh = health ? inspectFreshness({ ...health, current }, now) : null
+  // "有没有工作台在跑" = 三槽任一非 null。⚠️ 不许只看某一个槽——那会在"只有翻译台在跑"
+  // 时把 Run now 解禁、把巡检态报成 idle。
+  const busy = currents.identify ?? currents.subtitle ?? currents.translate
+
+  // running 跟 SSE 三槽，不跟 health.currents：POST 200 只是 queued，
+  // 快照可能整轮都是 null；收工后 patrol 已把三槽清掉，health 却可能还挂着旧的。
+  // 禁止 `busy ?? health.currents.*`——patrol 之后 SSE 是 null、中途快照仍可能非 null。
+  const fresh = health ? inspectFreshness({ ...health, current: busy }, now) : null
   const perm = health ? workPermission(health) : null
   // 🟡 读数新鲜度。**电平**不是边沿——见 inspectFreshness 里 liveFreshness 的论证。
   const live = liveFreshness(status)
@@ -301,14 +346,14 @@ function StatusBar({
   const appliedRoundId = useRef(0)
 
   useEffect(() => {
-    const running = current != null
+    const running = busy != null
     if (running) {
       setPending(false)
       inFlightRef.current = false
     }
     if (wasRunning.current && !running) reloadHealth()
     wasRunning.current = running
-  }, [current, reloadHealth])
+  }, [busy, reloadHealth])
 
   const applyRound = useCallback((e: ScoutEvent | null) => {
     if (!e || e.id <= appliedRoundId.current) return
@@ -342,11 +387,11 @@ function StatusBar({
 
   // idle：下次自动检查倒计时（不再渲染「上次自动检查开始于」）。
   // never / stale / running 四态原句保留；stale 仍用「…前」（死亡信号，不是倒计时）。
-  // roundLive / current 必须压过 never：inspectFreshness 在 lastInspectAt=null 时
+  // roundLive / busy 必须压过 never：inspectFreshness 在 lastInspectAt=null 时
   // 先返回 never，冷启动第一轮工作台在跑也会被说成"还没检查过"。
   let inspectLine: string
   if (!fresh) inspectLine = t('wb_inspect_unknown')
-  else if (roundLive || current != null || fresh.phase === 'running') inspectLine = t('wb_inspect_running')
+  else if (roundLive || busy != null || fresh.phase === 'running') inspectLine = t('wb_inspect_running')
   else if (fresh.phase === 'never') inspectLine = t('wb_inspect_never')
   else if (fresh.phase === 'stale') {
     inspectLine = `${t('wb_inspect_stale')}（${relAgoLabel(fresh.msSinceStart ?? 0, lang)}）`
@@ -393,7 +438,7 @@ function StatusBar({
           variant="outline"
           size="sm"
           data-testid="wb-inspect-now"
-          disabled={pending || current != null || roundLive}
+          disabled={pending || busy != null || roundLive}
           onClick={() => { void onRunNow() }}
         >
           {t('wb_inspect_run')}
@@ -437,12 +482,13 @@ function StatusBar({
       <StalledJobsNote stalledJobs={health?.stalledJobs} />
 
       {/* 🔴 R-F1 的可见形态：识别在**这里**，不在 tab 里。
-          判据是 current.kind === 'identify'（laneOf 的同一套口径在 useCurrentState 里已用过）。 */}
-      {current?.kind === 'identify' && (
+          三槽化后直接读 identify 槽——它只被 identify 车道的事件推进，
+          字幕/翻译的高频帧碰不到它（单槽时代它们会把这一行顶掉）。 */}
+      {currents.identify && (
         <span data-testid="wb-identify-line">
-          {t('wb_identify_running')}{current.title ? `：${current.title}` : ''}
-          {current.index !== null && current.total !== null
-            ? ` ${current.index}/${current.total}`
+          {t('wb_identify_running')}{currents.identify.title ? `：${currents.identify.title}` : ''}
+          {currents.identify.index !== null && currents.identify.total !== null
+            ? ` ${currents.identify.index}/${currents.identify.total}`
             : ''}
         </span>
       )}
@@ -597,8 +643,9 @@ export function ActivityPage() {
   const { data: activityData, loading, error, reload: reloadActivity } = useActivity()
   const status = useEventsStatus()
 
-  const current = useCurrentState(health, reloadHealth)
-  const logLines = useStepLog(current?.workId)
+  const currents = useCurrentState(health, reloadHealth)
+  // 滚动 log 只喂翻译卡（字幕卡已换 ticker），故跟翻译槽的 workId 走。
+  const logLines = useStepLog(currents.translate?.workId)
   const activityEvent = useActivityEvent()
 
   const [tab, setTab] = useState<ActivityTab>('subtitle')
@@ -639,7 +686,7 @@ export function ActivityPage() {
   return (
     <Section className="mx-auto w-full max-w-page">
       <div className="flex flex-col gap-3">
-        <StatusBar health={health} current={current} status={status} reloadHealth={reloadHealth} />
+        <StatusBar health={health} currents={currents} status={status} reloadHealth={reloadHealth} />
 
         <div className="wb-tabs" role="tablist" aria-label={t('wb_tablist_label')}>
           {ACTIVITY_TABS.map((id) => (
@@ -669,7 +716,7 @@ export function ActivityPage() {
         ) : (
           <TabPanel
             tab={tab}
-            current={current}
+            current={currents[tab]}
             queue={queues[tab]}
             queueByWorkId={queueByWorkId}
             live={liveFreshness(status)}

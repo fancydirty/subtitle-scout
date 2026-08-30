@@ -33,7 +33,7 @@ function mockFetchRouted(handlers: { path: string; body: unknown; prefix?: boole
   })
 }
 
-/** Task ⑨ 活动页的健康快照。`current: null` = 没有任何工作台在跑（本冒烟测试不关心
+/** Task ⑨ 活动页的健康快照。`currents` 三槽全 null = 没有任何工作台在跑（本冒烟测试不关心
  *  在跑态，只要页面能渲染出来）。workPermitted 给 true 免得状态条上多一行不许可提示
  *  干扰别的断言。 */
 const lastInspectAt = Date.now() - 60_000
@@ -45,7 +45,7 @@ const HEALTH = {
   setupSatisfied: true,
   roots: [],
   unidentified: { dirCount: 0, dirs: [] },
-  current: null,
+  currents: { identify: null, subtitle: null, translate: null },
 }
 
 function standardHandlers() {

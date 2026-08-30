@@ -32,7 +32,7 @@ function mockFetch(byPath: Record<string, unknown>) {
 
 const HEALTH_OK = {
   lastInspectAt: null, nextInspectAt: null, workPermitted: true, engineEnabled: true, setupSatisfied: true,
-  roots: [], current: null,
+  roots: [], currents: { identify: null, subtitle: null, translate: null },
 }
 
 const render1 = (ui: React.ReactElement) => render(<I18nProvider initialLang="en">{ui}</I18nProvider>)

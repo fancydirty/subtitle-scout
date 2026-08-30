@@ -29,7 +29,7 @@ import { buildStalledJobs, type StalledJobsDTO } from './stalledJobsHealth.js'
 import { listRecentFoundGrouped } from '../v2/notificationsRepo.js'
 import { handleApiRoute, type RouterDeps } from './router.js'
 import { traceBus } from '../core/traceBus.js'
-import type { ScoutEventBus, ScoutCurrent } from '../core/scoutEvents.js'
+import type { ScoutEventBus, ScoutCurrents } from '../core/scoutEvents.js'
 import { eventFrame, helloFrame, parseResumeToken, resolveReplayFrom } from '../core/sseWire.js'
 // Task ⑤：GET /api/v2/health 的 `roots[].ok` 陈旧门以巡检周期为单位（见
 // ROOT_HEALTH_STALE_AFTER_MS 的论证——不在这里写死 48h）。**只引常量、不引 daemon 类**：
@@ -269,7 +269,15 @@ export interface HealthDTO {
    * 这一段会自己消失。完整论证见 stalledJobsHealth.ts 头注释。
    */
   stalledJobs: StalledJobsDTO
-  current: ScoutCurrent | null
+  /**
+   * 三个工作台各自的当前态快照（per-workbench 三槽，2026-08-30 起）。
+   *
+   * ⚠️ 曾是单槽 `current: ScoutCurrent | null`——韩语 live test 实证 daemonV2 两车道并发
+   * （mainLoop + translateLoop）下后 emit 的车道把前一车道的快照顶掉，字幕 tab 的覆盖格
+   * 被翻译台的高频帧反复抹掉。**不留旧 `current` 字段**：本产品自部署、前后端同镜像出货
+   * （deploy 单元 = 同一容器），没有版本错配问题，留兼容层只会让下一个人分不清哪个是真相。
+   */
+  currents: ScoutCurrents
 }
 
 /**
@@ -989,10 +997,10 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
       //    写：daemonV2.scanOnce 的 finally 单点收敛。**本端点是这两列的第一个读取方**
       //    （db.ts v41 那条 entry 写着"目前没有读取方……Task ⑤ 的 /api/v2/health 将据它判
       //    roots.ok，那个端点今天还不存在"——就是这里）。ok 的三态折叠见 buildRootHealth。
-      //  · current —— ScoutEventBus.getCurrent()（Task ④ 挂的内存快照）。写：publish
-      //    （= daemonV2 已有的 13 个 emit 点）。**本端点是 getCurrent() 的唯一生产读取点**，
+      //  · currents —— ScoutEventBus.getCurrents()（内存快照，per-workbench 三槽）。写：publish
+      //    （= daemonV2 已有的 13 个 emit 点）。**本端点是 getCurrents() 的唯一生产读取点**，
       //    故那条接线由 health.test.ts 里那条**运行时探针**用例守卫：给端点一个 spy 过的
-      //    ScoutEventBus，断言 getCurrent 每次请求真的被调用一次。
+      //    ScoutEventBus，断言 getCurrents 每次请求真的被调用一次。
       //    （此前守它的是 healthWiring.test.ts 的源码文本断言，已删——那 4 条实测全是假绿，
       //     `current: null, // events.getCurrent()` 就能把它们全部喂饱。文本匹配证明的是
       //     "源码里写了这几个字"，不是"运行时调了"；watchWiring.test.ts 那种形态之所以仍然
@@ -1005,8 +1013,8 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
       // roots）与总线毫无关系，它们全部长在库上。整体 503 会让"守备目录健康度"这个纯 DB
       // 事实在没跑 watch 时也查不到——而那恰恰是最需要它的时候（用户开着 dashboard 排查
       // "为什么什么都没发生"，得到的却是一个 503）。
-      // 故：**events 缺席 → `current: null`，其余三个字段照给**。
-      // 这不会制造歧义：`current: null` 的语义本来就是"没有任何工作台在跑"（见 ScoutCurrent
+      // 故：**events 缺席 → `currents` 三槽全 null，其余三个字段照给**。
+      // 这不会制造歧义：槽为 null 的语义本来就是"这个工作台没在跑"（见 ScoutCurrents
       // 头注释），而 watch 没跑时确实没有任何工作台在跑——两条路径给出的是**同一句真话**，
       // 不是拿 null 掩盖缺席。
       //
@@ -1047,8 +1055,8 @@ export function startDashboard(opts: DashboardOpts): Promise<Server> {
           // 「该被重试却一直没动的活」（🔴-4）。谓词是 claimNext 取件谓词的**真子集**
           // （同两条状态 + 一道时间门），故队列一旦被接回 claim，这一段自动归零。
           stalledJobs: buildStalledJobs(db, Date.now()),
-          // events 缺席 → null（见上方论证：不整体 503）。
-          current: events ? events.getCurrent() : null,
+          // events 缺席 → 三槽全 null（见上方论证：不整体 503）。
+          currents: events ? events.getCurrents() : { identify: null, subtitle: null, translate: null },
         }
         res.writeHead(200, JSON_CT)
         res.end(JSON.stringify(body))

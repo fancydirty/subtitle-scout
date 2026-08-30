@@ -238,96 +238,98 @@ describe('ScoutEventBus（R-F10 SSE 事件总线）', () => {
     })
   })
 
-  describe('current 快照（设计文档审计 F-6：变化流无法自证当前态）', () => {
-    it('🔴 冷启动没有任何事件时 current 是 null（不编一个"空闲"对象）', () => {
+  describe('currents 快照（F-6：变化流无法自证当前态；2026-08-30 起 per-workbench 三槽）', () => {
+    /** 三槽全空的形状（冷启动 / 巡检边界）。 */
+    const IDLE = { identify: null, subtitle: null, translate: null }
+
+    it('🔴 冷启动没有任何事件时三槽全 null（不编一个"空闲"对象）', () => {
       const { bus } = mkBus()
-      expect(bus.getCurrent()).toBeNull()
+      expect(bus.getCurrents()).toEqual(IDLE)
     })
 
-    it('🔴 工作台级 activity 推进快照，kind 取自 workbench 字段', () => {
+    it('🔴 工作台级 activity 推进**自己的槽**，kind 取自 workbench 字段', () => {
       const { bus, at } = mkBus()
       bus.publish({ type: 'activity', message: '正在找字幕：甲剧（8 个文件）', title: '甲剧', workbench: 'subtitle' })
-      expect(bus.getCurrent()).toEqual(cur({ kind: 'subtitle', title: '甲剧', startedAt: at() }))
+      expect(bus.getCurrents().subtitle).toEqual(cur({ kind: 'subtitle', title: '甲剧', startedAt: at() }))
+      expect(bus.getCurrents().translate).toBeNull()
+      expect(bus.getCurrents().identify).toBeNull()
     })
 
-    it('🔴 progress 的 data.done/total 落进 index/total', () => {
+    it('🔴 progress 的 data.done/total 落进本槽的 index/total', () => {
       const { bus } = mkBus()
       bus.publish({ type: 'progress', message: '第 3/47 个作品', title: '甲剧', workbench: 'subtitle', data: { done: 3, total: 47 } })
-      expect(bus.getCurrent()).toEqual(cur({ kind: 'subtitle', title: '甲剧', index: 3, total: 47 }))
+      expect(bus.getCurrents().subtitle).toEqual(cur({ kind: 'subtitle', title: '甲剧', index: 3, total: 47 }))
     })
 
-    it('🔴 三个工作台的 kind 都能落进去（后来者覆盖，快照只有一个当前态）', () => {
+    it('🔴 同一工作台后来的 activity 覆盖本槽（一个台同时只处理一个作品）', () => {
       const { bus, at } = mkBus()
-      bus.publish({ type: 'activity', message: 'a', title: '甲', workbench: 'identify' })
-      expect(bus.getCurrent()?.kind).toBe('identify')
+      bus.publish({ type: 'activity', message: 'a', title: '甲', workbench: 'subtitle' })
       bus.publish({ type: 'activity', message: 'b', title: '乙', workbench: 'subtitle' })
-      expect(bus.getCurrent()?.kind).toBe('subtitle')
-      bus.publish({ type: 'activity', message: 'c', title: '丙', workbench: 'translate' })
-      expect(bus.getCurrent()).toEqual(cur({ kind: 'translate', title: '丙', startedAt: at() }))
+      expect(bus.getCurrents().subtitle).toEqual(cur({ kind: 'subtitle', title: '乙', startedAt: at() }))
     })
 
-    it('🔴 新作品的 activity 把上一个作品的 index/total 清掉（病 B：不许拿甲的进度描述乙）', () => {
+    it('🔴 新作品的 activity 把本槽上一个作品的 index/total 清掉（病 B：不许拿甲的进度描述乙）', () => {
       const { bus, at } = mkBus()
       bus.publish({ type: 'progress', message: 'p', title: '甲剧', workbench: 'subtitle', data: { done: 3, total: 47 } })
-      bus.publish({ type: 'activity', message: '正在翻译：乙剧', title: '乙剧', workbench: 'translate' })
-      expect(bus.getCurrent()).toEqual(cur({ kind: 'translate', title: '乙剧', startedAt: at() }))
+      bus.publish({ type: 'activity', message: '正在找字幕：乙剧', title: '乙剧', workbench: 'subtitle' })
+      expect(bus.getCurrents().subtitle).toEqual(cur({ kind: 'subtitle', title: '乙剧', startedAt: at() }))
     })
 
     it('🔴 事件没带 title → title 是 null，不编一个也不留上一条的', () => {
       const { bus, at } = mkBus()
       bus.publish({ type: 'activity', message: 'a', title: '甲剧', workbench: 'subtitle' })
       bus.publish({ type: 'activity', message: 'b', workbench: 'subtitle' })
-      expect(bus.getCurrent()).toEqual(cur({ kind: 'subtitle', title: null, startedAt: at() }))
+      expect(bus.getCurrents().subtitle).toEqual(cur({ kind: 'subtitle', title: null, startedAt: at() }))
     })
 
     it('🔴 progress 缺 data / data 里不是数字 → index/total 记 null，不 NaN 不强转', () => {
       const { bus, tick } = mkBus()
       bus.publish({ type: 'progress', message: 'p', title: '甲', workbench: 'subtitle' })
-      expect(bus.getCurrent()).toEqual(cur({ kind: 'subtitle', title: '甲' }))
+      expect(bus.getCurrents().subtitle).toEqual(cur({ kind: 'subtitle', title: '甲' }))
       tick(PROGRESS_THROTTLE_MS)
       bus.publish({ type: 'progress', message: 'p', title: '甲', workbench: 'subtitle', data: { done: '3', total: null } })
-      expect(bus.getCurrent()).toEqual(cur({ kind: 'subtitle', title: '甲' }))
+      expect(bus.getCurrents().subtitle).toEqual(cur({ kind: 'subtitle', title: '甲' }))
     })
 
-    it('🔴 巡检完成清空 current（F-6 本体：跑完了不许还停在"正在处理 X"）', () => {
+    it('🔴 巡检完成清空三槽（F-6 本体：跑完了不许还停在"正在处理 X"）', () => {
       const { bus } = mkBus()
       bus.publish({ type: 'activity', message: '正在找字幕：甲剧', title: '甲剧', workbench: 'subtitle' })
-      expect(bus.getCurrent()).not.toBeNull()
+      expect(bus.getCurrents().subtitle).not.toBeNull()
       bus.publish({ type: 'activity', message: '巡检完成，歇着等明天' })
-      expect(bus.getCurrent()).toBeNull()
+      expect(bus.getCurrents()).toEqual(IDLE)
     })
 
     it('🔴 巡检失败（无 workbench 的 health）同样清空——失败也是"没在跑了"', () => {
       const { bus } = mkBus()
       bus.publish({ type: 'activity', message: '正在翻译：甲', title: '甲', workbench: 'translate' })
       bus.publish({ type: 'health', message: '巡检失败，30 分钟后重试: boom' })
-      expect(bus.getCurrent()).toBeNull()
+      expect(bus.getCurrents()).toEqual(IDLE)
     })
 
     it('🔴 巡检开始也清空（上一轮的残留不许跨轮活到下一轮）', () => {
       const { bus } = mkBus()
       bus.publish({ type: 'activity', message: '正在识别：/x', title: '/x', workbench: 'identify' })
       bus.publish({ type: 'activity', message: '巡检开始' })
-      expect(bus.getCurrent()).toBeNull()
+      expect(bus.getCurrents()).toEqual(IDLE)
     })
 
-    it('🔴 扫描级 health（无 workbench）不污染 current：清空而不是写成 identify', () => {
+    it('🔴 扫描级 health（无 workbench）不污染任何槽：清空而不是写成 identify', () => {
       const { bus } = mkBus()
       bus.publish({ type: 'activity', message: '正在识别：/x', title: '/x', workbench: 'identify' })
       bus.publish({ type: 'health', message: '守备目录读取失败，本轮跳过（1）: /mnt/a' })
-      expect(bus.getCurrent()).toBeNull()
+      expect(bus.getCurrents()).toEqual(IDLE)
     })
 
-    it('🔴 found 既不推进也不清空 current（成果 ≠ 状态）', () => {
+    it('🔴 found 既不推进也不清空任何槽（成果 ≠ 状态）', () => {
       const { bus } = mkBus()
       bus.publish({ type: 'progress', message: 'p', title: '甲剧', workbench: 'subtitle', data: { done: 3, total: 47 } })
-      const before = bus.getCurrent()
+      const before = bus.getCurrents()
       bus.publish({ type: 'found', message: '甲剧：装上了 3 条字幕', title: '甲剧', workbench: 'subtitle', data: { installed: 3 } })
-      expect(bus.getCurrent()).toEqual(before)
-      expect(bus.getCurrent()).toEqual(cur({ kind: 'subtitle', title: '甲剧', index: 3, total: 47 }))
+      expect(bus.getCurrents()).toEqual(before)
+      expect(bus.getCurrents().subtitle).toEqual(cur({ kind: 'subtitle', title: '甲剧', index: 3, total: 47 }))
     })
 
-    it('🔴 被节流折叠掉的 progress 仍然推进 current（快照不跟着推送带宽一起丢）', () => {
+    it('🔴 被节流折叠掉的 progress 仍然推进本槽（快照不跟着推送带宽一起丢）', () => {
       const { bus } = mkBus()
       const { got } = collect(bus)
       bus.publish({ type: 'progress', message: 'p1', title: '甲', workbench: 'subtitle', data: { done: 1, total: 47 } })
@@ -336,30 +338,20 @@ describe('ScoutEventBus（R-F10 SSE 事件总线）', () => {
       // 推送侧只出 1 条（节流不变）
       expect(got.map((e) => e.message)).toEqual(['p1'])
       // 快照侧是最新的第 3 个——这正是"断线期间丢事件"不再致命的那一半
-      expect(bus.getCurrent()?.index).toBe(3)
+      expect(bus.getCurrents().subtitle?.index).toBe(3)
     })
 
-    it('🔴 getCurrent 返回副本：调用方改它不许改到总线内部状态', () => {
-      const { bus, at } = mkBus()
-      bus.publish({ type: 'activity', message: 'a', title: '甲', workbench: 'subtitle' })
-      const snap = bus.getCurrent()
-      expect(snap).not.toBeNull()
-      snap!.title = '被篡改'
-      snap!.index = 999
-      expect(bus.getCurrent()).toEqual(cur({ kind: 'subtitle', title: '甲', startedAt: at() }))
-    })
-
-    it('🔴 时钟抛错（publish 整体被兜住）时 current 也不许把异常抛回巡检', () => {
+    it('🔴 时钟抛错（publish 整体被兜住）时 currents 也不许把异常抛回巡检', () => {
       const bus = new ScoutEventBus({ now: () => { throw new Error('clock dead') } })
       expect(() => bus.publish({ type: 'activity', message: 'a', title: '甲', workbench: 'subtitle' })).not.toThrow()
-      expect(() => bus.getCurrent()).not.toThrow()
+      expect(() => bus.getCurrents()).not.toThrow()
     })
 
-    it('🔴 订阅者抛错不影响 current 已经推进（快照在广播之前就定了）', () => {
+    it('🔴 订阅者抛错不影响 currents 已经推进（快照在广播之前就定了）', () => {
       const { bus, at } = mkBus()
       bus.subscribe(() => { throw new Error('dead SSE') })
       bus.publish({ type: 'activity', message: 'a', title: '甲', workbench: 'subtitle' })
-      expect(bus.getCurrent()).toEqual(cur({ kind: 'subtitle', title: '甲', startedAt: at() }))
+      expect(bus.getCurrents().subtitle).toEqual(cur({ kind: 'subtitle', title: '甲', startedAt: at() }))
     })
 
     it('🔴 activity 写入 workId/backdropPath/chineseTitle/startedAt，lastStep 为 null', () => {
@@ -368,14 +360,14 @@ describe('ScoutEventBus（R-F10 SSE 事件总线）', () => {
         type: 'activity', message: 'a', title: '甲剧', workbench: 'subtitle',
         data: { workId: 'tmdb:1', backdropPath: '/bd.jpg', chineseTitle: '黑暗智宅' },
       })
-      expect(bus.getCurrent()).toEqual(cur({
+      expect(bus.getCurrents().subtitle).toEqual(cur({
         kind: 'subtitle', title: '甲剧',
         workId: 'tmdb:1', backdropPath: '/bd.jpg', chineseTitle: '黑暗智宅',
         startedAt: at(),
       }))
     })
 
-    it('🔴 progress 更新 done/total 与 lastStep；静态字段缺席时保留', () => {
+    it('🔴 progress 更新 done/total 与 lastStep；静态字段缺席时保留本槽旧值', () => {
       const { bus, tick } = mkBus()
       bus.publish({
         type: 'activity', message: 'a', title: '甲剧', workbench: 'subtitle',
@@ -386,7 +378,7 @@ describe('ScoutEventBus（R-F10 SSE 事件总线）', () => {
         type: 'progress', message: 'p', title: '甲剧', workbench: 'subtitle',
         data: { done: 2, total: 6, step: 'search_source' },
       })
-      const snap = bus.getCurrent()
+      const snap = bus.getCurrents().subtitle
       expect(snap?.index).toBe(2)
       expect(snap?.total).toBe(6)
       expect(snap?.workId).toBe('tmdb:1')
@@ -403,8 +395,8 @@ describe('ScoutEventBus（R-F10 SSE 事件总线）', () => {
         type: 'progress', message: 'p', title: '甲', workbench: 'subtitle',
         data: { done: 0, total: 6, workId: 'tmdb:1', backdropPath: '/bd.jpg', chineseTitle: '中文' },
       })
-      expect(bus.getCurrent()?.backdropPath).toBe('/bd.jpg')
-      expect(bus.getCurrent()?.chineseTitle).toBe('中文')
+      expect(bus.getCurrents().subtitle?.backdropPath).toBe('/bd.jpg')
+      expect(bus.getCurrents().subtitle?.chineseTitle).toBe('中文')
     })
 
     it('🔴 progress-only 无先前 activity 也从 data 写入 workId', () => {
@@ -413,7 +405,7 @@ describe('ScoutEventBus（R-F10 SSE 事件总线）', () => {
         type: 'progress', message: 'p', title: '甲', workbench: 'subtitle',
         data: { done: 0, total: 6, workId: 'tmdb:1' },
       })
-      expect(bus.getCurrent()?.workId).toBe('tmdb:1')
+      expect(bus.getCurrents().subtitle?.workId).toBe('tmdb:1')
     })
 
     it('🔴 progress 无 step 时保留 lastStep 与 startedAt', () => {
@@ -424,23 +416,23 @@ describe('ScoutEventBus（R-F10 SSE 事件总线）', () => {
       bus.publish({ type: 'progress', message: 'p', title: '甲', workbench: 'subtitle', data: { done: 0, total: 6, step: 'search_source' } })
       tick(PROGRESS_THROTTLE_MS)
       bus.publish({ type: 'progress', message: 'p', title: '甲', workbench: 'subtitle', data: { done: 1, total: 6 } })
-      expect(bus.getCurrent()?.lastStep).toBe('search_source')
-      expect(bus.getCurrent()?.startedAt).toBe(started)
-      expect(bus.getCurrent()?.index).toBe(1)
+      expect(bus.getCurrents().subtitle?.lastStep).toBe('search_source')
+      expect(bus.getCurrents().subtitle?.startedAt).toBe(started)
+      expect(bus.getCurrents().subtitle?.index).toBe(1)
     })
 
     it('🔴 被节流折叠的 progress 仍更新 lastStep（快照在节流门前）', () => {
       const { bus } = mkBus()
       bus.publish({ type: 'progress', message: '1', workbench: 'subtitle', data: { done: 0, total: 6, step: 'search_source' } })
       bus.publish({ type: 'progress', message: '2', workbench: 'subtitle', data: { done: 0, total: 6, step: 'download_candidate' } })
-      expect(bus.getCurrent()?.lastStep).toBe('download_candidate')
+      expect(bus.getCurrents().subtitle?.lastStep).toBe('download_candidate')
     })
 
-    it('🔴 无 workbench 的 activity 清空含新字段的整个 current', () => {
+    it('🔴 无 workbench 的 activity 清空含新字段的全部三槽', () => {
       const { bus } = mkBus()
       bus.publish({ type: 'activity', message: 'a', title: '甲', workbench: 'subtitle', data: { workId: 'tmdb:1' } })
       bus.publish({ type: 'activity', message: '巡检完成' })
-      expect(bus.getCurrent()).toBeNull()
+      expect(bus.getCurrents()).toEqual(IDLE)
     })
   })
 
@@ -488,23 +480,86 @@ describe('ScoutEventBus（R-F10 SSE 事件总线）', () => {
       // 推送侧只出 1 条（节流未因带 targets 而失效）
       expect(got.map((e) => e.message)).toEqual(['p1'])
       // 快照侧仍是最新的第二帧 targets（快照在节流门之前推进）——这是 replay 可重建的地基
-      expect(bus.getCurrent()?.targets?.[0]?.state).toBe('active')
+      expect(bus.getCurrents().subtitle?.targets?.[0]?.state).toBe('active')
     })
 
     it('🔴 updateCurrent 把 targets 落进快照（重连可恢复）', () => {
       const { bus } = mkBus()
       bus.publish({ type: 'progress', message: 'x', workbench: 'subtitle', data: { targets: [{ key: 's1e1', label: 'S01E01', state: 'installed' }] } })
-      expect(bus.getCurrent()?.targets?.[0]?.state).toBe('installed')
+      expect(bus.getCurrents().subtitle?.targets?.[0]?.state).toBe('installed')
     })
 
-    it('🔴 targets 在同工作台缺席时保留上一条、跨台归 undefined', () => {
+    it('🔴 targets 在本槽缺席时保留上一条；他槽的 progress **不再**把它抹掉（旧单槽在此必翻车）', () => {
       const { bus, tick } = mkBus()
       bus.publish({ type: 'progress', message: 'm', workbench: 'subtitle', data: { milestone: true, targets: [{ key: 'k', label: 'L', state: 'installed' }] } })
       tick(PROGRESS_THROTTLE_MS)
-      bus.publish({ type: 'progress', message: 'p', workbench: 'subtitle', data: { done: 1, total: 2 } })  // 缺 targets，同台 → 保留
-      expect(bus.getCurrent()?.targets?.[0]?.state).toBe('installed')
-      bus.publish({ type: 'progress', message: 'q', workbench: 'translate', data: { done: 0, total: 3 } })  // 跨台 → undefined
-      expect(bus.getCurrent()?.targets).toBeUndefined()
+      bus.publish({ type: 'progress', message: 'p', workbench: 'subtitle', data: { done: 1, total: 2 } })  // 缺 targets，本槽 → 保留
+      expect(bus.getCurrents().subtitle?.targets?.[0]?.state).toBe('installed')
+      bus.publish({ type: 'progress', message: 'q', workbench: 'translate', data: { done: 0, total: 3 } })  // 他槽只写自己
+      expect(bus.getCurrents().translate?.targets).toBeUndefined()
+      expect(bus.getCurrents().subtitle?.targets?.[0]?.state).toBe('installed')
+    })
+  })
+
+  // ── 🔴 per-workbench 三槽（2026-08-30 韩语 live test 实证的双车道并发覆盖）────────
+  // daemonV2.run() 是 Promise.all([mainLoop, translateLoop]) 两车道**并发**；单槽快照下
+  // 后 emit 的车道把前一车道的 current 整个顶掉（sameKind=false → targets/workId 全归零）。
+  // 实测形态：翻译台高频跑动时字幕台的覆盖格在前端反复被抹掉；且跨车道下 replay+health
+  // 双通道都会失去字幕台快照。修法：current 拆成 identify/subtitle/translate 三槽，
+  // 带 workbench 的事件只写自己的槽。
+  describe('🔴 per-workbench 三槽 currents（双车道并发互不覆盖·韩语 live test 回归锁）', () => {
+    it('🔴 回归锁本体：subtitle 帧带 targets/workId 之后来 translate 帧，subtitle 槽不被抹', () => {
+      const { bus } = mkBus()
+      bus.publish({ type: 'activity', message: 'a', title: '甲剧', workbench: 'subtitle', data: { workId: 'tmdb:1', backdropPath: '/bd.jpg' } })
+      bus.publish({ type: 'progress', message: 'p', title: '甲剧', workbench: 'subtitle', data: { done: 1, total: 3, targets: [{ key: 'e1', label: 'E01', state: 'active' }] } })
+      // 翻译车道插进来（live 实测里它高频跑动）——旧单槽代码在这里把字幕槽整个顶掉
+      bus.publish({ type: 'activity', message: 't', title: '乙剧', workbench: 'translate', data: { workId: 'tmdb:2' } })
+      bus.publish({ type: 'progress', message: 'tp', title: '乙剧', workbench: 'translate', data: { done: 1, total: 12, cueDone: 5, cueTotal: 100 } })
+      const c = bus.getCurrents()
+      expect(c.subtitle?.workId).toBe('tmdb:1')
+      expect(c.subtitle?.backdropPath).toBe('/bd.jpg')
+      expect(c.subtitle?.targets?.[0]?.state).toBe('active')
+      expect(c.subtitle?.index).toBe(1)
+      // 翻译槽同时也是对的——不是"保住字幕就丢翻译"
+      expect(c.translate?.workId).toBe('tmdb:2')
+      expect(c.translate?.cueDone).toBe(5)
+      expect(c.translate?.targets).toBeUndefined()
+    })
+
+    it('🔴 三个工作台各写各槽，三槽并存（不再是"后来者覆盖"）', () => {
+      const { bus } = mkBus()
+      bus.publish({ type: 'activity', message: 'a', title: '甲', workbench: 'identify' })
+      bus.publish({ type: 'activity', message: 'b', title: '乙', workbench: 'subtitle' })
+      bus.publish({ type: 'activity', message: 'c', title: '丙', workbench: 'translate' })
+      const c = bus.getCurrents()
+      expect(c.identify?.title).toBe('甲')
+      expect(c.subtitle?.title).toBe('乙')
+      expect(c.translate?.title).toBe('丙')
+    })
+
+    it('🔴 无 workbench 的 activity 清空**全部三槽**（巡检边界=所有工作台归零）', () => {
+      const { bus } = mkBus()
+      bus.publish({ type: 'activity', message: 'a', title: '甲', workbench: 'identify' })
+      bus.publish({ type: 'activity', message: 'b', title: '乙', workbench: 'subtitle' })
+      bus.publish({ type: 'activity', message: 'c', title: '丙', workbench: 'translate' })
+      bus.publish({ type: 'activity', message: '巡检完成，歇着等明天' })
+      expect(bus.getCurrents()).toEqual({ identify: null, subtitle: null, translate: null })
+    })
+
+    it('🔴 getCurrents 形状：恒三键，冷启动全 null（不编一个"空闲"对象）', () => {
+      const { bus } = mkBus()
+      expect(bus.getCurrents()).toEqual({ identify: null, subtitle: null, translate: null })
+    })
+
+    it('🔴 getCurrents 逐槽返回副本：调用方改它不许改到总线内部状态', () => {
+      const { bus, at } = mkBus()
+      bus.publish({ type: 'activity', message: 'a', title: '甲', workbench: 'subtitle' })
+      const snap = bus.getCurrents()
+      expect(snap.subtitle).not.toBeNull()
+      snap.subtitle!.title = '被篡改'
+      snap.translate = cur({ kind: 'translate', title: '伪造' })
+      expect(bus.getCurrents().subtitle).toEqual(cur({ kind: 'subtitle', title: '甲', startedAt: at() }))
+      expect(bus.getCurrents().translate).toBeNull()
     })
   })
 })

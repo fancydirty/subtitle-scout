@@ -18,7 +18,7 @@ const HEALTH: HealthDTO = {
   setupSatisfied: false,
   roots: [{ path: '/media', ok: null, lastError: null, lastCheckedAt: null }],
   unidentified: { dirCount: 0, dirs: [] }, stalledJobs: { count: 0, overdueMs: null },
-  current: null,
+  currents: { identify: null, subtitle: null, translate: null },
 }
 
 let fetchMock: ReturnType<typeof vi.fn>

@@ -202,8 +202,8 @@ describe('ScoutDaemonV2 · R-F10 事件发布（端到端走 run()）', () => {
     const done = got.filter((e) => e.message.includes('字幕工作台跑完'))
     expect(done).toHaveLength(1)
     expect(done[0].workbench).toBeUndefined()
-    // 端到端的真正判据：巡检跑完后总线的 current 必须是 null，不许停在最后一个作品上
-    expect(bus.getCurrent()).toBeNull()
+    // 端到端的真正判据：巡检跑完后总线的三槽 currents 必须全 null，不许停在最后一个作品上
+    expect(bus.getCurrents()).toEqual({ identify: null, subtitle: null, translate: null })
     db.close()
   })
 

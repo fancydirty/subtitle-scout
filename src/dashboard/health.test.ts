@@ -9,7 +9,7 @@
 //
 // 本文件覆盖：字段各自的数据源与降级 / `roots[].ok` 的三态（从没扫过 / 陈旧 / 新鲜）/
 // events 缺席时**不 503** / 刻意不返回 queue / method 门 / 鉴权门 /
-// workPermitted 与 daemon 同源（🔴-2）/ getCurrent 的运行时接线探针（🔴-1）。
+// workPermitted 与 daemon 同源（🔴-2）/ getCurrents 的运行时接线探针（🔴-1）。
 //
 // ⚠️ 曾经有一个 healthWiring.test.ts 用**源码文本**断言来守"端点真的读了 getCurrent()"。
 // 它的 4 条断言实测全是假绿（`current: null, // events.getCurrent()` 就能全部喂饱），
@@ -181,7 +181,7 @@ describe('GET /api/v2/health（Task ⑤）', () => {
     expect(body.nextInspectAt).toBeNull()
     expect(body.engineEnabled).toBe(true)   // fail-open 缺省
     expect(body.roots).toEqual([])
-    expect(body.current).toBeNull()
+    expect(body.currents).toEqual({ identify: null, subtitle: null, translate: null })
   })
 
   it('🔴 lastInspectAt 读 meta 的 last_inspect_at（daemonV2.writeLastInspectAt 的键）', async () => {
@@ -363,66 +363,81 @@ describe('GET /api/v2/health（Task ⑤）', () => {
     expect(body.unidentified.dirs).toEqual([{ dirName: 'Unknown Show', fileCount: 1 }])
   })
 
-  it('🔴 接了总线：current 来自 ScoutEventBus 的快照（Task ④ 的 getCurrent）', async () => {
+  it('🔴 接了总线：currents 来自 ScoutEventBus 的三槽快照（getCurrents）', async () => {
     const bus = new ScoutEventBus()
     bus.publish({ type: 'activity', message: '开始处理', title: '甲剧', workbench: 'subtitle' })
     bus.publish({ type: 'progress', message: '3/47', title: '甲剧', workbench: 'subtitle', data: { done: 3, total: 47 } })
     const { base } = await start({ events: bus })
     const { body } = await getHealth(base)
-    expect(body.current).toEqual({
+    expect(body.currents.subtitle).toEqual({
       kind: 'subtitle', title: '甲剧', index: 3, total: 47,
       workId: null, backdropPath: null, chineseTitle: null,
       startedAt: expect.any(Number), lastStep: null, cueDone: null, cueTotal: null,
     })
+    expect(body.currents.translate).toBeNull()
+    expect(body.currents.identify).toBeNull()
   })
 
-  it('🔴 接了总线但没人在跑（巡检完成清空了快照）→ current: null', async () => {
+  it('🔴 双车道并发：translate 帧不抹 subtitle 槽，/health 两槽同时给（2026-08-30 live 回归锁）', async () => {
+    // 单槽时代的形态：translate 后到 → subtitle 的 targets/workId 在 /health 上整个消失，
+    // 断线重连的快照纠正也跟着失去字幕台。三槽下两车道各自如实在场。
+    const bus = new ScoutEventBus()
+    bus.publish({ type: 'activity', message: '找字幕', title: '甲剧', workbench: 'subtitle', data: { workId: 'tmdb:1' } })
+    bus.publish({ type: 'progress', message: '装盘', title: '甲剧', workbench: 'subtitle', data: { done: 1, total: 3, targets: [{ key: 'e1', label: 'E01', state: 'active' }] } })
+    bus.publish({ type: 'activity', message: '翻译', title: '乙剧', workbench: 'translate', data: { workId: 'tmdb:2' } })
+    const { base } = await start({ events: bus })
+    const { body } = await getHealth(base)
+    expect(body.currents.subtitle?.workId).toBe('tmdb:1')
+    expect(body.currents.subtitle?.targets?.[0]?.state).toBe('active')
+    expect(body.currents.translate?.workId).toBe('tmdb:2')
+  })
+
+  it('🔴 接了总线但没人在跑（巡检完成清空了快照）→ 三槽全 null', async () => {
     const bus = new ScoutEventBus()
     bus.publish({ type: 'activity', message: '开始处理', title: '甲剧', workbench: 'subtitle' })
-    bus.publish({ type: 'activity', message: '巡检完成，歇着等明天' })   // 无 workbench → 清空
+    bus.publish({ type: 'activity', message: '巡检完成，歇着等明天' })   // 无 workbench → 清空全部
     const { base } = await start({ events: bus })
-    expect((await getHealth(base)).body.current).toBeNull()
+    expect((await getHealth(base)).body.currents).toEqual({ identify: null, subtitle: null, translate: null })
   })
 
-  it('🔴 current 是**现取**：同一个 server 上总线推进后下一次请求要看到新值', async () => {
-    // 若实现把 getCurrent() 的结果在 startDashboard 组装时求值一次（同 tmdb/translateEnabled
+  it('🔴 currents 是**现取**：同一个 server 上总线推进后下一次请求要看到新值', async () => {
+    // 若实现把 getCurrents() 的结果在 startDashboard 组装时求值一次（同 tmdb/translateEnabled
     // 那批惰性求值踩过的坑），首次请求照样正确、之后**永远冻在那一刻**——而这个端点的
     // 全部意义就是"随时能问出当前态"。
     const bus = new ScoutEventBus()
     const { base } = await start({ events: bus })
-    expect((await getHealth(base)).body.current).toBeNull()
+    expect((await getHealth(base)).body.currents.translate).toBeNull()
     bus.publish({ type: 'activity', message: '开始处理', title: '乙剧', workbench: 'translate' })
-    expect((await getHealth(base)).body.current).toEqual({
+    expect((await getHealth(base)).body.currents.translate).toEqual({
       kind: 'translate', title: '乙剧', index: null, total: null,
       workId: null, backdropPath: null, chineseTitle: null,
       startedAt: expect.any(Number), lastStep: null, cueDone: null, cueTotal: null,
     })
   })
 
-  it('🔴 接线（运行时探针）：每次请求都**真的调用** ScoutEventBus.getCurrent()，而不是别处凑出同形对象', async () => {
+  it('🔴 接线（运行时探针）：每次请求都**真的调用** ScoutEventBus.getCurrents()，而不是别处凑出同形对象', async () => {
     // ── 这一条替代了原 healthWiring.test.ts（已删）──────────────────────────────
-    // 那个文件用源码文本匹配来证明"端点读了 getCurrent()"，实测**四条断言全是假绿**：
-    // codeLines() 只剥整行注释，把 `current: events ? events.getCurrent() : null` 改成
-    // `current: null, // events.getCurrent()` 之后 4/4 全过。剥掉行尾注释也救不了——
-    // 判据仍落在文本上，一个字符串字面量或一个叫 getCurrent 的局部变量照样喂得饱。
+    // 那个文件用源码文本匹配来证明"端点读了快照"，实测**四条断言全是假绿**：
+    // codeLines() 只剥整行注释，把真调用改成行尾注释就能全部喂饱。剥掉行尾注释也救不了——
+    // 判据仍落在文本上，一个字符串字面量或一个同名局部变量照样喂得饱。
     // 文本断言的能力上限就在这里：它证明的是"源码里写了这几个字"，不是"运行时调了"。
     //
     // 这条探针证明后者：给端点一个**被监视过的**总线，断言那个方法真的被调用了。
     // 它同时钉死了原文件想守却守不住的那个变异——"绕过总线自己去 meta 表读一份同形快照"
-    // （Task ④ 明确否掉的方案）：那种实现下响应体可以完全正确，但 getCurrent 调用数为 0。
+    // （明确否掉的方案）：那种实现下响应体可以完全正确，但 getCurrents 调用数为 0。
     const bus = new ScoutEventBus()
     bus.publish({ type: 'activity', message: '开始处理', title: '丙剧', workbench: 'identify' })
-    // spy 而不是替身对象：真实 ScoutEventBus 的行为原样保留（含"返回副本"那条），
+    // spy 而不是替身对象：真实 ScoutEventBus 的行为原样保留（含"逐槽返回副本"那条），
     // 这里只在它身上加一个计数器。ESM 无法 spy 模块导出，但**实例方法**可以。
     const calls: number[] = []
-    const real = bus.getCurrent.bind(bus)
-    bus.getCurrent = () => { calls.push(1); return real() }
+    const real = bus.getCurrents.bind(bus)
+    bus.getCurrents = () => { calls.push(1); return real() }
 
     const { base } = await start({ events: bus })
     expect(calls.length).toBe(0)                    // 组装阶段不许求值（那会冻死快照）
     const first = await getHealth(base)
     expect(calls.length).toBe(1)                    // 恰好一次：请求来了才取，且只取一次
-    expect(first.body.current).toEqual({
+    expect(first.body.currents.identify).toEqual({
       kind: 'identify', title: '丙剧', index: null, total: null,
       workId: null, backdropPath: null, chineseTitle: null,
       startedAt: expect.any(Number), lastStep: null, cueDone: null, cueTotal: null,
@@ -432,7 +447,7 @@ describe('GET /api/v2/health（Task ⑤）', () => {
     expect(calls.length).toBe(2)
   })
 
-  it('🔴 没接总线（不跑 watch）→ **不 503**：current 给 null，其余三个字段照给', async () => {
+  it('🔴 没接总线（不跑 watch）→ **不 503**：currents 三槽给 null，其余三个字段照给', async () => {
     // 本 task 的一条明确裁决（与隔壁 /api/v2/events 缺席即 503 刻意不同）：health 的另外
     // 三个字段与总线毫无关系，整体 503 会让"守备目录健康度"这个纯 DB 事实在没跑 watch 时
     // 也查不到——而那恰恰是最需要它的时候。
@@ -441,7 +456,7 @@ describe('GET /api/v2/health（Task ⑤）', () => {
     const { base } = await start({ events: undefined })
     const { status, body } = await getHealth(base)
     expect(status).toBe(200)
-    expect(body.current).toBeNull()
+    expect(body.currents).toEqual({ identify: null, subtitle: null, translate: null })
     expect(body.lastInspectAt).toBe(NOW)
     expect(body.roots[0].ok).toBe(true)      // 守备目录健康度照常可见
   })
@@ -468,7 +483,7 @@ describe('GET /api/v2/health（Task ⑤）', () => {
     const { base } = await start({ events: new ScoutEventBus() })
     const { body } = await getHealth(base)
     expect(Object.keys(body).sort()).toEqual(
-      ['current', 'engineEnabled', 'lastInspectAt', 'nextInspectAt', 'roots', 'setupSatisfied', 'stalledJobs',
+      ['currents', 'engineEnabled', 'lastInspectAt', 'nextInspectAt', 'roots', 'setupSatisfied', 'stalledJobs',
        'unidentified', 'workPermitted'],
     )
     expect('queue' in body).toBe(false)

@@ -75,9 +75,9 @@
 import { obj, arr, str, num, bool, nullable, type Shape } from './contract.js'
 
 /** `/api/v2/health`。
- *  ⚠️ **只声明有人读的**：`lastInspectAt` / `nextInspectAt` 在（活动页的巡检行读它们），`current` 是
- *  `ScoutCurrentDTO | null`——里面的字段**不展开**，因为消费点（`useCurrentState`）
- *  已经按"每个字段可能是 null"写了，展开只会把 SSE 与 HTTP 两个来源的形状焊死。 */
+ *  ⚠️ **只声明有人读的**：`lastInspectAt` / `nextInspectAt` 在（活动页的巡检行读它们），`currents` 是
+ *  per-workbench 三槽（每槽 `ScoutCurrentDTO | null`）——槽里的字段**不展开**，因为消费点
+ *  （`useCurrentState`）已经按"每个字段可能是 null"写了，展开只会把 SSE 与 HTTP 两个来源的形状焊死。 */
 export const HEALTH_SHAPE: Shape = obj({
   lastInspectAt: nullable(num()),
   nextInspectAt: nullable(num()),

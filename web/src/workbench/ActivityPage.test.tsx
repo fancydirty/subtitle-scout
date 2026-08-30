@@ -56,12 +56,14 @@ const ev = (over: Partial<ScoutEvent> & Pick<ScoutEvent, 'type'>): ScoutEvent =>
 })
 
 const lastInspectAtIdle = Date.now() - 3_600_000
+/** 三槽全空（对齐后端 ScoutCurrents：单槽 current 已于 2026-08-30 退役）。 */
+const CURRENTS_IDLE = { identify: null, subtitle: null, translate: null }
 const HEALTH_IDLE = {
   lastInspectAt: lastInspectAtIdle,
   nextInspectAt: lastInspectAtIdle + 24 * 60 * 60 * 1000,
   workPermitted: true, engineEnabled: true, setupSatisfied: true,
   roots: [], unidentified: { dirCount: 0, dirs: [] },
-  stalledJobs: { count: 0, overdueMs: null as number | null }, current: null,
+  stalledJobs: { count: 0, overdueMs: null as number | null }, currents: CURRENTS_IDLE,
 }
 
 const QUEUE_ITEM = {
@@ -354,7 +356,7 @@ describe('🔴 断线重连 → 拉 /api/v2/health 快照纠正当前态（后�
     await waitFor(() => expect(screen.getByTestId('wb-run-card')).toBeInTheDocument())
 
     // 断线期间后端跑完了整轮：快照现在说"没有任何工作台在跑"
-    healthBody = { ...HEALTH_IDLE, current: null }
+    healthBody = { ...HEALTH_IDLE, currents: CURRENTS_IDLE }
     act(() => { bus().fail(2) })
     await waitFor(() => expect(FakeES.instances.length).toBeGreaterThan(1))
     act(() => { FakeES.instances[FakeES.instances.length - 1]!.open() })
@@ -376,7 +378,10 @@ describe('🔴 断线重连 → 拉 /api/v2/health 快照纠正当前态（后�
 
     healthBody = {
       ...HEALTH_IDLE,
-      current: { kind: 'subtitle', title: 'Started While Offline', index: 2, total: 7 },
+      currents: {
+        ...CURRENTS_IDLE,
+        subtitle: { kind: 'subtitle', title: 'Started While Offline', index: 2, total: 7 },
+      },
     }
     act(() => { bus().fail(2) })
     await waitFor(() => expect(FakeES.instances.length).toBeGreaterThan(1))
@@ -678,10 +683,13 @@ describe('ScoutCurrent overlay：身份随 tick 保留，播种与 log 跟快照
   it('health 快照播种完整 ScoutCurrent（无 SSE activity）', async () => {
     healthBody = {
       ...HEALTH_IDLE,
-      current: {
-        kind: 'subtitle', title: 'Queued Show', index: 2, total: 7,
-        workId: 'tmdb:1', backdropPath: '/bd.jpg', chineseTitle: null,
-        startedAt: Date.now() - 60_000, lastStep: 'search_source',
+      currents: {
+        ...CURRENTS_IDLE,
+        subtitle: {
+          kind: 'subtitle', title: 'Queued Show', index: 2, total: 7,
+          workId: 'tmdb:1', backdropPath: '/bd.jpg', chineseTitle: null,
+          startedAt: Date.now() - 60_000, lastStep: 'search_source',
+        },
       },
     }
     renderPage()
@@ -820,7 +828,7 @@ describe('状态条：lastInspectAt 语义与 daemon 可能没在跑', () => {
       ...HEALTH_IDLE,
       lastInspectAt,
       nextInspectAt: lastInspectAt + 24 * 60 * 60 * 1000,
-      current: null,
+      currents: CURRENTS_IDLE,
     }
     renderPage()
     await ready()
@@ -840,7 +848,7 @@ describe('状态条：lastInspectAt 语义与 daemon 可能没在跑', () => {
       ...HEALTH_IDLE,
       lastInspectAt,
       nextInspectAt: lastInspectAt + 24 * 60 * 60 * 1000,
-      current: { kind: 'subtitle', title: 'Big Library', index: 3, total: 400 },
+      currents: { ...CURRENTS_IDLE, subtitle: { kind: 'subtitle', title: 'Big Library', index: 3, total: 400 } },
     }
     renderPage()
     await ready()
@@ -882,7 +890,7 @@ describe('状态条：lastInspectAt 语义与 daemon 可能没在跑', () => {
   it('running → 现在跑在场但 disabled', async () => {
     healthBody = {
       ...HEALTH_IDLE,
-      current: { kind: 'subtitle', title: 'Big Library', index: 3, total: 400 },
+      currents: { ...CURRENTS_IDLE, subtitle: { kind: 'subtitle', title: 'Big Library', index: 3, total: 400 } },
     }
     renderPage()
     await ready()
@@ -922,7 +930,7 @@ describe('状态条：lastInspectAt 语义与 daemon 可能没在跑', () => {
   })
 
   it('🔴 Run now 跟 SSE current：排队中禁用，开工仍禁用，巡检收工才解禁', async () => {
-    // health.current 全程 null——POST 200 只是 queued。若 pending 只信 health 快照，
+    // health.currents 三槽全程 null——POST 200 只是 queued。若 pending 只信 health 快照，
     // 收工后按钮会卡死到会话结束。
     renderPage()
     await ready()
@@ -1444,8 +1452,8 @@ describe('🔴 Task 9：字幕卡覆盖格 + ticker（四步条退役、0/N 死�
   // current 已有一条无 targets 的态（appliedId>0）后，随便来一条带 targets 的 progress 帧，
   // 覆盖格就必须建起来、旧 wb-run-bar 死进度条必须让位。
   it('🔴 中途打开：无 targets 态之后，一条带 targets 快照的 progress 帧建起覆盖格（非旧 wb-run-bar）', async () => {
-    // health.current=null → 首载 seeding 是 no-op（复现"快照没把 targets 交到前端"）
-    healthBody = { ...HEALTH_IDLE, current: null }
+    // health 三槽全空 → 首载 seeding 是 no-op（复现"快照没把 targets 交到前端"）
+    healthBody = { ...HEALTH_IDLE, currents: CURRENTS_IDLE }
     renderPage()
     await ready()
     // ① replay 的一条无 targets 的 progress 帧先到（把 appliedId 顶过 0），覆盖格建不起来 → 旧死条
@@ -1472,6 +1480,110 @@ describe('🔴 Task 9：字幕卡覆盖格 + ticker（四步条退役、0/N 死�
     expect(screen.getAllByTestId('wb-grid-cell')).toHaveLength(3)
     expect(screen.getByTestId('wb-run-card').querySelector('.wb-run-bar')).toBeNull()
     expect(screen.queryByRole('progressbar')).toBeNull()
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🔴 三槽 currents：双车道并发互不覆盖（2026-08-30 韩语 live test 根治）
+// ═══════════════════════════════════════════════════════════════════════════
+// daemonV2.run() 是两车道并发（mainLoop + translateLoop）。旧单槽 current 下，翻译台
+// 高频跑动时每条 translate 帧都把字幕槽整个顶掉（sameKind=false → targets/workId 归零），
+// 字幕 tab 的覆盖格反复被抹掉渲染不稳（SSH 直读能看到 subtitle N 格，前端抓不到）。
+// 修法：前后端都拆 per-workbench 三槽，事件按 workbench 只写自己的槽。
+describe('🔴 三槽 currents：subtitle/translate 两 tab 各读各槽（双车道回归锁）', () => {
+  const targetsOf = (states: Array<'pending' | 'active' | 'installed' | 'pending-source'>) =>
+    states.map((state, i) => ({ key: `s01e0${i + 1}`, label: `E0${i + 1}`, state }))
+
+  it('🔴 回归锁本体：subtitle progress 带 targets → translate 车道插进来 → 字幕 tab 覆盖格**仍在**', async () => {
+    renderPage()
+    await ready()
+    act(() => {
+      bus().emit(ev({
+        type: 'activity', message: '正在找字幕：Queued Show', title: 'Queued Show',
+        workbench: 'subtitle', data: { workId: 'tmdb:1' },
+      }))
+      bus().emit(ev({
+        type: 'progress', message: '装盘', title: 'Queued Show', workbench: 'subtitle',
+        data: { done: 0, total: 3, step: 'install_subtitle', workId: 'tmdb:1', targets: targetsOf(['installed', 'active', 'pending']) },
+      }))
+    })
+    await waitFor(() => expect(screen.getByTestId('wb-grid-count')).toBeInTheDocument())
+
+    // 翻译车道并发跑动（live 实测形态）——旧单槽代码：这两帧把字幕槽顶掉，覆盖格消失
+    act(() => {
+      bus().emit(ev({
+        type: 'activity', message: '正在翻译：Trans Show', title: 'Trans Show',
+        workbench: 'translate', data: { workId: 'tmdb:9' },
+      }))
+      bus().emit(ev({
+        type: 'progress', message: '翻译中', title: 'Trans Show', workbench: 'translate',
+        data: { done: 0, total: 4, step: 'translate_subtitle', workId: 'tmdb:9', cueDone: 5, cueTotal: 100 },
+      }))
+    })
+
+    // 🔴 字幕 tab（当前 tab）：在跑卡与覆盖格必须原样在场
+    expect(screen.getByTestId('wb-run-card').textContent).toContain('Queued Show')
+    expect(screen.getByTestId('wb-grid-count')).toBeInTheDocument()
+    expect(screen.getAllByTestId('wb-grid-cell')).toHaveLength(3)
+
+    // 而且翻译 tab 同时有自己的在跑卡（不是"保住字幕就丢翻译"）
+    fireEvent.click(screen.getByRole('tab', { name: en.wb_tab_translate }))
+    await waitFor(() => expect(screen.getByTestId('wb-run-card').textContent).toContain('Trans Show'))
+
+    // 切回字幕 tab：覆盖格还在（不是切 tab 才重建的假象）
+    fireEvent.click(screen.getByRole('tab', { name: en.wb_tab_subtitle }))
+    await waitFor(() => expect(screen.getByTestId('wb-run-card').textContent).toContain('Queued Show'))
+    expect(screen.getAllByTestId('wb-grid-cell')).toHaveLength(3)
+  })
+
+  it('🔴 health currents 三槽播种：字幕/翻译两台的在跑卡都从快照建起来', async () => {
+    healthBody = {
+      ...HEALTH_IDLE,
+      currents: {
+        identify: null,
+        subtitle: {
+          kind: 'subtitle', title: 'Queued Show', index: 1, total: 3,
+          workId: 'tmdb:1', backdropPath: '/bd.jpg', chineseTitle: null,
+          startedAt: Date.now() - 60_000, lastStep: 'search_source',
+          cueDone: null, cueTotal: null, targets: targetsOf(['installed', 'active', 'pending']),
+        },
+        translate: {
+          kind: 'translate', title: 'Trans Show', index: 1, total: 4,
+          workId: 'tmdb:9', backdropPath: '/bd9.jpg', chineseTitle: null,
+          startedAt: Date.now() - 30_000, lastStep: 'translate_subtitle',
+          cueDone: 5, cueTotal: 100,
+        },
+      },
+    }
+    renderPage()
+    await ready()
+    // 字幕 tab：快照播种出覆盖格
+    const card = await screen.findByTestId('wb-run-card')
+    expect(card.textContent).toContain('Queued Show')
+    await waitFor(() => expect(screen.getByTestId('wb-grid-count')).toBeInTheDocument())
+    // 翻译 tab：同一份快照的翻译槽也播上了
+    fireEvent.click(screen.getByRole('tab', { name: en.wb_tab_translate }))
+    await waitFor(() => expect(screen.getByTestId('wb-run-card').textContent).toContain('Trans Show'))
+  })
+
+  it('🔴 识别槽推进状态条时不吃掉字幕槽（identify 车道同样不许覆盖）', async () => {
+    renderPage()
+    await ready()
+    act(() => {
+      bus().emit(ev({
+        type: 'activity', message: '正在找字幕：Show A', title: 'Show A', workbench: 'subtitle',
+      }))
+      bus().emit(ev({
+        type: 'progress', message: '识别第 3/47 个', title: '/media/New',
+        workbench: 'identify', data: { done: 3, total: 47 },
+      }))
+    })
+    // 状态条识别行在场
+    await waitFor(() => {
+      expect(screen.getByTestId('wb-identify-line').textContent).toContain('3/47')
+    })
+    // 字幕 tab 的在跑卡没有被识别帧顶掉
+    expect(screen.getByTestId('wb-run-card').textContent).toContain('Show A')
   })
 })
 

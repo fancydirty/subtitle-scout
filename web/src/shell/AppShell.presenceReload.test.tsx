@@ -62,7 +62,8 @@ function mockFetch() {
         ? { lastInspectAt: Date.now(), nextInspectAt: Date.now() + 86_400_000,
             workPermitted: true, engineEnabled: true, setupSatisfied: true,
             roots: [], unidentified: { dirCount: 0, dirs: [] },
-            stalledJobs: { count: 0, overdueMs: null }, current: null }
+            stalledJobs: { count: 0, overdueMs: null },
+            currents: { identify: null, subtitle: null, translate: null } }
       : url.includes('/workflow/pending')
         ? { meta: { roots: [], lastScanAt: null, files: 0, lastVerifySweepAt: null,
                     verifiedItems: 0, verifiableItems: 0 }, parked: 0 }

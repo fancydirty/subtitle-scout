@@ -41,9 +41,9 @@ export type ScoutEventType =
   /** 正在处理的那个作品的进度（第 3/8 集）——唯一的高频事件，故唯一被节流。 */
   | 'progress'
 
-/** 三个工作台。**封闭三态**，与 §3.5 的 `current.kind` 同集合——它描述的就是"哪个工作台"，
+/** 三个工作台。**封闭三态**，与 currents 的三个槽位同集合——它描述的就是"哪个工作台"，
  *  而不是"事件从哪一行代码发出来的"。想给巡检级/扫描级事件找个位置的冲动请忍住：
- *  加 `'inspect'|'scan'` 会把它变成五态，`current.kind` 那侧就再也对不上了。 */
+ *  加 `'inspect'|'scan'` 会把它变成五态，currents 那侧就再也对不上了。 */
 export type ScoutWorkbench = 'identify' | 'subtitle' | 'translate'
 
 /** 发布方给的部分（id/at 由总线补齐——发布方自己编 id 就会与续传的单调性打架）。 */
@@ -70,7 +70,7 @@ export interface ScoutEventInput {
 }
 
 /**
- * 「当前在处理什么」的**快照**（不是变化）。
+ * 「某个工作台当前在处理什么」的**快照**（不是变化）——ScoutCurrents 的一个槽。
  *
  * ── 为什么需要它（设计文档审计 F-6）──
  * SSE 的 activity 事件是**变化**：断线期间巡检跑完、50 槽缓冲又被 progress 冲掉，重连后
@@ -98,7 +98,7 @@ export interface ScoutCurrent {
   index: number | null
   /** 队列总长（progress 的 `data.total`）。 */
   total: number | null
-  /** 作品 id（activity / progress 的 `data.workId`）。本条有则覆盖，缺席且同工作台才保留。
+  /** 作品 id（activity / progress 的 `data.workId`）。本条有则覆盖，缺席保留本槽旧值。
    *  空串 / 非字符串 → null，不做 Number() 强转。 */
   workId: string | null
   /** 横版背景图路径（activity / progress 的 `data.backdropPath`）。覆盖/保留口径同 workId。 */
@@ -116,6 +116,26 @@ export interface ScoutCurrent {
    *  全量数组——**每条** progress 帧都带完整快照（含高频 trace 桥接帧，2026-08-30 起），
    *  重连/中途打开时 replay 缓冲里任意一条即完整真相，免增量对账。 */
   targets?: Array<{ key: string; label: string; state: 'pending' | 'active' | 'installed' | 'pending-source' }>
+}
+
+/**
+ * 三个工作台各自的当前态快照——**per-workbench 三槽，不是单槽**。
+ *
+ * ── 为什么是三槽（2026-08-30 韩语 live test 实证）──
+ * daemonV2 的 run() 是 `Promise.all([mainLoop, translateLoop])` **两车道并发**，而活动页有
+ * subtitle / translate 两个 tab（外加顶部识别状态条）各自消费当前态。单槽快照下，后 emit
+ * 的车道把前一车道的快照整个顶掉（旧实现 sameKind=false 时 targets/workId 全部归零）：
+ * 实测翻译台高频跑动时，字幕台的覆盖格在前端反复被抹掉（SSH 直读总线能看到 subtitle N 格，
+ * 前端抓不到）；且跨车道下 replay 与 /health 双通道都会失去字幕台的快照。
+ * 三槽让每条带 workbench 的事件**只写自己的槽**，两车道互不干扰。
+ *
+ * 槽位一律 `| null`（不是可选）：JSON.stringify 之后前端要能分清"这个台没在跑"
+ * 与"这版后端还没这个槽"（同 ScoutCurrent 各字段的既有论证）。
+ */
+export interface ScoutCurrents {
+  identify: ScoutCurrent | null
+  subtitle: ScoutCurrent | null
+  translate: ScoutCurrent | null
 }
 
 export interface ScoutEvent extends ScoutEventInput {
@@ -207,13 +227,14 @@ export class ScoutEventBus {
   private readonly lastProgressAt = new Map<ScoutWorkbench | undefined, number>()
 
   /**
-   * 「现在在处理什么」的快照。见 ScoutCurrent 的头注释（为什么它必须与事件流并列存在）。
+   * 「三个工作台现在各在处理什么」的快照。见 ScoutCurrents 的头注释（为什么它必须与
+   * 事件流并列存在、为什么是三槽不是单槽——2026-08-30 韩语 live test 的双车道覆盖实证）。
    *
    * ── 谁写它：本类的 updateCurrent，唯一入口是 publish（= 已有的 13 个 emit 点）。
-   * ── 谁读它：getCurrent()（Task ⑤ 的 /api/v2/health）。
+   * ── 谁读它：getCurrents()（/api/v2/health 的 currents 字段）。
    * ── 何时清空：见 updateCurrent 里 `workbench === undefined` 那一支的论证。
    */
-  private current: ScoutCurrent | null = null
+  private readonly currents: ScoutCurrents = { identify: null, subtitle: null, translate: null }
 
   constructor(opts: ScoutEventBusOpts = {}) {
     this.nowFn = opts.now ?? (() => Date.now())
@@ -227,26 +248,28 @@ export class ScoutEventBus {
   }
 
   /**
-   * 依据一条事件推进 / 清空 current。**自带 try/catch**（不是靠 publish 那层兜）：
+   * 依据一条事件推进 / 清空 currents。**自带 try/catch**（不是靠 publish 那层兜）：
    * 快照是增益，它算错了顶多 /health 显示不准，绝不许因此让这条事件推不出去——外层那个
    * catch 是在 broadcast **之前**兜住的，一旦被它接住订阅者就一条都收不到了。
    *
    * ── 判别口径复用既有的那条：`workbench !== undefined` ──
-   * 有 workbench = 工作台级 → 它描述"某个台在处理某个作品"，推进快照。
+   * 有 workbench = 工作台级 → 它描述"某个台在处理某个作品"，**只推进自己那个槽**
+   *   （三槽互不干扰——这正是 2026-08-30 双车道覆盖修复的本体，见 ScoutCurrents 头注释）。
    * 无 workbench = 巡检级/扫描级（生产里正好 6 个点：巡检开始 / 巡检完成 / 巡检失败 +
-   *   阶段 1 扫描的三条 health）→ **清空**。
+   *   阶段 1 扫描的三条 health）→ **清空全部三槽**（巡检边界 = 所有工作台归零，
+   *   语义与单槽时代一致，只是"零"现在是三个）。
    *
-   * ── 为什么"清空"这件事恰好能被这条口径覆盖（本 task 的核心判断）──
+   * ── 为什么"清空"这件事恰好能被这条口径覆盖（F-6 的核心判断，三槽下不变）──
    * 要解决的缺陷是"巡检跑完了前端还停在正在处理 X"。巡检的三种结局各发一条无 workbench
    * 的事件：完成（activity）、失败（health）、以及下一轮的开始（activity）。三条都清空，
-   * 于是 current 在"没有任何工作台在跑"的全部时段里都是 null。
-   * **这不需要 daemon 配合、不新增任何连线**——这 6 个 emit 点在 Task ⓪ 之前就存在，
-   * 本改动一行 daemonV2 都没碰。
+   * 于是三槽在"没有任何工作台在跑"的全部时段里都是 null。
+   * **这不需要 daemon 配合、不新增任何连线**——这 6 个 emit 点早已存在，
+   * 本改动一行 daemonV2 都没碰（三槽化同样零发布方改动：事件形状不变，只是总线内部与读法变）。
    *
-   * 阶段 1 那三条扫描级 health 也会清空：它们发生在巡检开头，此刻 current 已被"巡检开始"
+   * 阶段 1 那三条扫描级 health 也会清空：它们发生在巡检开头，此刻三槽已被"巡检开始"
    * 清成 null，再清一次是幂等的 no-op，不是误伤。
    *
-   * ── found 为什么不动 current ──
+   * ── found 为什么不动任何槽 ──
    * found 是**成果**（"装上了 3 条"），不是**状态**（"正在处理谁"）。拿它推进快照会让
    * /health 把一条已经结束的活报成"正在处理"；拿它清空则会在同一个作品还要继续的中途
    * 把状态条打空。成果的去处是通知页，不是状态快照。
@@ -254,7 +277,9 @@ export class ScoutEventBus {
   private updateCurrent(input: ScoutEventInput): void {
     try {
       if (input.workbench === undefined) {
-        this.current = null
+        this.currents.identify = null
+        this.currents.subtitle = null
+        this.currents.translate = null
         return
       }
       if (input.type === 'activity') {
@@ -262,7 +287,7 @@ export class ScoutEventBus {
         // "第 3/47 个"去描述乙剧，正是本仓的病 B（把中间量说成结论量）。
         // lastStep 同样归 null：上一部的工具 id 不许贴到下一部。
         const d = input.data
-        this.current = {
+        this.currents[input.workbench] = {
           kind: input.workbench,
           title: input.title ?? null,
           index: null,
@@ -281,48 +306,54 @@ export class ScoutEventBus {
         // done/total 走 `data`（daemonV2 的两个 progress 点都填 `{ done, total }`）。
         // data 的类型是 Record<string, unknown>，故必须逐个验型：非有限数一律记 null，
         // **不做 Number() 强转**——把 undefined 转成 NaN 再报出去比报 null 更难排查。
+        //
+        // prev 是**本槽**的旧值（同槽必同 kind，旧实现的 sameKind 判断随单槽一起退役）；
+        // "本条有就覆盖、缺席保留"的逐字段口径原样沿用，只是保留的对象换成了本槽。
         const d = input.data
         const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
-        const sameKind = this.current?.kind === input.workbench
+        const prev = this.currents[input.workbench]
         const step = nonemptyString(d?.step)
         const cueDoneVal = num(d?.cueDone)
         const cueTotalVal = num(d?.cueTotal)
-        // targets 是全量数组（里程碑帧带完整快照）。本条带数组就整体覆盖；缺席才保留上一条，
-        // 且只在同一工作台——跨台保留就是拿字幕流的覆盖格贴到翻译流，与 workId 保留口径一致。
+        // targets 是全量数组（里程碑帧带完整快照）。本条带数组就整体覆盖；缺席才保留本槽
+        // 上一条。他槽的 targets 永远碰不到——三槽本身就把"跨台保留"这条错路封死了。
         const targetsVal = Array.isArray(d?.targets)
           ? (d?.targets as ScoutCurrent['targets'])
-          : (sameKind ? this.current?.targets : undefined)
-        this.current = {
+          : prev?.targets
+        this.currents[input.workbench] = {
           kind: input.workbench,
           title: input.title ?? null,
           index: num(d?.done),
           total: num(d?.total),
-          // 本条 data 有身份字段就覆盖（Task 2 会在 progress 上带这些键）；
-          // 缺席才保留上一条，且只在同一个工作台——跨台保留就是拿甲剧的海报描述乙剧。
-          workId: nonemptyString(d?.workId) ?? (sameKind ? (this.current?.workId ?? null) : null),
-          backdropPath: nonemptyString(d?.backdropPath) ?? (sameKind ? (this.current?.backdropPath ?? null) : null),
-          chineseTitle: nonemptyString(d?.chineseTitle) ?? (sameKind ? (this.current?.chineseTitle ?? null) : null),
-          startedAt: sameKind ? (this.current?.startedAt ?? null) : null,
-          lastStep: step ?? (sameKind ? (this.current?.lastStep ?? null) : null),
-          cueDone: cueDoneVal ?? (sameKind ? (this.current?.cueDone ?? null) : null),
-          cueTotal: cueTotalVal ?? (sameKind ? (this.current?.cueTotal ?? null) : null),
+          // 本条 data 有身份字段就覆盖（daemonV2 的 progress 点带这些键）；缺席保留本槽旧值。
+          workId: nonemptyString(d?.workId) ?? prev?.workId ?? null,
+          backdropPath: nonemptyString(d?.backdropPath) ?? prev?.backdropPath ?? null,
+          chineseTitle: nonemptyString(d?.chineseTitle) ?? prev?.chineseTitle ?? null,
+          startedAt: prev?.startedAt ?? null,
+          lastStep: step ?? prev?.lastStep ?? null,
+          cueDone: cueDoneVal ?? prev?.cueDone ?? null,
+          cueTotal: cueTotalVal ?? prev?.cueTotal ?? null,
           targets: targetsVal,
         }
       }
-      // health（带 workbench，当前生产无此点）不动 current：它是异常播报，不是"在处理谁"。
+      // health（带 workbench，当前生产无此点）不动任何槽：它是异常播报，不是"在处理谁"。
     } catch {
       // 见方法头注释。宁可快照停在旧值，也不许连累这条事件的推送。
     }
   }
 
   /**
-   * 「现在在处理什么」的当前快照，没有任何工作台在跑时为 null。
+   * 三个工作台各自的当前快照；某个台没在跑时该槽为 null。
    *
-   * **返回的是副本**：直接把内部对象交出去，调用方（/health 的 JSON 序列化路径）一改就
+   * **逐槽返回副本**：直接把内部对象交出去，调用方（/health 的 JSON 序列化路径）一改就
    * 改到了总线的内部状态，而这种串味在测试里几乎照不出来。
    */
-  getCurrent(): ScoutCurrent | null {
-    return this.current === null ? null : { ...this.current }
+  getCurrents(): ScoutCurrents {
+    return {
+      identify: this.currents.identify === null ? null : { ...this.currents.identify },
+      subtitle: this.currents.subtitle === null ? null : { ...this.currents.subtitle },
+      translate: this.currents.translate === null ? null : { ...this.currents.translate },
+    }
   }
 
   /**
@@ -335,7 +366,7 @@ export class ScoutEventBus {
    */
   publish(input: ScoutEventInput): void {
     try {
-      // 快照先于节流门推进：节流管的是**推送带宽**（别把 SSE 刷屏），而 current 是
+      // 快照先于节流门推进：节流管的是**推送带宽**（别把 SSE 刷屏），而 currents 是
       // 按需查询的，一次巡检里被读几次由前端决定，与事件频率无关。放在门后的话，被折叠
       // 的那 3/4 条 progress 也会把快照一起折叠掉——而这个快照的存在意义恰恰是
       // "断线/丢事件时仍能问出真实当前态"，让它跟着丢是自废武功。
@@ -348,8 +379,8 @@ export class ScoutEventBus {
       //
       // ⚠️ 判据是 milestone，**不是**"带 targets"（2026-08-30 改，修首屏中途打开覆盖格建不起来）：
       // 现在每条 progress 帧（含高频的 trace 桥接帧）都带 targets 当前快照，好让 replay 缓冲里
-      // 任意一条都能重建 current.targets。若拿"带 targets = 旁路"，就是每帧旁路 = 节流失效、SSE
-      // 刷屏。故带 targets 但无 milestone 的帧照旧走节流；它的快照仍在节流门之前落进 current。
+      // 任意一条都能重建本槽的 targets。若拿"带 targets = 旁路"，就是每帧旁路 = 节流失效、SSE
+      // 刷屏。故带 targets 但无 milestone 的帧照旧走节流；它的快照仍在节流门之前落进本槽。
       const isMilestone = input.type === 'progress' && input.data?.milestone === true
       if (input.type === 'progress' && !isMilestone) {
         // 未记录过 → 视为 -Infinity（第一条无条件放行）。注意 Map 里可能存着 0
