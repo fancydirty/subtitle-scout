@@ -579,6 +579,12 @@ export const zh = {
   wb_ticker_download: '正在下载',
   wb_ticker_review: '正在核对',
   wb_ticker_install: '正在安装',
+  // ── wb_grid_*：覆盖格计数行的四档标签（CoverageGrid，Task 8）。数字由 JS 拼在前面
+  // （t() 不插值），故这四条只是**光标签**，形如 `31 已装 · 1 进行中 · …`。
+  wb_grid_installed: '已装',
+  wb_grid_active: '进行中',
+  wb_grid_pending: '待处理',
+  wb_grid_pending_source: '暂缺',
   // ── wb_node_*：**步骤条节点名**（短名词）。两族分开是因为两个界面的需求相反：
   // 日志行是一句话，节点是巴掌大的一格。.wb-stage-label 是 nowrap + ellipsis，
   // 节点文案**不许共用首字**——2026-08-26 截图实测四个节点全被截成

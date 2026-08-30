@@ -2555,6 +2555,99 @@ html {
 }
 
 
+/* ── 覆盖格 + ticker（活动卡重设计，Task 8）─────────────────────────────────
+   覆盖格把一部作品的每个 target 画成一格状态方块（剧集逐集、电影退化成一枚丸）。
+   ⚠️ 强调色一律 var(--color-ring)（#8b7cf6），**不是 --color-accent**：后者被 scout.css:86
+   遮蔽成柠檬绿/近黑，画在深色卡片上等于隐形——同本文件 wb-stage-dot / wb-cue-bar-fill
+   的既有论证。几何走定值、**禁 clamp()**（同 cards.css 的 R-F13 裁决）。 */
+.wb-grid-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.wb-grid-count {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-weak);
+}
+.wb-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+/* 14px 方格。四档状态靠 [data-state] 取色，**颜色不是唯一通道**：installed 实心、
+   active 实心+脉冲、pending 暗底、pending-source 暗底+虚线边框——形状/边框各不同，
+   色觉障碍下仍可分。 */
+.wb-grid-cell {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: #242832;
+  border: 1px solid transparent;
+}
+.wb-grid-cell[data-state='installed'] {
+  background: var(--color-ring);
+}
+.wb-grid-cell[data-state='active'] {
+  background: var(--color-ring);
+  animation: wb-grid-pulse 1.8s ease-in-out infinite;
+}
+.wb-grid-cell[data-state='pending'] {
+  background: #242832;
+}
+.wb-grid-cell[data-state='pending-source'] {
+  background: #242832;
+  border: 1px dashed var(--color-weak);
+}
+.wb-grid-cell-inner { display: none; }
+/* 电影流退化：一枚状态丸，同一套 [data-state] 取色。 */
+.wb-grid-pill {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #242832;
+  border: 1px solid transparent;
+}
+.wb-grid-pill[data-state='installed'] { background: var(--color-ring); }
+.wb-grid-pill[data-state='active'] {
+  background: var(--color-ring);
+  animation: wb-grid-pulse 1.8s ease-in-out infinite;
+}
+.wb-grid-pill[data-state='pending-source'] {
+  background: #242832;
+  border: 1px dashed var(--color-weak);
+}
+/* ticker 单行：脉冲点 + 一句「正在做什么」。 */
+.wb-ticker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-foreground);
+}
+.wb-ticker-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--color-ring);
+  animation: wb-grid-pulse 1.8s ease-in-out infinite;
+}
+.wb-ticker-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* active 格与 ticker 点共用的脉冲（透明度+缩放，与 wb-pulse 同族写法，不投影）。 */
+@keyframes wb-grid-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.55; transform: scale(0.9); }
+}
+
+
 /* ══════════════════════════════════════════════════════════════════════════════
    🔴 守备目录健康度（终局审计 🔴-1）——`/health` 的 `roots[]` 的可见形态
    ══════════════════════════════════════════════════════════════════════════════

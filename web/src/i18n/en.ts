@@ -646,6 +646,12 @@ export const en = {
   wb_ticker_download: 'Downloading',
   wb_ticker_review: 'Reviewing',
   wb_ticker_install: 'Installing',
+  // ── wb_grid_*：覆盖格计数行的四档标签（CoverageGrid，Task 8）。数字由 JS 拼在前面
+  // （t() 不插值），故这四条只是**光标签**，形如 `31 installed · 1 in progress · …`。
+  wb_grid_installed: 'installed',
+  wb_grid_active: 'in progress',
+  wb_grid_pending: 'pending',
+  wb_grid_pending_source: 'unavailable',
   // ── wb_node_*：**步骤条节点名**（短名词）。日志行要一句话，节点只有巴掌大一格，
   // 且 .wb-stage-label 是 nowrap + ellipsis → 节点文案必须短且不共用开头。
   // zh 侧同族词条附有 2026-08-26 的截图实测记录。
