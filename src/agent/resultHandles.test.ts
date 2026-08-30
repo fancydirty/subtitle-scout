@@ -227,6 +227,27 @@ describe('search_source / list_candidates / get_candidate tools', () => {
     expect(seen[0].tmdb).toBe('262377')
   })
 
+  // 复核 Important 锁：真模型对语义是"数字 id"的 string 字段会裸发 JSON number（tmdb: 262377
+  // 而非 "262377"）——z.string() 拒收，tool-arg 校验死在 execute 之前（coerce.ts 文件头纪律的
+  // 反向同类坑：year/season/episode 是该 number 来 string，这里是该 string 来 number）。schema
+  // 必须把有限 number 折叠成串（coercibleOptionalIdString）再透传。
+  it('search_source schema 容忍裸数字 tmdb（262377 → "262377" 透传进 FetchArgs）', async () => {
+    const store = makeFileResultSetStore(dir)
+    const seen: FetchArgs[] = []
+    const recording: FetchAdapter = {
+      name: 'subdl',
+      enabled: () => true,
+      search: async (a) => { seen.push(a); return [fakeCandidate('1', 'A')] },
+      resolve: async () => { throw new Error('not used in this test') },
+    }
+    const searchSource = makeSearchSourceTool({ adapters: [recording], store })
+    const schema = searchSource.inputSchema as import('zod').ZodType
+    const parsed = schema.parse({ queries: ['q'], tmdb: 262377 }) as { queries: string[]; tmdb?: string }
+    expect(parsed.tmdb).toBe('262377')
+    await searchSource.execute!(parsed, { toolCallId: 't1', messages: [] } as any)
+    expect(seen[0].tmdb).toBe('262377')
+  })
+
   // Same string-encoding class as download_candidate.fileIndex: the real model string-encodes the
   // numeric search args (season/episode/year) and the paging args (offset/limit/index). These schemas
   // must coerce string-encoded integers so the very first tool call of a live run does not die on

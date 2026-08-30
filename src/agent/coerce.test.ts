@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
-import { coercibleNullableInt, nullableTolerant, nullableBooleanTolerant, tolerantArray } from './coerce.js'
+import { coercibleNullableInt, coercibleOptionalIdString, nullableTolerant, nullableBooleanTolerant, tolerantArray } from './coerce.js'
 
 // Root-cause regression guard (v3 live matrix, 2026-07-13): the real model (mimo-v2.5) OMITS
 // the four installed-only fields entirely on a no_safe_match finalize — it doesn't send them as
@@ -91,5 +91,26 @@ describe('nullableBooleanTolerant', () => {
   it('认不出的值原样拒绝（不吞错）', () => {
     expect(() => schema.parse('maybe')).toThrow()
     expect(() => schema.parse(42)).toThrow()
+  })
+})
+
+// coercibleInt/coercibleOptionalInt 的反向坑：语义是"数字 id"的 STRING 字段（search_source.tmdb），
+// 真模型会裸发 JSON number（tmdb: 262377 而非 "262377"）——z.string() 直接拒收，tool-arg 校验
+// 死在 execute 之前。只窄折叠有限 number→String，其余类型照拒（不吞错）。
+describe('coercibleOptionalIdString', () => {
+  it('裸数字折叠成串（262377 → "262377"）', () => {
+    expect(coercibleOptionalIdString.parse(262377)).toBe('262377')
+  })
+
+  it('真字符串与缺席原样通过', () => {
+    expect(coercibleOptionalIdString.parse('262377')).toBe('262377')
+    expect(coercibleOptionalIdString.parse(undefined)).toBeUndefined()
+  })
+
+  it('非有限数字与其他类型照拒（不吞错）', () => {
+    expect(() => coercibleOptionalIdString.parse(Infinity)).toThrow()
+    expect(() => coercibleOptionalIdString.parse(NaN)).toThrow()
+    expect(() => coercibleOptionalIdString.parse(true)).toThrow()
+    expect(() => coercibleOptionalIdString.parse({})).toThrow()
   })
 })

@@ -5,7 +5,7 @@ import { tool } from 'ai'
 import { z } from 'zod'
 import { runSearch, type FetchAdapter } from '../adapters/fetchLib.js'
 import { candidateKey, type SubtitleCandidate } from '../core/schemas.js'
-import { coercibleInt, coercibleOptionalInt } from './coerce.js'
+import { coercibleInt, coercibleOptionalInt, coercibleOptionalIdString } from './coerce.js'
 
 export interface ResultSetStore {
   create(items: unknown[]): string
@@ -161,7 +161,8 @@ export function makeSearchSourceTool(deps: SearchSourceDeps) {
     inputSchema: z.object({
       queries: z.array(z.string()).min(1),
       imdb: z.string().optional(),
-      tmdb: z.string().optional(),
+      // 描述文本就在引导 "pass that numeric id"——裸数字 262377 必须能进来（coerce.ts 反向坑注释）。
+      tmdb: coercibleOptionalIdString,
       // Real models string-encode these ("2020"/"1"/"12") — coerce so this first-of-every-run tool
       // call does not die on tool-arg validation; empty-string sentinels become undefined (not 0).
       year: coercibleOptionalInt,

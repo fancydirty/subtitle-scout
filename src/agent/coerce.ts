@@ -50,6 +50,16 @@ export const coercibleOptionalInt = z.preprocess(
   z.coerce.number().int().optional(),
 )
 
+/** coercibleInt 系的反向坑：语义是"数字 id"的 STRING 字段（search_source.tmdb——SubDL tmdb_id
+ *  通道），真模型会裸发 JSON number（tmdb: 262377 而非 "262377"），z.string() 直接拒收，tool-arg
+ *  校验死在 execute 之前（文件头纪律的同类问题、编码方向相反：year/season/episode 是该 number
+ *  来 string）。imdb 从没暴露此坑只因 tt 前缀天然成串。只窄折叠有限 number→String；其余类型
+ *  原样交给 inner 拒绝（不吞错）。 */
+export const coercibleOptionalIdString = z.preprocess(
+  (v) => (typeof v === 'number' && Number.isFinite(v) ? String(v) : v),
+  z.string().optional(),
+)
+
 /** Wrap a schema for a nullable field so the model's string null-sentinels (`"None"`/`"null"`/`""`)
  *  AND an omitted key (`undefined`) collapse to JSON null before the inner schema validates —
  *  needed for nullable ENUMS (e.g. an installed-language enum), where `"None"` is neither a valid

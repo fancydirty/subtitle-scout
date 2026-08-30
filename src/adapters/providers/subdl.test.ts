@@ -47,6 +47,15 @@ describe('SubdlClient.search', () => {
     expect(url).not.toContain('film_name=')
   })
 
+  it('imdb_id 优先于 tmdb_id（三级优先 imdb>tmdb>film_name 的第一腿）', async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(jsonRes(200, searchJson))
+    const client = new SubdlClient({ apiKey: 'k', fetchImpl })
+    await client.search({ imdbId: 'tt1375666', tmdbId: 262377, type: 'movie', languages: ['zh'] })
+    const url = String(fetchImpl.mock.calls[0][0])
+    expect(url).toContain('imdb_id=tt1375666')
+    expect(url).not.toContain('tmdb_id=')
+  })
+
   it('TV 参数（season/episode）拼进查询', async () => {
     const fetchImpl = vi.fn().mockResolvedValueOnce(jsonRes(200, '{"status":true,"subtitles":[]}'))
     const client = new SubdlClient({ apiKey: 'k', fetchImpl })
