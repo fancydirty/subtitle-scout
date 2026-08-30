@@ -985,7 +985,8 @@ export class ScoutDaemonV2 {
       const fileTotal = item.files.length
       // 活动卡覆盖格 per-target 状态（2026-08-30，收口 0/N 死进度条）。开工建 map + 全 pending，
       // 首帧就把分母（文件数）钉死。声明在 try 之前：trace 桥接、装盘回调、收尾段都要读它。
-      // 全量数组语义（每条里程碑帧带完整快照）见 scoutEvents.ts ScoutCurrent.targets 注释。
+      // 全量数组语义（每条 progress 帧都带完整快照——含 trace 桥接帧）见 scoutEvents.ts
+      // ScoutCurrent.targets 注释；里程碑帧靠 data.milestone 旁路节流必达。
       const targetsState = new Map<string, { key: string; label: string; state: string }>()
       for (const f of item.files) {
         const k = targetKey(item.workId, f.season, f.episode)
@@ -1007,8 +1008,8 @@ export class ScoutDaemonV2 {
         message: `0/${fileTotal} 个文件`,
         title: item.title,
         workbench: 'subtitle',
-        // targets 首帧全 pending：这是带 targets 的里程碑帧，旁路节流必达（分母确定）。
-        data: { done: 0, total: fileTotal, ...face, targets: targetsArr() },
+        // targets 首帧全 pending：这是带 targets 的里程碑帧，milestone:true 旁路节流必达（分母确定）。
+        data: { done: 0, total: fileTotal, ...face, targets: targetsArr(), milestone: true },
       })
       // C34：把这个作品的 staging 沙盒目录名登记为"在飞行"，跑完（含抛错）必须摘掉。
       // 登记必须在**剔除之后**：整簇消失的作品若也登记一次，这个 jobId 就白白免疫一次 GC。
@@ -1021,12 +1022,17 @@ export class ScoutDaemonV2 {
       const total = item.files.length
       const unsub = traceBus.subscribe((e) => {
         if (e.runKey !== runKey) return
+        // trace 桥接帧携带 targets **当前快照**（2026-08-30，修首屏中途打开覆盖格建不起来）：
+        // 里程碑帧稀疏、会被 trace 帧洪流挤出 50 槽 replay 缓冲，中途打开时 replay 里就一条带
+        // targets 的都没有 → 覆盖格建不起来。让每条桥接帧都捎上当前快照，replay 里任意一条即可重建。
+        // **不打 milestone**：它是高频源，仍归 1s 节流管辖（否则 trace 帧洪流刷屏）；快照在
+        // 总线的节流门之前落进 current，故即便这一条被折叠不推送，它的 targets 也已进 current。
         this.emit({
           type: 'progress',
           message: e.tool,
           title: item.title,
           workbench: 'subtitle',
-          data: { done, total, ...face, step: e.tool },
+          data: { done, total, ...face, step: e.tool, targets: targetsArr() },
         })
       })
       try {
@@ -1034,8 +1040,8 @@ export class ScoutDaemonV2 {
           this.deps.db, this.deps.subtitleWorker, item, this.deps.targetLanguage, this.deps.runs,
           (d, t, key) => {
             done = d
-            // 装盘置该格 installed。这条带 targets → 里程碑帧旁路节流必达（正是修 0/N 的关键：
-            // 装盘回调同毫秒密集 tick，纯 ticker 帧会被 1s 节流折叠，覆盖格永远停在全 pending）。
+            // 装盘置该格 installed。这条打 milestone → 旁路节流必达（正是修 0/N 的关键：
+            // 装盘回调同毫秒密集 tick，非里程碑帧会被 1s 节流折叠，覆盖格永远停在全 pending）。
             if (key && targetsState.has(key)) {
               targetsState.set(key, { ...targetsState.get(key)!, state: 'installed' })
             }
@@ -1044,7 +1050,7 @@ export class ScoutDaemonV2 {
               message: `${d}/${t} 个文件`,
               title: item.title,
               workbench: 'subtitle',
-              data: { done: d, total: t, ...face, targets: targetsArr() },
+              data: { done: d, total: t, ...face, targets: targetsArr(), milestone: true },
             })
           },
           this.deps.translateAfterAttempts?.(),
@@ -1125,7 +1131,7 @@ export class ScoutDaemonV2 {
             message: `${done}/${total} 个文件`,
             title: item.title,
             workbench: 'subtitle',
-            data: { done, total, ...face, targets: targetsArr() },
+            data: { done, total, ...face, targets: targetsArr(), milestone: true },
           })
         }
       } catch (e) {

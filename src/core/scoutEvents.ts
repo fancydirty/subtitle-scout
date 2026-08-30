@@ -113,7 +113,8 @@ export interface ScoutCurrent {
   cueDone: number | null
   cueTotal: number | null
   /** 活动卡覆盖格 per-target 状态（2026-08-30）。字幕流才有；识别/翻译恒 undefined。
-   *  全量数组——每条里程碑帧带完整快照，重连后下一帧即完整真相，免增量对账。 */
+   *  全量数组——**每条** progress 帧都带完整快照（含高频 trace 桥接帧，2026-08-30 起），
+   *  重连/中途打开时 replay 缓冲里任意一条即完整真相，免增量对账。 */
   targets?: Array<{ key: string; label: string; state: 'pending' | 'active' | 'installed' | 'pending-source' }>
 }
 
@@ -340,11 +341,17 @@ export class ScoutEventBus {
       // "断线/丢事件时仍能问出真实当前态"，让它跟着丢是自废武功。
       this.updateCurrent(input)
       const at = this.nowFn()
-      // 里程碑帧（带 targets 数组）旁路节流、且不参与节流窗口记账：装盘里程碑是同一毫秒的
-      // 密集 tick，被 1s 节流折叠掉覆盖格就永远停在 0/N。它一律放行；同时不 set lastProgressAt——
-      // 否则里程碑帧会把纯 ticker 的节流窗口顶掉，纯 ticker 的限速语义就被里程碑污染了。
-      const hasTargets = input.type === 'progress' && Array.isArray(input.data?.targets)
-      if (input.type === 'progress' && !hasTargets) {
+      // 里程碑帧（显式 `data.milestone === true`）旁路节流、且不参与节流窗口记账：装盘里程碑是
+      // 同一毫秒的密集 tick，被 1s 节流折叠掉覆盖格就永远停在 0/N。它一律放行；同时不 set
+      // lastProgressAt——否则里程碑帧会把纯 ticker 的节流窗口顶掉，纯 ticker 的限速语义就被
+      // 里程碑污染了。
+      //
+      // ⚠️ 判据是 milestone，**不是**"带 targets"（2026-08-30 改，修首屏中途打开覆盖格建不起来）：
+      // 现在每条 progress 帧（含高频的 trace 桥接帧）都带 targets 当前快照，好让 replay 缓冲里
+      // 任意一条都能重建 current.targets。若拿"带 targets = 旁路"，就是每帧旁路 = 节流失效、SSE
+      // 刷屏。故带 targets 但无 milestone 的帧照旧走节流；它的快照仍在节流门之前落进 current。
+      const isMilestone = input.type === 'progress' && input.data?.milestone === true
+      if (input.type === 'progress' && !isMilestone) {
         // 未记录过 → 视为 -Infinity（第一条无条件放行）。注意 Map 里可能存着 0
         // （注入时钟从 0 起的测试），故必须用 `?? -Infinity` 而不是 `|| -Infinity`。
         const last = this.lastProgressAt.get(input.workbench) ?? -Infinity

@@ -444,21 +444,25 @@ describe('ScoutEventBus（R-F10 SSE 事件总线）', () => {
     })
   })
 
-  // ── targets 里程碑帧旁路节流 + 快照（Task 4：修 0/N 死进度条）─────────────────────
-  // 装盘里程碑帧（同一毫秒的密集 tick）会被 1s/per-workbench 节流折叠丢掉，覆盖格就永远停在
-  // 0/N。判据是"data.targets 是否在场"——带 targets 的里程碑帧一律放行且不占用节流窗口，
-  // 纯 ticker 文本帧照旧节流。同时 targets 全量数组落进快照，断线重连后下一帧即完整真相。
-  describe('🔴 targets 里程碑帧（Task 4：装盘进度不被节流折叠丢）', () => {
-    it('🔴 带 targets 的 progress 不被节流（里程碑帧必达）', () => {
+  // ── milestone 帧旁路节流 + 每帧带 targets 快照（修首屏中途打开覆盖格建不起来·live 实测）──
+  // 里程碑帧（开工/装盘/收尾，同一毫秒的密集 tick）靠**显式 `data.milestone === true`** 旁路
+  // 1s/per-workbench 节流、且不占用节流窗口；被折叠掉覆盖格就永远停在 0/N。
+  //
+  // ⚠️ 判据从"带 targets 是否在场"改成"带 milestone"：现在**每条** progress 帧都带 targets
+  // 当前快照（含高频的 trace 桥接帧），好让 replay 缓冲里任意一条都能重建 current.targets。
+  // 若仍拿"带 targets = 旁路"，每帧旁路 = 节流失效、SSE 刷屏。故带 targets 但无 milestone 的
+  // 帧照旧走节流（被 1s 折叠），只是它的 targets 快照仍在节流门之前落进 current。
+  describe('🔴 milestone 帧旁路节流 + 每帧带 targets 快照（修中途打开覆盖格建不起来）', () => {
+    it('🔴 带 milestone 的 progress 不被节流（里程碑帧必达）', () => {
       const { bus } = mkBus()
       const { got } = collect(bus)
       // 同一时刻连发：第一条纯 ticker 放行，第二条纯 ticker 被节流吃
       bus.publish({ type: 'progress', message: 's1', workbench: 'subtitle', data: { step: 'search_source' } })
       bus.publish({ type: 'progress', message: 's2', workbench: 'subtitle', data: { step: 'get_candidate' } })
-      // 第三条带 targets（里程碑）：必达，不被节流
-      bus.publish({ type: 'progress', message: 'm', workbench: 'subtitle', data: { targets: [{ key: 's1e1', label: 'S01E01', state: 'installed' }] } })
-      expect(got.filter((e) => (e.data as any)?.targets).length).toBe(1)
-      expect(got.filter((e) => (e.data as any)?.step && !(e.data as any)?.targets).length).toBe(1) // 只第一条纯 ticker 过
+      // 第三条带 milestone（里程碑）：必达，不被节流
+      bus.publish({ type: 'progress', message: 'm', workbench: 'subtitle', data: { milestone: true, targets: [{ key: 's1e1', label: 'S01E01', state: 'installed' }] } })
+      expect(got.filter((e) => (e.data as any)?.milestone).length).toBe(1)
+      expect(got.filter((e) => (e.data as any)?.step && !(e.data as any)?.milestone).length).toBe(1) // 只第一条纯 ticker 过
     })
 
     it('🔴 里程碑帧旁路节流但不占用节流窗口（不顶掉纯 ticker 的记账）', () => {
@@ -467,10 +471,24 @@ describe('ScoutEventBus（R-F10 SSE 事件总线）', () => {
       bus.publish({ type: 'progress', message: 't1', workbench: 'subtitle', data: { step: 'a' } })  // t=0 放行，窗口起点=0
       tick(500)
       // 里程碑放行，但若它（错误地）把 lastProgressAt 记到 t=500，t2 就会被误折叠
-      bus.publish({ type: 'progress', message: 'm', workbench: 'subtitle', data: { targets: [{ key: 'k', label: 'L', state: 'installed' }] } })
+      bus.publish({ type: 'progress', message: 'm', workbench: 'subtitle', data: { milestone: true, targets: [{ key: 'k', label: 'L', state: 'installed' }] } })
       tick(700)  // 距 t1 放行整 1200ms ≥ 1000 → t2 本该放行
       bus.publish({ type: 'progress', message: 't2', workbench: 'subtitle', data: { step: 'b' } })
       expect(got.map((e) => e.message)).toEqual(['t1', 'm', 't2'])
+    })
+
+    it('🔴 带 targets 但无 milestone 的 progress 走节流（被 1s 折叠），但仍更新 current.targets 快照', () => {
+      // 这正是 trace 桥接帧的形态：每条都带 targets 当前快照，却**不带 milestone**——它必须
+      // 仍受 1s 节流约束（否则 trace 帧洪流刷屏），同时它的快照落进 current，让 replay 缓冲里
+      // 任意一条 trace 帧都足以重建覆盖格。这一条把「带 targets ≠ 旁路节流」钉死。
+      const { bus } = mkBus()
+      const { got } = collect(bus)
+      bus.publish({ type: 'progress', message: 'p1', workbench: 'subtitle', data: { step: 'a', targets: [{ key: 'k', label: 'L', state: 'pending' }] } })
+      bus.publish({ type: 'progress', message: 'p2', workbench: 'subtitle', data: { step: 'b', targets: [{ key: 'k', label: 'L', state: 'active' }] } })  // 同毫秒 → 被折叠
+      // 推送侧只出 1 条（节流未因带 targets 而失效）
+      expect(got.map((e) => e.message)).toEqual(['p1'])
+      // 快照侧仍是最新的第二帧 targets（快照在节流门之前推进）——这是 replay 可重建的地基
+      expect(bus.getCurrent()?.targets?.[0]?.state).toBe('active')
     })
 
     it('🔴 updateCurrent 把 targets 落进快照（重连可恢复）', () => {
@@ -481,7 +499,7 @@ describe('ScoutEventBus（R-F10 SSE 事件总线）', () => {
 
     it('🔴 targets 在同工作台缺席时保留上一条、跨台归 undefined', () => {
       const { bus, tick } = mkBus()
-      bus.publish({ type: 'progress', message: 'm', workbench: 'subtitle', data: { targets: [{ key: 'k', label: 'L', state: 'installed' }] } })
+      bus.publish({ type: 'progress', message: 'm', workbench: 'subtitle', data: { milestone: true, targets: [{ key: 'k', label: 'L', state: 'installed' }] } })
       tick(PROGRESS_THROTTLE_MS)
       bus.publish({ type: 'progress', message: 'p', workbench: 'subtitle', data: { done: 1, total: 2 } })  // 缺 targets，同台 → 保留
       expect(bus.getCurrent()?.targets?.[0]?.state).toBe('installed')

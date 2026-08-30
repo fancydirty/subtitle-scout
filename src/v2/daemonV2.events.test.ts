@@ -419,6 +419,44 @@ describe('ScoutDaemonV2 · R-F10 事件发布（端到端走 run()）', () => {
     db.close()
   })
 
+  it('🔴 trace 桥接帧携带 targets 当前快照（不带 milestone，走节流；replay 缓冲里任意一条都能重建覆盖格）', async () => {
+    // ── 修首屏中途打开覆盖格建不起来（live 实测竞态）─────────────────────────────
+    // 覆盖格的里程碑帧稀疏，会被 trace 帧洪流挤出 50 槽 replay 缓冲；中途打开页面时
+    // replay 回放的 50 条里就一条带 targets 的都没有 → 覆盖格建不起来。修法：trace 桥接帧
+    // 也带 targets 当前快照，这样 replay 里任意一条 trace 帧都足以重建 current.targets。
+    //
+    // 但桥接帧是高频源，**不带 milestone**——它必须仍走 1s 节流（否则 trace 帧洪流刷屏），
+    // 只是每条都捎上当前快照。这条断言把「带 targets 快照 + 不打 milestone 标」钉死。
+    const db = openDb(':memory:')
+    seedSubtitleWork(db, '/media/Show/E01.mkv', 1)
+    const workId = (db.prepare('SELECT work_id FROM files WHERE path = ?')
+      .get('/media/Show/E01.mkv') as { work_id: string }).work_id
+    const { emit, got } = mkEmit()
+    const daemon = new ScoutDaemonV2(mkDeps(db, {
+      emit, roots: ['/media'],
+      listVideoFiles: () => ['/media/Show/E01.mkv'],
+      statFile: () => ({ mtimeMs: 1000, size: BIG }), fileExists: () => true,
+      subtitleWorker: async () => {
+        traceBus.publish({
+          runKey: `job-${subtitleJobId(workId)}`, seq: 1, tool: 'search_source',
+          argsSummary: '{}', resultSummary: '', tookMs: 1, at: Date.now(),
+        })
+        return { installed: [], no_safe_match: [], retry_later: [], hardsub_assumed: [] }
+      },
+    }))
+    await runOneInspection(daemon)
+    const bridge = got.find((e) => e.type === 'progress' && e.data?.step === 'search_source')
+    expect(bridge).toBeDefined()
+    // 带 targets 当前快照（开工全 pending）——replay 里这一条就够重建覆盖格
+    expect(Array.isArray(bridge!.data?.targets)).toBe(true)
+    const targets = bridge!.data!.targets as Array<{ key: string; state: string }>
+    expect(targets).toHaveLength(1)
+    expect(targets.every((t) => t.state === 'pending')).toBe(true)
+    // **不带 milestone**：它是高频源，仍归 1s 节流管辖（不是必达的里程碑帧）
+    expect(bridge!.data?.milestone).toBeUndefined()
+    db.close()
+  })
+
   it('🔴 翻译：飞行中 trace.tool 出现在 progress.data.step；finally 后退订', async () => {
     const db = openDb(':memory:')
     db.prepare('INSERT INTO works (id, title, media_type, origin_lang, created_at, updated_at) VALUES (?,?,?,?,?,?)')
@@ -552,7 +590,7 @@ describe('ScoutDaemonV2 · R-F10 事件发布（端到端走 run()）', () => {
   // ⚠️ 这三条**必须过真 ScoutEventBus**（bus.publish 当 emit、bus.subscribe 收帧），不用
   // mkEmit 的捕获函数。理由：0/N bug 的根因是装盘里程碑帧被 1s 节流折叠——装盘回调在同一
   // 毫秒密集 tick，若走捕获函数（不经节流门）则覆盖格看着一直在动，测试假绿；生产上帧被
-  // 总线吃掉，覆盖格永远停在全 pending。只有过真总线才能证明「里程碑帧带 targets → 旁路
+  // 总线吃掉，覆盖格永远停在全 pending。只有过真总线才能证明「里程碑帧打 milestone → 旁路
   // 节流 → 真的到达订阅者」这条链。
   describe('活动卡覆盖格 per-target（过真 ScoutEventBus）', () => {
     /** 过真总线跑一个字幕作品：emit=bus.publish，同时 bus.subscribe 收帧。 */

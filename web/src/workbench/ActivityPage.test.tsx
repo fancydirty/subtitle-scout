@@ -1435,6 +1435,44 @@ describe('🔴 Task 9：字幕卡覆盖格 + ticker（四步条退役、0/N 死�
     expect(screen.queryByTestId('wb-grid-count')).toBeNull()
     expect(screen.queryByTestId('wb-grid-pill')).toBeNull()
   })
+
+  // ── 🔴 首屏中途打开竞态（live 实测）：任意一条带 targets 快照的 progress 帧都能建起覆盖格 ──
+  // 页面在某作品跑到中途时打开：health 快照没把在跑作品的 targets 交到前端（真实成因是 seeded
+  // 播种那道闸只认 appliedId===0，而 SSE replay 的第一帧已把它顶过 0），于是覆盖格暂时建不起来、
+  // 退回旧 done/total 死进度条。修法在后端：**每条** progress 帧都带 targets 当前快照（里程碑帧
+  // 稀疏、会被 trace 帧洪流挤出 50 槽 replay 缓冲，故 trace 桥接帧也带快照）。这条锁死前端那一半：
+  // current 已有一条无 targets 的态（appliedId>0）后，随便来一条带 targets 的 progress 帧，
+  // 覆盖格就必须建起来、旧 wb-run-bar 死进度条必须让位。
+  it('🔴 中途打开：无 targets 态之后，一条带 targets 快照的 progress 帧建起覆盖格（非旧 wb-run-bar）', async () => {
+    // health.current=null → 首载 seeding 是 no-op（复现"快照没把 targets 交到前端"）
+    healthBody = { ...HEALTH_IDLE, current: null }
+    renderPage()
+    await ready()
+    // ① replay 的一条无 targets 的 progress 帧先到（把 appliedId 顶过 0），覆盖格建不起来 → 旧死条
+    act(() => {
+      bus().emit(ev({
+        type: 'progress', message: 'search_source', title: 'Queued Show', workbench: 'subtitle',
+        data: { done: 0, total: 3, step: 'search_source', workId: 'tmdb:1' },
+      }))
+    })
+    await waitFor(() => expect(screen.getByTestId('wb-run-card')).toBeInTheDocument())
+    // 阳性对照：此刻覆盖格确实建不起来（无 targets），退回旧 done/total 死进度条
+    expect(screen.queryByTestId('wb-grid-count')).toBeNull()
+    expect(screen.getByTestId('wb-run-card').querySelector('.wb-run-bar')).not.toBeNull()
+
+    // ② 随后一条带 targets 当前快照的 progress 帧（= 修复后每条 trace 桥接帧都带快照）
+    act(() => {
+      bus().emit(ev({
+        type: 'progress', message: 'search_source', title: 'Queued Show', workbench: 'subtitle',
+        data: { done: 0, total: 3, step: 'search_source', workId: 'tmdb:1', targets: targets3(['installed', 'active', 'pending']) },
+      }))
+    })
+    // 🔴 覆盖格建起来了（三格），不再是旧 done/total 死进度条
+    await waitFor(() => expect(screen.getByTestId('wb-grid-count')).toBeInTheDocument())
+    expect(screen.getAllByTestId('wb-grid-cell')).toHaveLength(3)
+    expect(screen.getByTestId('wb-run-card').querySelector('.wb-run-bar')).toBeNull()
+    expect(screen.queryByRole('progressbar')).toBeNull()
+  })
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
