@@ -634,5 +634,28 @@ describe('ScoutDaemonV2 · R-F10 事件发布（端到端走 run()）', () => {
       expect(byKey.get('s1e2')).toBe('pending-source')
       db.close()
     })
+
+    it('🔴 worker 抛错→report null：不发 pending-source 收尾帧，格留 pending 待下轮', async () => {
+      // 收尾段 `if (report)` 守护是本次修复的实义分支：worker 抛错时 runSubtitleWorkDir
+      // 内部按失败轨记完账后返回 null，此刻那几集什么信息都没产生（不是"源站说没有"），
+      // 不该落 pending-source。删掉 `if (report)` 直接 for 会 NPE——这条用例把它钉住。
+      const db = openDb(':memory:')
+      seedSubtitleWork(db, '/media/Show/E01.mkv', 1)
+      seedSubtitleWork(db, '/media/Show/E02.mkv', 2)
+      const { frames, daemon } = seedBusRig(db, ['/media/Show/E01.mkv', '/media/Show/E02.mkv'],
+        async () => { throw new Error('boom') })
+      await runOneInspection(daemon)
+      const withTargets = subProg(frames).filter((e) => Array.isArray(e.data?.targets))
+      // 至少有开工那条全 pending 帧
+      expect(withTargets.length).toBeGreaterThan(0)
+      // 关键：没有任何格被落成 pending-source（收尾帧被 if(report) 正确跳过）
+      const anyPendingSource = withTargets.some((e) =>
+        (e.data!.targets as Array<{ state: string }>).some((t) => t.state === 'pending-source'))
+      expect(anyPendingSource).toBe(false)
+      // 且末帧仍全 pending（状态留待下轮重试）
+      const last = withTargets.at(-1)!.data!.targets as Array<{ state: string }>
+      expect(last.every((t) => t.state === 'pending')).toBe(true)
+      db.close()
+    })
   })
 })
