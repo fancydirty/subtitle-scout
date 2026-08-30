@@ -639,6 +639,13 @@ export const en = {
   wb_step_install: 'Installing',
   wb_step_wrapup: 'Wrapping up',
   wb_step_working: 'Still working',
+  // ── wb_ticker_*：活动卡 ticker 带对象时的短语（Task 7）。**可后接对象、不含占位符**——
+  // t() 不插值（本文件头注释 + notif_episodes_suffix 的先例），调用方拼 `{t(key)} {obj}`。
+  // 对象缺失时 tickerPhrase 落回上面的 wb_step_*，故这四句只覆盖"有对象"那一半。
+  wb_ticker_search: 'Searching for',
+  wb_ticker_download: 'Downloading',
+  wb_ticker_review: 'Reviewing',
+  wb_ticker_install: 'Installing',
   // ── wb_node_*：**步骤条节点名**（短名词）。日志行要一句话，节点只有巴掌大一格，
   // 且 .wb-stage-label 是 nowrap + ellipsis → 节点文案必须短且不共用开头。
   // zh 侧同族词条附有 2026-08-26 的截图实测记录。

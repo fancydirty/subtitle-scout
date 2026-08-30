@@ -573,6 +573,12 @@ export const zh = {
   wb_step_install: '正在安装',
   wb_step_wrapup: '正在收尾',
   wb_step_working: '还在处理',
+  // ── wb_ticker_*：活动卡 ticker 带对象时的短语（Task 7）。**可后接对象、不含占位符**——
+  // t() 不插值，调用方拼 `{t(key)} {obj}`。对象缺失时 tickerPhrase 落回上面的 wb_step_*。
+  wb_ticker_search: '正在搜',
+  wb_ticker_download: '正在下载',
+  wb_ticker_review: '正在核对',
+  wb_ticker_install: '正在安装',
   // ── wb_node_*：**步骤条节点名**（短名词）。两族分开是因为两个界面的需求相反：
   // 日志行是一句话，节点是巴掌大的一格。.wb-stage-label 是 nowrap + ellipsis，
   // 节点文案**不许共用首字**——2026-08-26 截图实测四个节点全被截成

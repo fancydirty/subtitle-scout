@@ -22,4 +22,23 @@ describe('i18n 完整性', () => {
       expect(zh[key]).toBe(en[key])
     }
   })
+
+  // ── Task 7：活动卡 ticker 词表（wb_ticker_*）──────────────────────────────
+  // 这四键是 tickerPhrase 带对象时的短语键。⚠️ t() 不支持插值（useT.ts 头注释），
+  // 所以它们**必须是可后接对象的短语**，不许含 {obj} 占位——调用方拼 `{t(key)} {obj}`。
+  // 含占位符的话界面上会原样画出 "Searching for {obj}"。
+  it('wb_ticker_* 四键两侧齐备', () => {
+    const tickerKeys = ['wb_ticker_search', 'wb_ticker_download', 'wb_ticker_review', 'wb_ticker_install'] as const
+    for (const key of tickerKeys) {
+      expect(en[key], `en 缺 ${key}`).toBeTruthy()
+      expect(zh[key], `zh 缺 ${key}`).toBeTruthy()
+    }
+  })
+  it('wb_ticker_* 不含 {obj} 占位（t() 不插值，占位符会原样上屏）', () => {
+    const tickerKeys = ['wb_ticker_search', 'wb_ticker_download', 'wb_ticker_review', 'wb_ticker_install'] as const
+    for (const key of tickerKeys) {
+      expect(en[key]).not.toContain('{')
+      expect(zh[key]).not.toContain('{')
+    }
+  })
 })
