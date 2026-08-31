@@ -198,15 +198,30 @@ function fileHasEmbeddedTarget(embeddedLangs: string[] | null, target: string): 
  *  兜底（见下）。 */
 function classifyFileState(f: FileRow, target: string): Exclude<EpisodeState, 'absent'> {
   // 第一段：sub_status —— 这一行当前在流水线的哪个位置。
+  // covered 永远第一：它是 R24 的**磁盘事实观察**（真有 sidecar），盖过一切判决（含 needs=0）。
   if (f.sub_status === 'covered') return 'covered'
-  if (f.sub_status === 'handoff_translate') return 'translating'
-  if (f.sub_status === 'unsolvable') return 'unsolvable'
-  // 非 NULL 的未知值 → 不往下走。该列无 CHECK 约束，将来加一种停牌态而忘了跟这里时，
-  // 继续往下会拿 needs_subtitle 把它报成 'pending'（'···' = 系统正要去找字幕）——而它其实
-  // 停在一个我们不认识的流水线位置上，很可能根本不在字幕工作台里。把未知说成已知就是病 B。
-  // 落 unjudged（'?'）是唯一诚实的选择，也与 web/src/library/episodeState.ts:53 对未知
-  // sub_status 走防御性兜底、不静默吞掉的既有口径同源。
-  if (f.sub_status != null) return 'unjudged'
+
+  // ── needs=0 门控（2026-08-31 实案：凡人修仙传全集报「找不到」、薰香花朵 2 集同病）──────
+  // handoff_translate / unsolvable / 未知值 只在 needs !== 0 时代表「这一行当前的流水线位置」。
+  // needs===0 是 judge 的**终态判决**（不需要外挂字幕：origin-skip / embedded / extra），此时
+  // 这几个 sub_status 是**陈旧值**——retarget 换目标语言时清了 needs_subtitle+skip_reason 却
+  // **刻意留 sub_status**（R24，怕掀翻飞行中的翻译），judge 随后按新语言重判成 needs=0，而旧的
+  // unsolvable/handoff_translate 无人清（只有扫到 sidecar 写 covered 才清）。让它们盖过终态，
+  // 详情页就把「不需要字幕/自带内嵌轨」错报成「找不到」，与卡片（走 embedded_langs 磁盘事实）
+  // 自相矛盾。故 needs===0 时跳过这三个守卫，落到第二段听 judge 的终态判决。
+  // 分界靠 needs 值：needs=1（真在停牌/翻译）与 needs=NULL（retarget 飞行中、judge 还没重判）
+  // 仍进这三个守卫——下方三条不变量（handoff+needs=1→translating、unsolvable+needs=1、
+  // handoff+needs=NULL→translating）逐条不动。
+  if (f.needs_subtitle !== 0) {
+    if (f.sub_status === 'handoff_translate') return 'translating'
+    if (f.sub_status === 'unsolvable') return 'unsolvable'
+    // 非 NULL 的未知值 → 不往下走。该列无 CHECK 约束，将来加一种停牌态而忘了跟这里时，
+    // 继续往下会拿 needs_subtitle 把它报成 'pending'（'···' = 系统正要去找字幕）——而它其实
+    // 停在一个我们不认识的流水线位置上，很可能根本不在字幕工作台里。把未知说成已知就是病 B。
+    // 落 unjudged（'?'）是唯一诚实的选择，也与 web/src/library/episodeState.ts:53 对未知
+    // sub_status 走防御性兜底、不静默吞掉的既有口径同源。
+    if (f.sub_status != null) return 'unjudged'
+  }
 
   // 第二段：judge 的判决（needs_subtitle）+ 理由（skip_reason）。
   // 判据用 needs_subtitle 而非"skip_reason 非空"：skip_reason 是 v40 才加的列（db.ts:1039），

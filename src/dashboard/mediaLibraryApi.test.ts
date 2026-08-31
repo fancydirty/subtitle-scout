@@ -1010,6 +1010,31 @@ describe('buildMediaLibraryDetail（详情：季集网格）', () => {
         .toBe('unjudged')
     })
 
+    // ── ③′ needs=0 终态盖过陈旧 sub_status（2026-08-31 实案：凡人修仙传 / 薰香花朵）──────
+    // 换目标语言（en/ja/ko → zh）时 retarget 清 needs_subtitle+skip_reason、**刻意留 sub_status**
+    // （R24）。这两部在旧目标下判过 needs=1、7 次失败写成 unsolvable；切回 zh 后 judge 重判成
+    // needs=0（凡人=中文原生 origin-skip，薰香=自带中文内嵌轨 embedded），但陈旧的 unsolvable
+    // 无人清（只有扫到 sidecar 写 covered 才清，这俩没 sidecar）。needs=0 是 judge 的**终态判决**，
+    // 必须盖过陈旧的流水线态——否则详情页把"不需要字幕/自带"错报成"找不到"，与卡片自相矛盾。
+    // 关键分界：仅 needs===0 时纠正；needs=1（真在停牌）与 needs=NULL（retarget 飞行中翻译）
+    // 不受影响，上面那三条 unsolvable/handoff_translate 优先的用例全保。
+    it("🔴 凡人形态：unsolvable + needs=0 + origin-skip → 'origin-skip'（陈旧停牌态不许盖过终态）", () => {
+      expect(stateOf({ subStatus: 'unsolvable', needsSubtitle: 0, skipReason: 'origin-skip', embeddedLangs: ['chi'] }))
+        .toBe('origin-skip')
+    })
+
+    it("🔴 薰香形态：unsolvable + needs=0 + embedded → 'embedded'（自带内嵌轨，不是找不到）", () => {
+      expect(stateOf({ subStatus: 'unsolvable', needsSubtitle: 0, skipReason: 'embedded', embeddedLangs: ['chi'] }))
+        .toBe('embedded')
+    })
+
+    it("🔴 handoff_translate + needs=0(embedded)：翻译已成 moot，终态盖过陈旧流水线态 → 'embedded'", () => {
+      // 同源另一半：满次数移交翻译后又换语言重判成 needs=0。needs=NULL 那条（retarget 飞行中）
+      // 仍走 translating——两者靠 needs 值区分：0=judge 已重判完（终态）、NULL=还没重判（在飞）。
+      expect(stateOf({ subStatus: 'handoff_translate', needsSubtitle: 0, skipReason: 'embedded' }))
+        .toBe('embedded')
+    })
+
     // ── ④ 虚线格与 R-F2 聚合 ──────────────────────────────────────────────────
     it("🔴 虚线格（onDisk=false）→ 'absent'，不染色", () => {
       addWork('tmdb:801', { title: 'Dashed' })
