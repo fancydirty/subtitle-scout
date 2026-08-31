@@ -7,13 +7,18 @@
 // （Georgia），绝不引 webfont（自托管离线形态 + 无新依赖）。全站 serif 仅此 auth-shell__title 一处。
 import type { ReactNode } from 'react'
 import { useT } from '../i18n/useT.js'
+import { BrandMark } from '../shell/BrandLockup.js'
 
 export function AuthShell({ heading, children }: { heading: string; children: ReactNode }) {
   const { t } = useT()
   return (
     <div className="auth-shell">
       <div className="auth-shell__card">
-        <div className="auth-shell__wordmark">{t('brand_name')}</div>
+        {/* 2026-08-31 品牌落位：B2 小标随行（20px，与 mono 大写 wordmark 同排）。 */}
+        <div className="auth-shell__wordmark flex items-center gap-2">
+          <BrandMark size={20} />
+          {t('brand_name')}
+        </div>
         <h1 className="auth-shell__title">{heading}</h1>
         {children}
       </div>

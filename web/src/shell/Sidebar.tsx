@@ -9,7 +9,8 @@
 // 🟡 2026-08-13 更正：「雪藏」不等于「将来可能删」——它是**明确保留**的。为什么留、
 //    什么时候才可以删（可证伪判据 + 机器载体）见 `web/src/triage/TriagePage.tsx` 头注释，
 //    那里是正本；本处不重抄。
-import { SideNav, SideNavHeading, SideNavItem } from './SideNav.js'
+import { SideNav, SideNavItem } from './SideNav.js'
+import { BrandLockup } from './BrandLockup.js'
 import { Button } from '../components/ui/button.js'
 import { useT } from '../i18n/useT.js'
 import { TABS } from './tabs.js'
@@ -38,7 +39,7 @@ export function Sidebar({ tab }: Props) {
 
   return (
     <SideNav
-      header={<SideNavHeading heading={t('brand_name')} />}
+      header={<BrandLockup />}
       footer={
         <Button variant="ghost" size="sm" onClick={logout}>
           {t('nav_logout')}
