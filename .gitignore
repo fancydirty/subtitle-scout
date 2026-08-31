@@ -26,6 +26,8 @@ docs/*
 !docs/tmdb-proxy-worker.js
 !docs/screenshots/
 !docs/screenshots/**
+!docs/brand/
+!docs/brand/**
 # 架构图产物（Archify 生成；只入库四件套，visual-check 旁证 PNG/receipt 留本地）
 !docs/diagrams/
 docs/diagrams/*

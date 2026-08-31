@@ -1,5 +1,7 @@
 # subtitle-scout
 
+<p align="center"><img src="docs/brand/mascot.webp" width="220" alt="Subtitle Scout mascot"></p>
+
 [English](#quick-start-5-minutes) · [中文](#快速上手)
 
 **Website**: https://subtitlescout.com · **Live demo**: https://demo.subtitlescout.com （只读演示站 / read-only demo）
