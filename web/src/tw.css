@@ -12,6 +12,16 @@
    Tailwind v4 核心不含它们；shadcn 的 dialog/alert-dialog/select 与 AI Elements 的 task/tool 全靠它。 */
 @import "tw-animate-css";
 
+/* Tailwind v4 preflight 把 button cursor 设为 default（对齐原生平台惯例），shadcn/Radix
+   组件又不自带 cursor-pointer——设置页全员 button（Select/Switch/Tabs/Button）集体丢手型。
+   按官方 v4 升级指南的推荐补丁在 base 层恢复 Web 惯例：可点即手型，禁用态除外。 */
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
 /* static：无条件发射全部 token。Tailwind v4 默认只发射"被 utility 用到"的变量，
    而手写 CSS（styles.css）里的 var(--color-weak) 这类引用对它是不可见的
    ——官方文档原话 "By default only used CSS variables will be generated in the
