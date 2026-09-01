@@ -449,6 +449,7 @@ interface WorkRow {
    *  故收窄成可选——列表 builder 的 WorkRow 里这两个字段本就不存在。 */
   backdrop_path?: string | null
   overview?: string | null
+  overview_zh?: string | null
 }
 
 interface FileRow {
@@ -810,6 +811,9 @@ export interface MediaLibraryDetailDTO {
     backdropPath: string | null
     /** Hero D（2026-08-28）：作品简介（works.overview）。null / 空 → 简介整段不渲染。 */
     overview: string | null
+    /** 双语 overview（2026-09-01）：zh 简介（works.overview_zh，/translations 采）。
+     *  前端按 UI 语言选取：zh 界面取本字段、缺失回退 overview；en 界面恒 overview。 */
+    overviewZh: string | null
   }
   /** 季集网格。**电影恒空数组**（R-F5：电影没有季集）。 */
   seasons: MediaLibrarySeasonDTO[]
@@ -845,7 +849,7 @@ export interface MediaLibraryDetailDTO {
 export function buildMediaLibraryDetail(db: ScoutDb, workId: string, targetLanguage: string = 'zh'): MediaLibraryDetailDTO | null {
   const w = db
     .prepare(
-      `SELECT id, title, year, media_type, poster_path, chinese_titles, backdrop_path, overview FROM works WHERE id = ?`,
+      `SELECT id, title, year, media_type, poster_path, chinese_titles, backdrop_path, overview, overview_zh FROM works WHERE id = ?`,
     )
     .get(workId) as WorkRow | undefined
   if (!w) return null
@@ -867,6 +871,7 @@ export function buildMediaLibraryDetail(db: ScoutDb, workId: string, targetLangu
     // Hero D（2026-08-28）：如实透传，不加工——null 由前端 backdropUrl()/简介闸各自降级。
     backdropPath: w.backdrop_path ?? null,
     overview: w.overview ?? null,
+    overviewZh: w.overview_zh ?? null,
   }
 
   // 电影：没有季集网格，只有"有没有字幕"这一格（R-F2 同样按任一份算）。

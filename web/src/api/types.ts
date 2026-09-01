@@ -615,6 +615,8 @@ export interface MediaLibraryWorkDTO {
   backdropPath: string | null
   /** Hero D（2026-08-28）：作品简介（works.overview）。null / 空 → 简介整段不渲染。 */
   overview: string | null
+  /** 双语 overview（2026-09-01）：zh 简介。zh 界面优先取本字段、缺失回退 overview。 */
+  overviewZh: string | null
 }
 
 /** GET /api/v2/mediaLibrary/:workId 响应体。 */

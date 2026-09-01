@@ -9,7 +9,7 @@
 // 取值走 vitest.config.ts:21 的 `define`（`?raw` 在 vitest 里恒空串，`node:fs` 撞
 // tsconfig types 白名单）——手法与 SeriesGrid.test.tsx 一致。
 import { describe, it, expect, afterEach } from 'vitest'
-import { render, screen, cleanup, within, fireEvent } from '@testing-library/react'
+import { render, screen, cleanup, within } from '@testing-library/react'
 import { I18nProvider } from '../i18n/useT.js'
 import { MediaDetailPage, seasonTally, isNotFoundError, readyTally, formatDuration, formatSize } from './MediaDetailPage.js'
 import { extraUnsubtitledCount } from './EpisodeCell.js'
@@ -86,7 +86,7 @@ function movieCell(overrides: Partial<MediaLibraryMovieDTO> = {}): MediaLibraryM
 function detail(overrides: Partial<MediaLibraryDetailDTO> = {}): MediaLibraryDetailDTO {
   return {
     work: { workId: 'tmdb:1396', title: 'Breaking Bad', chineseTitle: null, year: 2008,
-            posterPath: null, mediaType: 'tv', backdropPath: null, overview: null },
+            posterPath: null, mediaType: 'tv', backdropPath: null, overview: null, overviewZh: null },
     seasons: [], movie: null, unplacedFileCount: 0,
     ...overrides,
   }
@@ -391,7 +391,7 @@ describe('R-F2「另一处那份仍要单独去配」在详情页可见', () => 
 describe('电影那一格（R-F5：电影没有季集）', () => {
   it('movie 非 null → 渲染电影块，走同一套染色语言', () => {
     renderDetail(asyncOf(detail({
-      work: { workId: 'tmdb:9', title: 'M', chineseTitle: null, year: 1999, posterPath: null, mediaType: 'movie', backdropPath: null, overview: null },
+      work: { workId: 'tmdb:9', title: 'M', chineseTitle: null, year: 1999, posterPath: null, mediaType: 'movie', backdropPath: null, overview: null, overviewZh: null },
       movie: movieCell({ dot: 'green', episodeState: 'covered', fileCount: 1, subtitledFileCount: 1, filename: 'M.mkv' }),
     })))
     const cell = screen.getByRole('listitem')
@@ -402,7 +402,7 @@ describe('电影那一格（R-F5：电影没有季集）', () => {
   it('电影格露出文件名，不是空的拉宽集号格', () => {
     renderDetail(asyncOf(detail({
       work: { workId: 'tmdb:539972', title: 'Kraven the Hunter', chineseTitle: '猎人克莱文',
-              year: 2024, posterPath: null, mediaType: 'movie', backdropPath: null, overview: null },
+              year: 2024, posterPath: null, mediaType: 'movie', backdropPath: null, overview: null, overviewZh: null },
       movie: movieCell({
         dot: 'blue', episodeState: 'embedded', fileCount: 1, subtitledFileCount: 0,
         filename: 'Kraven the Hunter (2024).mkv',
@@ -415,7 +415,7 @@ describe('电影那一格（R-F5：电影没有季集）', () => {
   it('**零文件的电影**（空壳 works 直达详情端点）→ absent + 虚线，不假设电影格必有文件', () => {
     // 后端注释点名证伪过"电影格恒有文件"：详情端点没有列表页那个 INNER JOIN。
     renderDetail(asyncOf(detail({
-      work: { workId: 'tmdb:9', title: 'M', chineseTitle: null, year: null, posterPath: null, mediaType: 'movie', backdropPath: null, overview: null },
+      work: { workId: 'tmdb:9', title: 'M', chineseTitle: null, year: null, posterPath: null, mediaType: 'movie', backdropPath: null, overview: null, overviewZh: null },
       movie: movieCell({ dot: 'none', episodeState: 'absent', fileCount: 0, subtitledFileCount: 0, filename: null }),
     })))
     const cell = screen.getByRole('listitem')
@@ -482,7 +482,7 @@ describe('图例 / unplaced / 异常态', () => {
   it('en：有中文名时**只**显示原名（副标题槽不渲染）；相同则只显示一次', () => {
     renderDetail(asyncOf(detail({
       work: { workId: 'w', title: 'Breaking Bad', chineseTitle: '绝命毒师', year: 2008,
-              posterPath: null, mediaType: 'tv', backdropPath: null, overview: null },
+              posterPath: null, mediaType: 'tv', backdropPath: null, overview: null, overviewZh: null },
     })))
     // 2026-08-18 裁决：英文 UI 下外国人不需要知道中文名，副标题槽整体不渲染
     expect(screen.getByRole('heading', { name: 'Breaking Bad' })).toBeInTheDocument()
@@ -495,7 +495,7 @@ describe('Hero D：背景图块（有图渲染 w1280 / 无图整块不渲染，�
   it('有 backdropPath → 渲染背景图，img src 走 w1280 CDN 档', () => {
     renderDetail(asyncOf(detail({
       work: { workId: 'tmdb:1', title: 'BB', chineseTitle: null, year: 2008, posterPath: null,
-              mediaType: 'tv', backdropPath: '/bd.jpg', overview: null },
+              mediaType: 'tv', backdropPath: '/bd.jpg', overview: null, overviewZh: null },
     })))
     const img = screen.getByTestId('media-detail-backdrop') as HTMLImageElement
     expect(img.getAttribute('src')).toContain('/t/p/w1280')
@@ -505,7 +505,7 @@ describe('Hero D：背景图块（有图渲染 w1280 / 无图整块不渲染，�
   it('🔴 backdropPath 为 null → 整块不渲染（无占位灰块，标题区直接开始）', () => {
     renderDetail(asyncOf(detail({
       work: { workId: 'tmdb:1', title: 'BB', chineseTitle: null, year: 2008, posterPath: null,
-              mediaType: 'tv', backdropPath: null, overview: null },
+              mediaType: 'tv', backdropPath: null, overview: null, overviewZh: null },
     })))
     expect(screen.queryByTestId('media-detail-backdrop')).toBeNull()
   })
@@ -513,7 +513,7 @@ describe('Hero D：背景图块（有图渲染 w1280 / 无图整块不渲染，�
   it('背景图不压任何文字（scrim 归零）——标题在图块**之外**的实底区，不是叠在图上', () => {
     renderDetail(asyncOf(detail({
       work: { workId: 'tmdb:1', title: 'Breaking Bad', chineseTitle: null, year: 2008, posterPath: null,
-              mediaType: 'tv', backdropPath: '/bd.jpg', overview: null },
+              mediaType: 'tv', backdropPath: '/bd.jpg', overview: null, overviewZh: null },
     })))
     const heading = screen.getByRole('heading', { name: 'Breaking Bad' })
     const backdrop = screen.getByTestId('media-detail-backdrop')
@@ -524,7 +524,7 @@ describe('Hero D：背景图块（有图渲染 w1280 / 无图整块不渲染，�
   it('🔴 <picture> 资产切换：640 断点 source 用 poster w780（手机档竖屏原生素材，2026-08-29 裁决）', () => {
     renderDetail(asyncOf(detail({
       work: { workId: 'tmdb:1', title: 'BB', chineseTitle: null, year: 2008, posterPath: '/p.jpg',
-              mediaType: 'tv', backdropPath: '/bd.jpg', overview: null },
+              mediaType: 'tv', backdropPath: '/bd.jpg', overview: null, overviewZh: null },
     })))
     const img = screen.getByTestId('media-detail-backdrop')
     const picture = img.closest('picture')
@@ -538,7 +538,7 @@ describe('Hero D：背景图块（有图渲染 w1280 / 无图整块不渲染，�
   it('posterPath 为 null → source 回落 backdrop（罕见分支，CSS 2:3 裁切兜底）', () => {
     renderDetail(asyncOf(detail({
       work: { workId: 'tmdb:1', title: 'BB', chineseTitle: null, year: 2008, posterPath: null,
-              mediaType: 'tv', backdropPath: '/bd.jpg', overview: null },
+              mediaType: 'tv', backdropPath: '/bd.jpg', overview: null, overviewZh: null },
     })))
     const source = screen.getByTestId('media-detail-backdrop').closest('picture')!.querySelector('source')
     expect(source!.getAttribute('srcset')).toContain('/t/p/w1280/bd.jpg')
@@ -616,7 +616,7 @@ describe('Hero D：电影 metadata 行含时长 + 体积（1h48m · 1.4 GB）', 
   it('🔴 电影行渲染格式化的时长与体积', () => {
     renderDetail(asyncOf(detail({
       work: { workId: 'tmdb:9', title: 'Kraven', chineseTitle: null, year: 2024, posterPath: null,
-              mediaType: 'movie', backdropPath: null, overview: null },
+              mediaType: 'movie', backdropPath: null, overview: null, overviewZh: null },
       movie: movieCell({ dot: 'green', episodeState: 'covered', fileCount: 1, subtitledFileCount: 1,
                          filename: 'K.mkv', durationSec: 6480, sizeBytes: 1503238553 }),
     })))
@@ -629,7 +629,7 @@ describe('Hero D：电影 metadata 行含时长 + 体积（1h48m · 1.4 GB）', 
   it('时长/体积为 null（多份/未探测）时对应段不渲染，其余照常', () => {
     renderDetail(asyncOf(detail({
       work: { workId: 'tmdb:9', title: 'Kraven', chineseTitle: null, year: 2024, posterPath: null,
-              mediaType: 'movie', backdropPath: null, overview: null },
+              mediaType: 'movie', backdropPath: null, overview: null, overviewZh: null },
       movie: movieCell({ dot: 'green', episodeState: 'covered', fileCount: 1, subtitledFileCount: 1,
                          filename: 'K.mkv', durationSec: null, sizeBytes: null }),
     })))
@@ -683,17 +683,41 @@ describe('Hero D：简介截断 + 「更多」展开（原地展开，非弹窗�
   it('有 overview → 渲染简介文本（jsdom 环境按钮不出现，符合预期）', () => {
     renderDetail(asyncOf(detail({
       work: { workId: 'tmdb:1', title: 'BB', chineseTitle: null, year: 2008, posterPath: null,
-              mediaType: 'tv', backdropPath: null, overview: LONG },
+              mediaType: 'tv', backdropPath: null, overview: LONG, overviewZh: null },
     })))
     const p = screen.getByTestId('media-detail-overview')
     expect(p.textContent).toBe(LONG)
     expect(p.className).toContain('media-detail-overview-clamp')
   })
 
+  it('zh 界面：overviewZh 有值 → 渲染 zh 简介（双语选取）', () => {
+    render(<I18nProvider initialLang="zh"><MediaDetailPage detail={asyncOf(detail({
+      work: { workId: 'tmdb:1', title: 'BB', chineseTitle: null, year: 2008, posterPath: null,
+              mediaType: 'tv', backdropPath: null, overview: LONG, overviewZh: '中文简介在此' },
+    }))} /></I18nProvider>)
+    expect(screen.getByTestId('media-detail-overview').textContent).toBe('中文简介在此')
+  })
+
+  it('zh 界面：overviewZh 缺失 → 回退 en 简介（不留空白）', () => {
+    render(<I18nProvider initialLang="zh"><MediaDetailPage detail={asyncOf(detail({
+      work: { workId: 'tmdb:1', title: 'BB', chineseTitle: null, year: 2008, posterPath: null,
+              mediaType: 'tv', backdropPath: null, overview: LONG, overviewZh: null },
+    }))} /></I18nProvider>)
+    expect(screen.getByTestId('media-detail-overview').textContent).toBe(LONG)
+  })
+
+  it('en 界面：恒取 en 简介（overviewZh 在场也不用）', () => {
+    renderDetail(asyncOf(detail({
+      work: { workId: 'tmdb:1', title: 'BB', chineseTitle: null, year: 2008, posterPath: null,
+              mediaType: 'tv', backdropPath: null, overview: LONG, overviewZh: '中文简介在此' },
+    })))
+    expect(screen.getByTestId('media-detail-overview').textContent).toBe(LONG)
+  })
+
   it('overview 为 null → 简介整段不渲染（无空壳、无「更多」按钮）', () => {
     renderDetail(asyncOf(detail({
       work: { workId: 'tmdb:1', title: 'BB', chineseTitle: null, year: 2008, posterPath: null,
-              mediaType: 'tv', backdropPath: null, overview: null },
+              mediaType: 'tv', backdropPath: null, overview: null, overviewZh: null },
     })))
     expect(screen.queryByTestId('media-detail-overview')).toBeNull()
     expect(screen.queryByRole('button', { name: en.media_detail_overview_more })).toBeNull()

@@ -27,14 +27,15 @@ function addWork(
     // Hero D（2026-08-28）：详情页头部要读 works 的这两列（backdrop_path 由 v42 ALTER 加，
     // overview 在终态 CREATE TABLE 里）。默认 null，只有 hero 用例才显式给值。
     overview?: string | null
+    overviewZh?: string | null
     backdropPath?: string | null
   },
 ): void {
   db.prepare(
-    `INSERT INTO works (id, title, original_title, year, media_type, origin_lang, overview, poster_path, chinese_titles, backdrop_path, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO works (id, title, original_title, year, media_type, origin_lang, overview, overview_zh, poster_path, chinese_titles, backdrop_path, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
-    id, o.title, null, o.year ?? null, o.mediaType ?? 'tv', null, o.overview ?? null,
+    id, o.title, null, o.year ?? null, o.mediaType ?? 'tv', null, o.overview ?? null, o.overviewZh ?? null,
     o.posterPath ?? null, o.chineseTitles ? JSON.stringify(o.chineseTitles) : null,
     o.backdropPath ?? null, NOW, NOW,
   )
@@ -1296,6 +1297,7 @@ describe('Hero D：work.backdropPath / work.overview（详情头部背景图 + �
     addWork('tmdb:900', {
       title: 'Breaking Bad', year: 2008,
       backdropPath: '/bd900.jpg', overview: 'A high school chemistry teacher turned drug kingpin.',
+      overviewZh: '化学老师转行制毒。',
     })
     addCanonical('tmdb:900', 1, [1])
     addFile({ path: '/m/bb/s1e1.mkv', workId: 'tmdb:900', season: 1, episode: 1 })
@@ -1303,6 +1305,7 @@ describe('Hero D：work.backdropPath / work.overview（详情头部背景图 + �
     const w = buildMediaLibraryDetail(db, 'tmdb:900')!.work
     expect(w.backdropPath).toBe('/bd900.jpg')
     expect(w.overview).toBe('A high school chemistry teacher turned drug kingpin.')
+    expect(w.overviewZh).toBe('化学老师转行制毒。')   // 双语 overview（2026-09-01）如实透传
   })
 
   it('🔴 两列缺值时为 null（前端据此不渲染背景图 / 不渲染简介，绝不占位）', () => {
@@ -1313,6 +1316,7 @@ describe('Hero D：work.backdropPath / work.overview（详情头部背景图 + �
     const w = buildMediaLibraryDetail(db, 'tmdb:901')!.work
     expect(w.backdropPath).toBeNull()
     expect(w.overview).toBeNull()
+    expect(w.overviewZh).toBeNull()
   })
 
   it('🔴 电影同样透传 backdropPath / overview（hero 对剧集与电影一视同仁）', () => {

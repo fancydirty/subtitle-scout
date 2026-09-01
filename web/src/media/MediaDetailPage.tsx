@@ -175,7 +175,7 @@ function DetailHero({ detail, title, originalTitle }: {
   title: string
   originalTitle: string | null
 }) {
-  const { t } = useT()
+  const { t, lang } = useT()
   const { work, seasons, movie } = detail
   const backdrop = backdropUrl(work.backdropPath)
   const { ready, onDisk } = readyTally(detail)
@@ -232,7 +232,11 @@ function DetailHero({ detail, title, originalTitle }: {
           <span className="media-detail-hero-facts">{facts.join(' · ')}</span>
         </div>
 
-        {work.overview && work.overview.trim() !== '' ? <HeroOverview text={work.overview} /> : null}
+        {(() => {
+          // 双语 overview（2026-09-01）：zh 界面优先 overviewZh、缺失回退 en；en 界面恒 en。
+          const text = lang === 'zh' ? (work.overviewZh ?? work.overview) : work.overview
+          return text && text.trim() !== '' ? <HeroOverview text={text} /> : null
+        })()}
       </div>
     </div>
   )
