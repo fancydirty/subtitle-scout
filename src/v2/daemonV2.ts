@@ -678,6 +678,16 @@ export class ScoutDaemonV2 {
       this.deps.log(`warn: boot 应有集回填失败（隔离，不阻塞巡检，下次启动重试）: ${String(e)}`)
     }
 
+    // 清理陈旧 sub_status：retarget 换目标语言后 judge 重判成 needs=0（终态：不需要外挂字幕），
+    // 但陈旧的 unsolvable/handoff_translate 无人清（retarget 刻意留 sub_status 怕掀翻飞行中
+    // 翻译）。classifyFileState 已有纠正逻辑让终态盖过陈旧流水线态，但前端卡片聚合仍读脏值
+    // 算「找不到」→ 卡片说「自带 30」、详情页却全红叉自相矛盾（2026-08-31 实案）。
+    try {
+      await this.backfillClearStaleSub()
+    } catch (e) {
+      this.deps.log(`warn: boot 清理陈旧 sub_status 失败（隔离，不阻塞巡检，下次启动重试）: ${String(e)}`)
+    }
+
     // boot judge：embedded_langs 已在、needs 仍 NULL 的行不必等阶段 1 扫盘。
     // 巡检把 judgeOnce 放在 scan+identify 之后；软路由上扫盘要数小时，详情会一直显示「还没判定」。
     // 纯函数、不碰磁盘。独立 try/catch：挂了只是晚一轮，不许掀翻主循环。
@@ -2912,6 +2922,52 @@ export class ScoutDaemonV2 {
   private writeLastInspectAt(now: number): void {
     this.deps.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_inspect_at', ?)
                           ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(now))
+  }
+
+  /** 清理陈旧 sub_status：needs=0（judge 终态判决"不需要外挂字幕"）但 sub_status 还是
+   *  unsolvable/handoff_translate 的行 → sub_status 清成 NULL。
+   *
+   *  **为什么会脏**：retarget 换目标语言时清 needs_subtitle+skip_reason、**刻意留 sub_status**
+   *  （R24，怕掀翻飞行中的翻译）。judge 随后按新语言重判成 needs=0（origin-skip/embedded/extra），
+   *  但旧的 unsolvable/handoff_translate 无人清——只有扫到 sidecar 写 covered 才清，
+   *  而这些行根本没有 sidecar（不需要外挂字幕）。
+   *
+   *  **为什么要清**：classifyFileState 已有纠正逻辑（205-232 行 needs===0 跳三守卫让终态盖过
+   *  陈旧流水线态），**但前端卡片聚合不走那套逻辑**——它直接读 sub_status，脏值算「找不到」
+   *  → 卡片说「已有字幕 30」、详情页却全红叉，自相矛盾（2026-08-31 实案：凡人修仙传/薰香花朵）。
+   *
+   *  **清理策略**：needs=0 + (sub_status='unsolvable' OR 'handoff_translate') → sub_status=NULL。
+   *  不碰 needs=1（真在停牌/翻译）与 needs=NULL（retarget 飞行中、judge 还没重判）的行。
+   *
+   *  **收敛**：谓词 `needs_subtitle = 0 AND sub_status IN (...)`，一旦清成 NULL 就不再匹配。
+   *  整支 pass 是一次性清扫（首次 boot 清完存量脏数据），之后每次 boot 谓词返回空、零开销。
+   *  不会反复清同一批行（sub_status 只有扫到 sidecar 才写回 covered，而这些行不会有 sidecar）。 */
+  private async backfillClearStaleSub(): Promise<void> {
+    const db = this.deps.db
+    let rows: Array<{ id: string }> = []
+    try {
+      rows = db.prepare(`SELECT id FROM files
+                         WHERE needs_subtitle = 0
+                           AND sub_status IN ('unsolvable', 'handoff_translate')`).all() as Array<{ id: string }>
+    } catch (e) {
+      this.deps.log(`warn: backfillClearStaleSub 谓词失败: ${String(e)}`)
+      return
+    }
+    if (rows.length === 0) return
+
+    this.deps.log(`清理陈旧 sub_status：${rows.length} 行 needs=0 但 sub_status 仍是 unsolvable/handoff_translate`)
+
+    const clear = db.prepare(`UPDATE files SET sub_status = NULL WHERE id = ?`)
+    let ok = 0
+    for (const r of rows) {
+      try {
+        clear.run(r.id)
+        ok++
+      } catch (e) {
+        this.deps.log(`warn: 清理 file ${r.id} sub_status 失败: ${String(e)}`)
+      }
+    }
+    this.deps.log(`清理陈旧 sub_status 完成: ${ok}/${rows.length} 行已清，详情页不再错报「找不到」`)
   }
 }
 
