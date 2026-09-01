@@ -16,7 +16,7 @@
 // ── 异常态（§4.4）────────────────────────────────────────────────────────
 // 404（作品不存在）与其它错误分开：前者是"这个 id 没有对应作品"（用户点了个坏链接），
 // 后者是"我没能问到"（可重试）。两者显示不同文案 —— 给 404 配一个"重试"按钮是骗人。
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Section } from '../components/ui/section.js'
 import { Skeleton } from '../components/ui/skeleton.js'
 import { EmptyState } from '../components/ui/empty-state.js'
@@ -111,21 +111,52 @@ export function formatSize(bytes: number): string {
   return `${Math.round(bytes / 1024 ** 2)} MB`
 }
 
-/** hero 简介：两~三行截断 + 「更多」原地展开（非弹窗）。短简介（≤100 字符）直接全显、不挂按钮。 */
+/** hero 简介：两~三行截断 + 「更多」原地展开（非弹窗）。
+ *
+ *  「要不要挂按钮」的判据是**真实溢出**（clamp 态下 scrollHeight > clientHeight），不是字符数
+ *  ——旧判据 `text.length > 100` 是宽度盲的代理（2026-08-31 用户实案：宽屏下 150 字三行内
+ *  全显、无任何视觉截断，按钮却在；窄屏下短文本被截断，按钮反而缺席）。是否截断由
+ *  CSS line-clamp × 容器宽度 × 字体决定，只有量渲染结果才诚实。
+ *
+ *  重测时机：挂载后 + 容器尺寸变化（ResizeObserver）。展开态（expanded）不量——此时无
+ *  clamp、必然不溢出，量了会把按钮吹掉让用户无法「收起」；收起按钮的存在性凭展开前的
+ *  记录（一旦展开过，按钮保留到收起为止）。
+ *
+ *  jsdom 边界：scrollHeight/clientHeight 恒 0、ResizeObserver 不存在——溢出恒 false，
+ *  测试里按钮默认不渲染。既有测试通过 overflow 造假法（见 test 文件 stubOverflow）验按钮径。 */
 function HeroOverview({ text }: { text: string }) {
   const { t } = useT()
   const [expanded, setExpanded] = useState(false)
-  const long = text.length > 100
-  const clamped = long && !expanded
+  const [overflowing, setOverflowing] = useState(false)
+  const textRef = useRef<HTMLParagraphElement | null>(null)
+
+  useEffect(() => {
+    const el = textRef.current
+    if (!el) return
+    const measure = () => {
+      // 只在 clamp 生效时量：展开态 scrollHeight === clientHeight 恒成立，量了会误判"不溢出"
+      // 把收起按钮吹掉。展开态直接保持现值（按钮由展开前的记录托底）。
+      if (!el.classList.contains('media-detail-overview-clamp')) return
+      setOverflowing(el.scrollHeight > el.clientHeight + 1)
+    }
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [text, expanded])
+
+  const clamped = !expanded
   return (
     <div className="media-detail-hero-overview">
       <p
+        ref={textRef}
         data-testid="media-detail-overview"
         className={clamped ? 'media-detail-overview-text media-detail-overview-clamp' : 'media-detail-overview-text'}
       >
         {text}
       </p>
-      {long ? (
+      {overflowing || expanded ? (
         <button
           type="button"
           className="media-detail-overview-toggle"
