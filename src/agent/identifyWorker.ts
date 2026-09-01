@@ -45,6 +45,10 @@ export interface IdentifyWorkerDeps {
        *  没有横版图（null）在落库时都归 NULL——这两者在**这一列上不可区分**是已知代价，
        *  见 db.ts v42 entry 里"裸路径串没有第三个值可用"的完整论证。 */
       backdropPath?: string | null
+      /** zh 简介（/translations 白拿，2026-09-01 双语 overview）。可选理由同 backdropPath：
+       *  几十个既有构造点不破坏；undefined=没接线（识别侧不盖 checked 章、留回填），
+       *  null=查过确实没有（盖章收敛），string=有值。 */
+      overviewZh?: string | null
     } | null>
     /** 外部 id 端点（`/{tv|movie}/{id}/external_ids`，tmdb.ts:365）——采**真** imdb id 落进
      *  works.provider_ids（C5）。语义：404→{imdbId:null}（真无数据），其余失败→抛。

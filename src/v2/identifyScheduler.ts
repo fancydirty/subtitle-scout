@@ -169,9 +169,20 @@ export async function runIdentifyWorkDir(
         ? now
         : ((deps.db.prepare('SELECT backdrop_checked_at FROM works WHERE id = ?')
             .get(`tmdb:${input.tmdbId}`) as { backdrop_checked_at: number | null } | undefined)?.backdrop_checked_at ?? null)
+      // 双语 overview（2026-09-01）：overview_zh 三件套逐字照 backdrop 口径——整行替换先读现值
+      // 兜底、`in` 区分"接了线但 TMDB 没有 zh 简介"（应盖章收敛）与"构造点没接这个可选字段"
+      // （应留 NULL 等回填），checked_at 单调、错写一次即永久放弃，论证同上不重抄。
+      const zhNow = details.overviewZh ?? null
+      const keptZh = zhNow ?? ((deps.db.prepare('SELECT overview_zh FROM works WHERE id = ?')
+        .get(`tmdb:${input.tmdbId}`) as { overview_zh: string | null } | undefined)?.overview_zh ?? null)
+      const zhProbed = 'overviewZh' in details
+      const keptZhChecked = zhProbed
+        ? now
+        : ((deps.db.prepare('SELECT overview_zh_checked_at FROM works WHERE id = ?')
+            .get(`tmdb:${input.tmdbId}`) as { overview_zh_checked_at: number | null } | undefined)?.overview_zh_checked_at ?? null)
       deps.db.prepare(`
-        INSERT OR REPLACE INTO works (id, title, original_title, year, media_type, origin_lang, overview, poster_path, backdrop_path, backdrop_checked_at, chinese_titles, provider_ids, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO works (id, title, original_title, year, media_type, origin_lang, overview, overview_zh, overview_zh_checked_at, poster_path, backdrop_path, backdrop_checked_at, chinese_titles, provider_ids, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         `tmdb:${input.tmdbId}`,
         details.title,
@@ -180,6 +191,8 @@ export async function runIdentifyWorkDir(
         mediaType,
         details.originLanguage,
         details.overview,
+        keptZh,
+        keptZhChecked,
         details.posterPath,
         // R-F13/R-F14（v42）：横版背景图。TMDB 客户端早就在取这个字段（tmdb.ts:325），
         // 此前落库时被丢弃 → 新架构识别出的作品在活动页只能退化成「模糊海报当背景」。

@@ -398,7 +398,7 @@ async function cmdWatch() {
                 if (!d) return null
                 // 中文标题与原始语言是**增益**（catch 兜住）：TMDB 的这两个副接口挂掉不该让
                 // 整次识别失败——身份认定只依赖 getDetails 本体（同 tmdbCatalog 的既有口径）。
-                const chinese = await tmdb.getChineseTitles(mt, id).catch(() => [])
+                const zhTexts = await tmdb.getChineseTexts(mt, id).catch(() => ({ titles: [] as string[], overview: null as string | null }))
                 const ol = await tmdb.getOriginLanguage(mt, id).catch(() => null)
                 return {
                   id: Number(id), title: d.title || d.originalTitle || String(id),
@@ -413,7 +413,9 @@ async function cmdWatch() {
                   // 适配器取值）——同 C5 那一行的既有教训：deps 上它是 optional，
                   // 漏接线是**静默**的，界面上只表现为活动页永远退化成模糊海报，没有报错。
                   backdropPath: d.backdropPath,
-                  originLanguage: ol, chineseTitles: chinese,
+                  originLanguage: ol, chineseTitles: zhTexts.titles,
+                  // 双语 overview（2026-09-01）：/translations 同响应白拿的 zh 简介。
+                  overviewZh: zhTexts.overview,
                 }
               },
               // C5 接线：采真 imdb 落 works.provider_ids。**这一行不接就是本仓第五次同型缺陷**

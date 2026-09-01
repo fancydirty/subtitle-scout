@@ -197,6 +197,80 @@ describe('runIdentifyWorkDir · works.provider_ids 落库（C5）', () => {
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 双语 overview（2026-09-01）：识别时把 /translations 白拿的 zh 简介落进 works.overview_zh。
+// 写入点①/回填 pass 的分工、`in` 区分接线缺席、checked_at 单调——全部照 backdrop 口径，
+// 论证见上组不重抄。三形态与 backdrop 组一一镜像。
+describe('runIdentifyWorkDir · works.overview_zh 落库（双语简介写入点①）', () => {
+  const BASE = {
+    id: 1, title: 'The Rig', originalTitle: 'The Rig', year: 2023,
+    overview: 'An oil rig crew...', posterPath: null, genreIds: null,
+    originLanguage: 'en', chineseTitles: ['钻井危机'],
+  }
+  function seed(db: ReturnType<typeof openDb>) {
+    const workDir = '/media/TV/The Rig (2023)'
+    db.prepare(`INSERT INTO files (path, dir, filename, size, mtime, work_dir, season, episode, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?)`)
+      .run(`${workDir}/S02E06.mkv`, workDir, 'S02E06.mkv', 100, 1000, workDir, 2, 6, 1000)
+    return workDir
+  }
+  const item = (workDir: string) => ({
+    workDir, dirName: 'The Rig (2023)', fileCount: 1, seasons: [2], hasSeasonDirs: true,
+  })
+  function depsWith(db: ReturnType<typeof openDb>, details: unknown): IdentifySchedulerDeps {
+    return {
+      db,
+      runIdentify: async () => ({ tmdbId: '1', title: 'The Rig', reason: 'confirmed' }),
+      worker: {
+        model: null as never,
+        tmdb: {
+          search: async () => [],
+          getDetails: async () => details as never,
+        },
+      },
+      log: () => {},
+    } as unknown as IdentifySchedulerDeps
+  }
+
+  it('🔴 overviewZh 有值 → 落 overview_zh + checked_at', async () => {
+    const db = openDb(':memory:')
+    const workDir = seed(db)
+    await runIdentifyWorkDir(depsWith(db, { ...BASE, overviewZh: '钻井平台上的危机……' }), item(workDir))
+    const bound = db.prepare('SELECT work_id FROM files WHERE work_dir = ?').get(workDir) as { work_id: string | null }
+    expect(bound.work_id).toBe('tmdb:1')
+    const row = db.prepare('SELECT overview_zh, overview_zh_checked_at FROM works WHERE id = ?')
+      .get('tmdb:1') as { overview_zh: string | null; overview_zh_checked_at: number | null }
+    expect(row.overview_zh).toBe('钻井平台上的危机……')
+    expect(row.overview_zh_checked_at).not.toBeNull()
+    db.close()
+  })
+
+  it('🔴 TMDB 真没有 zh 简介（overviewZh=null）→ 值落 NULL 但盖 checked 章（收敛凭据）', async () => {
+    const db = openDb(':memory:')
+    const workDir = seed(db)
+    await runIdentifyWorkDir(depsWith(db, { ...BASE, overviewZh: null }), item(workDir))
+    const row = db.prepare('SELECT overview_zh, overview_zh_checked_at FROM works WHERE id = ?')
+      .get('tmdb:1') as { overview_zh: string | null; overview_zh_checked_at: number | null }
+    expect(row.overview_zh).toBeNull()
+    expect(row.overview_zh_checked_at).not.toBeNull()
+    db.close()
+  })
+
+  it('🔴 getDetails 没给 overviewZh 字段（旧构造点）→ 两列都 NULL 且不抛（optional 接线纪律）', async () => {
+    const db = openDb(':memory:')
+    const workDir = seed(db)
+    await runIdentifyWorkDir(depsWith(db, BASE), item(workDir))   // BASE 里没有 overviewZh
+    const bound = db.prepare('SELECT work_id, last_error FROM files WHERE work_dir = ?')
+      .get(workDir) as { work_id: string | null; last_error: string | null }
+    expect(bound.work_id).toBe('tmdb:1')
+    expect(bound.last_error).toBeNull()
+    const row = db.prepare('SELECT overview_zh, overview_zh_checked_at FROM works WHERE id = ?')
+      .get('tmdb:1') as { overview_zh: string | null; overview_zh_checked_at: number | null }
+    expect(row.overview_zh).toBeNull()
+    expect(row.overview_zh_checked_at).toBeNull()
+    db.close()
+  })
+})
+
 // v42 / R-F13：识别时把横版背景图落进 works.backdrop_path。
 //
 // 这是 backdrop_path 的**写入点①**。为什么只有回填 pass 不够（本仓病 A 的典型形态

@@ -192,7 +192,7 @@ async function assembleLiveWorkers(cacheRoot: string, targetLanguage: 'zh' | 'en
         getDetails: async (mt, id) => {
           const d = await tmdb.getDetails(mt, id)
           if (!d) return null
-          const chinese = await tmdb.getChineseTitles(mt, id).catch(() => [])
+          const zhTexts = await tmdb.getChineseTexts(mt, id).catch(() => ({ titles: [] as string[], overview: null as string | null }))
           const ol = await tmdb.getOriginLanguage(mt, id).catch(() => null)
           return {
             id: Number(id),
@@ -204,7 +204,8 @@ async function assembleLiveWorkers(cacheRoot: string, targetLanguage: 'zh' | 'en
             genreIds: d.genreIds,
             backdropPath: d.backdropPath,
             originLanguage: ol,
-            chineseTitles: chinese,
+            chineseTitles: zhTexts.titles,
+            overviewZh: zhTexts.overview,
           }
         },
         getExternalIds: (mt, id) => tmdb.getExternalIds(mt, id),
