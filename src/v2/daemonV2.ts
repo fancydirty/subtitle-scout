@@ -688,6 +688,13 @@ export class ScoutDaemonV2 {
       this.deps.log(`warn: boot 清理陈旧 sub_status 失败（隔离，不阻塞巡检，下次启动重试）: ${String(e)}`)
     }
 
+    // 双语 overview 存量回填（写入点②）：探针缺席休眠；批量 LIMIT 多轮 boot 收敛。
+    try {
+      await this.backfillZhOverviews()
+    } catch (e) {
+      this.deps.log(`warn: boot zh 简介回填失败（隔离，不阻塞巡检，下次启动重试）: ${String(e)}`)
+    }
+
     // boot judge：embedded_langs 已在、needs 仍 NULL 的行不必等阶段 1 扫盘。
     // 巡检把 judgeOnce 放在 scan+identify 之后；软路由上扫盘要数小时，详情会一直显示「还没判定」。
     // 纯函数、不碰磁盘。独立 try/catch：挂了只是晚一轮，不许掀翻主循环。
@@ -2968,6 +2975,59 @@ export class ScoutDaemonV2 {
       }
     }
     this.deps.log(`清理陈旧 sub_status 完成: ${ok}/${rows.length} 行已清，详情页不再错报「找不到」`)
+  }
+
+  /** 双语 overview 回填（写入点②，2026-09-01）：存量作品补采 zh 简介。
+   *
+   *  与写入点①（identifyScheduler INSERT）的分工同 backdrop/provider_ids 既有先例：
+   *  识别成功后 `files.work_id IS NULL` 谓词让该目录永不再进识别队列——只有写入点①，
+   *  存量 110+ 作品永远没有 zh 简介；只有本 pass，新识别的要等下一次 boot。
+   *
+   *  探针复用 `identify.worker.tmdb.getDetails`（cmdWatch 的 wrapper 返回值已带 overviewZh
+   *  ——零新增注入面）；未注入时整支休眠一行不动（探针缺席不动列，同 backfillBackdropPaths）。
+   *  wrapper 没给 overviewZh 键（旧测试替身）→ 该行两列不动留下轮，不许把漏接线伪装成
+   *  "TMDB 确认没有"（checked_at 单调，错写一次即永久放弃）。
+   *
+   *  取件谓词 `overview_zh_checked_at IS NULL`（问"查没查过"）+ `ORDER BY updated_at`
+   *  （不是 id——works.id 是 'tmdb:N' 字符串序，v43 教训：谁被饿死不可预测）+ LIMIT 批量。
+   *  写入三态照 backdrop 口径：有值→双写；null→只盖章；抛错→双不动留下轮。 */
+  private async backfillZhOverviews(): Promise<void> {
+    const getDetails = this.deps.identify?.worker?.tmdb?.getDetails
+    if (!getDetails) return
+
+    const db = this.deps.db
+    let rows: Array<{ id: string; media_type: string }> = []
+    try {
+      rows = db.prepare(
+        `SELECT id, media_type FROM works WHERE overview_zh_checked_at IS NULL ORDER BY updated_at LIMIT ${BACKFILL_BATCH_SIZE}`,
+      ).all() as Array<{ id: string; media_type: string }>
+    } catch { return }   // 旧库无该列：回填是增益，不许阻断启动
+    if (rows.length === 0) return
+
+    const write = db.prepare(`UPDATE works SET overview_zh = ?, overview_zh_checked_at = ?, updated_at = ? WHERE id = ?`)
+    const markChecked = db.prepare(`UPDATE works SET overview_zh_checked_at = ?, updated_at = ? WHERE id = ?`)
+    let ok = 0; let failed = 0; let skipped = 0
+    for (const r of rows) {
+      const tmdbId = r.id.startsWith('tmdb:') ? r.id.slice(5) : null
+      if (!tmdbId) { skipped++; continue }   // 非自有 id：两列不动
+      const mediaType = r.media_type === 'movie' ? 'movie' as const : 'tv' as const
+      try {
+        const d = await getDetails(mediaType, tmdbId)
+        if (!d || !('overviewZh' in d)) { skipped++; continue }   // 404 / 旧替身没接字段：不动留下轮
+        if (d.overviewZh) {
+          write.run(d.overviewZh, Date.now(), Date.now(), r.id)
+          ok++
+        } else {
+          // 打通了、答案是"没有 zh 简介"→ 只盖章收敛（不写空串哨兵，v42 否决仍有效）
+          markChecked.run(Date.now(), Date.now(), r.id)
+          skipped++
+        }
+      } catch (e) {
+        failed++   // 两列不动，留 NULL 下轮重试
+        this.deps.log(`回填: overview_zh 失败（隔离，留 NULL 待下轮）: ${r.id}: ${String(e)}`)
+      }
+    }
+    this.deps.log(`回填: works.overview_zh ok=${ok} failed=${failed} skipped=${skipped}（双语简介写入点②）`)
   }
 }
 

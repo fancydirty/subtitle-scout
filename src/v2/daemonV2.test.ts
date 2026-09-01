@@ -6435,9 +6435,64 @@ describe('ScoutDaemonV2 · v42 works.backdrop_path 存量回填 pass（写入点
     await oneLoop(daemon)
     // 走的是完整 run()，没有任何测试专用的直接调用 —— 这条是本 pass 真正的验收点：
     // 前面所有用例都可以在"方法存在但 boot 里没人调"的情况下全绿。
-    expect(bd.calls).toEqual([['tv', '83']])
+    // 2026-09-01 起 getDetails 在 boot 里有**两个**消费者：backfillBackdropPaths（第一次）
+    // 与 backfillZhOverviews（第二次，同一作品 overview_zh_checked_at 也是 NULL）——
+    // 两条 [['tv','83']] 正是"两个 pass 都真被接线"的证据，不是重复调用 bug。
+    expect(bd.calls).toEqual([['tv', '83'], ['tv', '83']])
     expect(backdropOf(db, 'tmdb:83')).toBe('/boot.jpg')
     db.close()
+  })
+
+  // 双语 overview 回填（写入点②，2026-09-01）：三态写入与探针纪律照 backdrop 口径镜像。
+  // boot 接线证据在上面那条双调用断言里（第二条 ['tv','83'] 就是本 pass），此处只钉列语义。
+  describe('backfillZhOverviews 三态', () => {
+    const zhOf = (db: ReturnType<typeof openDb>, id: string) =>
+      db.prepare('SELECT overview_zh, overview_zh_checked_at FROM works WHERE id = ?').get(id) as
+        { overview_zh: string | null; overview_zh_checked_at: number | null }
+
+    it('🔴 overviewZh 有值 → 双写收敛', async () => {
+      const db = openDb(':memory:')
+      seedWorkBd(db, 'tmdb:83', { checkedAt: 111 })   // backdrop 已收敛，隔离到 zh pass
+      const bd = bdDeps(db, async () => ({ backdropPath: null, overviewZh: '中文简介' }))
+      await oneLoop(new ScoutDaemonV2(mkDeps(db, { roots: [], listVideoFiles: () => [], ...bd.deps })))
+      const row = zhOf(db, 'tmdb:83')
+      expect(row.overview_zh).toBe('中文简介')
+      expect(row.overview_zh_checked_at).not.toBeNull()
+      db.close()
+    })
+
+    it('🔴 overviewZh=null（TMDB 真没有）→ 只盖章收敛，值留 NULL 不写哨兵', async () => {
+      const db = openDb(':memory:')
+      seedWorkBd(db, 'tmdb:83', { checkedAt: 111 })
+      const bd = bdDeps(db, async () => ({ backdropPath: null, overviewZh: null }))
+      await oneLoop(new ScoutDaemonV2(mkDeps(db, { roots: [], listVideoFiles: () => [], ...bd.deps })))
+      const row = zhOf(db, 'tmdb:83')
+      expect(row.overview_zh).toBeNull()
+      expect(row.overview_zh_checked_at).not.toBeNull()
+      db.close()
+    })
+
+    it('🔴 wrapper 没给 overviewZh 键（旧替身）→ 两列不动留下轮（漏接线不许伪装成查过）', async () => {
+      const db = openDb(':memory:')
+      seedWorkBd(db, 'tmdb:83', { checkedAt: 111 })
+      const bd = bdDeps(db, async () => ({ backdropPath: null }))
+      await oneLoop(new ScoutDaemonV2(mkDeps(db, { roots: [], listVideoFiles: () => [], ...bd.deps })))
+      const row = zhOf(db, 'tmdb:83')
+      expect(row.overview_zh).toBeNull()
+      expect(row.overview_zh_checked_at).toBeNull()
+      db.close()
+    })
+
+    it('🔴 已盖章的行不再进队（收敛谓词）', async () => {
+      const db = openDb(':memory:')
+      seedWorkBd(db, 'tmdb:83', { checkedAt: 111 })
+      db.prepare('UPDATE works SET overview_zh_checked_at = 222 WHERE id = ?').run('tmdb:83')
+      const bd = bdDeps(db, async () => ({ backdropPath: null, overviewZh: '不该被写' }))
+      await oneLoop(new ScoutDaemonV2(mkDeps(db, { roots: [], listVideoFiles: () => [], ...bd.deps })))
+      expect(bd.calls.length).toBe(0)   // backdrop/zh 双谓词都已收敛 → 探针零调用
+      expect(zhOf(db, 'tmdb:83').overview_zh).toBeNull()
+      db.close()
+    })
   })
 
   // ───────────────────────────────────────────────────────────────────────────
