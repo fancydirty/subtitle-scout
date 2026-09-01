@@ -24,7 +24,7 @@ const CJK = /[一-鿿]/
 interface TmdbTranslation {
   iso_639_1?: string
   iso_3166_1?: string
-  data?: { name?: string; title?: string }
+  data?: { name?: string; title?: string; overview?: string }
 }
 interface TmdbAltTitle {
   iso_3166_1?: string
@@ -149,9 +149,13 @@ export class TmdbClient {
     }
   }
 
-  /** 拿全部中文标题变体，官方译名优先。任何失败静默返回 []（增益路径）。 */
-  async getChineseTitles(mediaType: 'tv' | 'movie', tmdbId: string): Promise<string[]> {
-    // 两端点并发；Promise.allSettled，一端失败不连坐；全失败返回 []。
+  /** /translations + /alternative_titles 双取：中文标题变体（官方译名优先）+ zh 简介。
+   *  overview 与标题共用同一 CN→TW→HK→SG rank（不另发明顺序），取首个非空；无 → null。
+   *  任何失败静默降级（增益路径）：单端点失败不连坐，全失败 → { titles: [], overview: null }。
+   *  2026-09-01 由 getChineseTitles 重构而来（中文界面简介仍英文的修复）：identify 链路
+   *  原本就在打这两个端点，zh overview 是同一响应里白拿的，不多一次网络往返。 */
+  async getChineseTexts(mediaType: 'tv' | 'movie', tmdbId: string): Promise<{ titles: string[]; overview: string | null }> {
+    // 两端点并发；Promise.allSettled，一端失败不连坐。
     const [translations, altTitles] = await Promise.allSettled([
       this.getJson(`/${mediaType}/${tmdbId}/translations`),
       this.getJson(`/${mediaType}/${tmdbId}/alternative_titles`),
@@ -162,6 +166,7 @@ export class TmdbClient {
       const t = s?.trim()
       if (t && CJK.test(t) && !out.includes(t)) out.push(t)
     }
+    let overview: string | null = null
 
     // ① translations：iso_639_1==='zh' 的官方译名，按 CN→TW→HK→SG 顺序（空串跳过）。
     if (translations.status === 'fulfilled' && translations.value) {
@@ -171,6 +176,10 @@ export class TmdbClient {
         .filter(t => t.iso_639_1 === 'zh')
         .sort((a, b) => (rank[a.iso_3166_1 ?? ''] ?? 9) - (rank[b.iso_3166_1 ?? ''] ?? 9))
       for (const t of zh) push(mediaType === 'tv' ? t.data?.name : t.data?.title)
+      for (const t of zh) {
+        const o = t.data?.overview?.trim()
+        if (o) { overview = o; break }
+      }
     }
 
     // ② alternative_titles：iso_3166_1 ∈ {CN,TW,HK} 的 title（tv 响应字段 results，movie 是 titles）。
@@ -182,7 +191,13 @@ export class TmdbClient {
       }
     }
 
-    return out
+    return { titles: out, overview }
+  }
+
+  /** 拿全部中文标题变体，官方译名优先。任何失败静默返回 []（增益路径）。
+   *  getChineseTexts 的投影（委托保持既有调用点零破坏）。 */
+  async getChineseTitles(mediaType: 'tv' | 'movie', tmdbId: string): Promise<string[]> {
+    return (await this.getChineseTexts(mediaType, tmdbId)).titles
   }
 
   /**

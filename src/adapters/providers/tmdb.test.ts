@@ -47,6 +47,41 @@ const ldrAltTitles = {
   ],
 }
 
+describe('TmdbClient.getChineseTexts（/translations 双取：titles + zh overview）', () => {
+  it('zh 翻译带 overview → 按 CN→TW→HK→SG 取首个非空', async () => {
+    const { client } = mkClient({
+      translations: { translations: [
+        { iso_639_1: 'zh', iso_3166_1: 'TW', data: { name: '愛死機', overview: '台版簡介' } },
+        { iso_639_1: 'zh', iso_3166_1: 'CN', data: { name: '爱死机', overview: '大陆版简介' } },
+      ] },
+      alternativeTitles: { results: [] },
+    })
+    const { overview } = await client.getChineseTexts('tv', '86831')
+    expect(overview).toBe('大陆版简介') // CN rank 先于 TW，与标题同序
+  })
+
+  it('CN 无 overview（空串）→ 落到 TW 的', async () => {
+    const { client } = mkClient({
+      translations: { translations: [
+        { iso_639_1: 'zh', iso_3166_1: 'CN', data: { name: '爱死机', overview: '' } },
+        { iso_639_1: 'zh', iso_3166_1: 'TW', data: { name: '愛死機', overview: '台版簡介' } },
+      ] },
+      alternativeTitles: { results: [] },
+    })
+    const { overview } = await client.getChineseTexts('tv', '86831')
+    expect(overview).toBe('台版簡介')
+  })
+
+  it('无任何 zh overview → null；titles 照旧产出（getChineseTitles 委托后行为不变）', async () => {
+    const { client } = mkClient({ translations: ldrTranslations, alternativeTitles: ldrAltTitles })
+    const r = await client.getChineseTexts('tv', '86831')
+    expect(r.overview).toBeNull() // ldr fixture 的 zh 翻译都没带 overview
+    expect(r.titles[0]).toBe('爱，死亡和机器人')
+    // 委托契约：getChineseTitles === getChineseTexts().titles
+    expect(await client.getChineseTitles('tv', '86831')).toEqual(r.titles)
+  })
+})
+
 describe('TmdbClient.getChineseTitles', () => {
   it('merges both endpoints, dedupes, official CN translation first', async () => {
     const { client } = mkClient({ translations: ldrTranslations, alternativeTitles: ldrAltTitles })

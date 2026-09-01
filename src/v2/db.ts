@@ -1531,6 +1531,29 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
       + (columns.has('skip_reason') ? ', skip_reason = NULL' : '')
     )
   },
+
+  // v-next（2026-09-01，中文界面简介仍英文）：works 加 overview_zh + overview_zh_checked_at。
+  //
+  // overview 是识别时从 TMDB detail 端点按默认语言（en-US）拉的单值——UI 语言切 zh 后
+  // 简介仍英文（用户实案）。zh 简介在 /translations 端点里（getChineseTitles 已在打的
+  // 同一响应，白拿），双列存储、前端按 UI 语言选取、缺 zh 回退 en。
+  //
+  // **两列一起加**（v43 饿死教训原样适用）：TMDB 真没有 zh 简介的作品，overview_zh 恒 NULL，
+  // 若回填谓词写 `overview_zh IS NULL` 就是每轮 boot 重查同一批行的永动机。checked_at =
+  // "查过"的单调凭据（查过但没有 → 只盖章；没查过 → 双 NULL 等回填），谓词问"查没查过"。
+  // 条件式表/列存在检查照抄上一条 entry（迁移链流经无 works 表的老库形状；幂等重放无害）。
+  (db) => {
+    const exists = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'works'")
+      .get()
+    if (!exists) return
+    const cols = new Set(
+      (db.prepare('PRAGMA table_info(works)').all() as Array<{ name: string }>)
+        .map((c) => c.name),
+    )
+    if (!cols.has('overview_zh')) db.exec('ALTER TABLE works ADD COLUMN overview_zh TEXT')
+    if (!cols.has('overview_zh_checked_at')) db.exec('ALTER TABLE works ADD COLUMN overview_zh_checked_at INTEGER')
+  },
 ]
 
 /** pre-fold（v9 折叠之前，Jellyfin 时代）老库的结构指纹：series.poster_tag 列存在。
