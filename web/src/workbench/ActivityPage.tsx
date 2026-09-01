@@ -184,7 +184,11 @@ function useCurrentState(health: HealthDTO | null, reloadHealth: () => void): Cu
         return {
           ...prev,
           [kind]: {
-            kind, title: e.title ?? null,
+            // title 与 workId/backdrop/chineseTitle 同为 run 不变量：本条有就覆盖、缺席保留本槽旧值。
+            // 曾是裸 `e.title ?? null`（无 slot 回退）——不带 title 的 progress 帧会把已播种的标题
+            // 抹成"未命名"（demo progress 帧不带 title；产品 SSE 重连 replay 同形，在跑项又不在排队段
+            // 兜不到 fromQueue → Untitled）。一轮 run 的标题不会中途变，缺席即沿用。
+            kind, title: nonemptyString(e.title) ?? slot?.title ?? null,
             index: num(d?.done), total: num(d?.total),
             workId: nonemptyString(d?.workId) ?? slot?.workId ?? null,
             backdropPath: nonemptyString(d?.backdropPath) ?? slot?.backdropPath ?? null,

@@ -394,6 +394,31 @@ describe('🔴 断线重连 → 拉 /api/v2/health 快照纠正当前态（后�
     expect(screen.getByTestId('wb-run-card').textContent).toContain(`2 / 7 ${en.wb_run_files_done_suffix}`)
   })
 
+  // 🔴 标题是 run 不变量：一条**不带 title 的 progress 帧**绝不许把已建立的标题抹成"未命名"。
+  // workId/backdrop/chineseTitle 在 progress 处理里都回退到本槽旧值，唯独 title 曾是
+  // `e.title ?? null`（无 slot 回退）——于是 health 快照播下的 'Bleach Demo' 被紧随的
+  // 无标题进度帧擦掉（demo 的 progress 帧就不带 title；产品侧 SSE 重连 replay 同形）。
+  it('🔴 无标题的 progress 帧不抹掉已播种的标题（title 是 run 不变量）', async () => {
+    // 在跑作品的 workId **不在排队段**（572 行把 current.workId 从队列剔除；demo 里在跑项本就
+    // 不在 subtitleQueue）——故 fromQueue 兜底为 undefined，标题只能靠 current.title 自己扛。
+    healthBody = {
+      ...HEALTH_IDLE,
+      currents: { ...CURRENTS_IDLE, subtitle: { kind: 'subtitle', title: 'Bleach Demo', workId: 'tmdb:BLEACH', index: 3, total: 12 } },
+    }
+    renderPage()
+    await ready()
+    act(() => { bus().open() })
+    await waitFor(() => expect(screen.getByTestId('wb-run-card').textContent).toContain('Bleach Demo'))
+
+    // demo 真实线格：progress 帧只带 done/total/workId，无 title。
+    act(() => { bus().emit(ev({ type: 'progress', workbench: 'subtitle', data: { done: 4, total: 12, workId: 'tmdb:BLEACH' } })) })
+
+    await waitFor(() => expect(screen.getByTestId('wb-run-card').textContent).toContain(`4 / 12 ${en.wb_run_files_done_suffix}`))
+    const card = screen.getByTestId('wb-run-card')
+    expect(card.textContent, 'progress 帧把标题擦成了未命名').not.toContain(en.wb_untitled)
+    expect(card.textContent).toContain('Bleach Demo')
+  })
+
   it('重连也重拉排队段（断线期间队列的变化一次补齐）', async () => {
     renderPage()
     await ready()
