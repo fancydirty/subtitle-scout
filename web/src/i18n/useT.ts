@@ -46,6 +46,12 @@ export function I18nProvider({ children, initialLang }: { children: ReactNode; i
     setLangState(next)
     try {
       window.localStorage.setItem(STORAGE_KEY, next)
+      // 同步写 cookie 供 demo worker 读取（demo 顶条语言需与 UI 同步，2026-09-01）
+      document.cookie = `lang=${next}; path=/; max-age=31536000; SameSite=Lax`
+      // demo 顶条在浏览器里解析语言（banner.ts 客户端脚本监听此事件实时跟随切换，无需刷新）。
+      // 真实 dashboard 无监听者，派发无副作用；window 事件是跨（SPA / worker 注入脚本）边界
+      // 的干净同标签页信号——localStorage 的 'storage' 事件同标签页不触发，故需自派发。
+      window.dispatchEvent(new CustomEvent('scout:lang', { detail: next }))
     } catch {
       // 同上：存不了就算了，内存态仍然生效。
     }
