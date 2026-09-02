@@ -1,24 +1,53 @@
-# subtitle-scout
+<p align="center"><img src="docs/brand/mascot.webp" width="160" alt="Subtitle Scout"></p>
+<h1 align="center">Subtitle Scout</h1>
+<p align="center">An LLM agent that fetches subtitles for your media library. It verifies every candidate against the video and installs the one that fits.</p>
+<p align="center">盯着你的媒体库找字幕的 LLM agent。逐条校验候选，装上最适配的那条。</p>
 
-<p align="center"><img src="docs/brand/mascot.webp" width="220" alt="Subtitle Scout mascot"></p>
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License: AGPL-3.0"></a>
+  <a href="https://github.com/fancydirty/subtitle-scout/actions/workflows/test.yml"><img src="https://github.com/fancydirty/subtitle-scout/actions/workflows/test.yml/badge.svg" alt="tests"></a>
+  <a href="https://github.com/fancydirty/subtitle-scout/pkgs/container/subtitle-scout"><img src="https://img.shields.io/badge/ghcr.io-subtitle--scout-2496ED?logo=docker&logoColor=white" alt="ghcr.io image"></a>
+  <a href="https://github.com/fancydirty/subtitle-scout/releases"><img src="https://img.shields.io/github/v/release/fancydirty/subtitle-scout" alt="release"></a>
+  <img src="https://img.shields.io/badge/node-%E2%89%A522-339933?logo=node.js&logoColor=white" alt="Node 22 or newer">
+  <a href="https://github.com/fancydirty/subtitle-scout/stargazers"><img src="https://img.shields.io/github/stars/fancydirty/subtitle-scout?style=social" alt="stars"></a>
+</p>
 
-[English](#quick-start-5-minutes) · [中文](#快速上手)
+<p align="center">
+  <a href="https://demo.subtitlescout.com"><b>Live demo</b></a> (read-only) ·
+  <a href="https://subtitlescout.com">Website</a> ·
+  <a href="#quick-start-5-minutes">English</a> ·
+  <a href="#快速上手">中文</a>
+</p>
 
-**Website**: https://subtitlescout.com · **Live demo**: https://demo.subtitlescout.com （只读演示站 / read-only demo）
+![Subtitle Scout: media detail page](docs/screenshots/app-detail-en.png)
 
-subtitle-scout watches a media library, finds a matching subtitle in your target language, verifies it, and writes it next to the video. Chinese has the deepest source coverage; English, Japanese, and Korean are fully supported; Spanish, French, German, Portuguese, Russian, and Italian are configurable with basic coverage (see [Target languages](#目标语言支持分层)). It scans filesystem roots; it does not depend on Jellyfin, Emby, or Plex.
+## What it does
 
-**What it does:** discover titles missing target-language sidecars → search and rank candidates → install; season packs; optional directory repair against TMDB (reversible); a dashboard with an activity log.
+For every episode or movie missing a subtitle in your target language, an agent runs a loop instead of a fixed pipeline:
 
-![Subtitle Scout — engine data flow](docs/diagrams/architecture.png)
+- **Picks where to look.** Chooses among multiple sources (OpenSubtitles, SubDL, ASSRT, r3sub, Jimaku, SubHD, Zimuku today) and what to search for, based on the filename, TMDB metadata, and what earlier searches returned.
+- **Reads the results.** Right show, right cut, right release group, judged from the actual search output rather than the top hit.
+- **Verifies before installing.** Probes the video, compares duration and framing, checks for embedded tracks that already cover the language.
+- **Installs the one that fits.** A wrong subtitle is treated as worse than none, so unmatched episodes stay visibly unmatched. The per-episode grid shows what is installed, pending, or genuinely unavailable.
+- **Translates when there is no source.** Want Chinese and only a Japanese sub exists? A second agent translates sentence by sentence after a glossary pass.
+- **Scans folders directly.** No Plex, Jellyfin, Emby, Sonarr, or Radarr required. Credentials stay in the app's own SQLite on your machine.
 
-*Engine data flow. Interactive version: [docs/diagrams/architecture.html](docs/diagrams/architecture.html)*
+Languages: Chinese has the deepest source coverage. English, Japanese, and Korean are fully supported. Spanish, French, German, Portuguese, Russian, and Italian work with basic coverage. Details in [Target languages](#目标语言支持分层).
 
-subtitle-scout 盯着媒体库，自动找到、验证并放好目标语言的最合适字幕。中文源覆盖最厚；英、日、韩为正式支持；西、法、德、葡、俄、意可配置（基础覆盖，详见[目标语言支持分层](#目标语言支持分层)）。直接扫描媒体根目录，不依赖任何媒体服务器。字幕落盘后由播放器自行刷新。
+<p align="center">
+  <img src="docs/brand/lane-subtitle.gif" width="48%" alt="Subtitle lane: search, verify, install">
+  <img src="docs/brand/lane-translate.gif" width="48%" alt="Translate lane: glossary, then sentence by sentence">
+</p>
 
----
+## Quick start
 
-![Subtitle Scout — media detail page](docs/screenshots/app-detail-en.png)
+```bash
+git clone https://github.com/fancydirty/subtitle-scout && cd subtitle-scout
+mkdir -p cache && cp .env.example .env
+docker compose up -d
+```
+
+Open `http://<host>:8099` and finish the setup wizard. Or let your coding agent do it, see the next section.
 
 ## Deploy with your AI agent
 
