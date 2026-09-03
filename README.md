@@ -718,6 +718,11 @@ This product uses the TMDB API but is not endorsed or certified by TMDB.
 
 本产品使用了 TMDB API，但未经 TMDB 认可或认证。
 
+## Acknowledgements
+
+- [LINUX DO](https://linux.do) — a community for people who build. Thanks for having us.
+- [LINUX DO](https://linux.do) — 有理想的新社区，感谢这里的佬友。
+
 ## License
 
 AGPL-3.0-only — see [LICENSE](./LICENSE). Network use counts as distribution: if you run a modified Subtitle Scout as a service, you must offer its source to your users.
