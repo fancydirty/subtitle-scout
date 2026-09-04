@@ -1,7 +1,7 @@
 <p align="center"><img src="docs/brand/mascot.webp" width="160" alt="Subtitle Scout"></p>
 <h1 align="center">Subtitle Scout</h1>
-<p align="center">An LLM agent that fetches subtitles for your media library. It verifies every candidate against the video and installs the one that fits.</p>
-<p align="center">盯着你的媒体库找字幕的 LLM agent。逐条校验候选，装上最适配的那条。</p>
+<p align="center">A self-hosted system with an LLM agent at its core. It finds subtitles for your media library, judges whether each candidate belongs to the exact episode, and installs the one that fits.</p>
+<p align="center">以 LLM agent 为核心的自托管系统。替你的媒体库找字幕，逐条判定候选是否属于这一集，装上最适配的那条。</p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License: AGPL-3.0"></a>
@@ -26,8 +26,8 @@
 For every episode or movie missing a subtitle in your target language, an agent runs a loop instead of a fixed pipeline:
 
 - **Picks where to look.** Chooses among multiple sources (OpenSubtitles, SubDL, ASSRT, r3sub, Jimaku, SubHD, Zimuku today) and what to search for, based on the filename, TMDB metadata, and what earlier searches returned.
-- **Reads the results.** Right show, right cut, right release group, judged from the actual search output rather than the top hit.
-- **Verifies before installing.** Probes the video, compares duration and framing, checks for embedded tracks that already cover the language.
+- **Reads the results.** Right show, right episode, right cut — judged from the actual search output rather than the top hit. Release group and resolution are never a reason to reject a subtitle that otherwise fits.
+- **Judges what belongs.** Each candidate is downloaded into a throwaway sandbox and checked structurally — cue count, whether its timeline span matches the runtime, encoding — and the model rules on whether it belongs to this exact episode. It also checks for embedded tracks that already cover the language.
 - **Installs the one that fits.** A wrong subtitle is treated as worse than none, so unmatched episodes stay visibly unmatched. The per-episode grid shows what is installed, pending, or genuinely unavailable.
 - **Translates when there is no source.** Want Chinese and only a Japanese sub exists? A second agent translates sentence by sentence after a glossary pass.
 - **Scans folders directly.** No Plex, Jellyfin, Emby, Sonarr, or Radarr required. Credentials stay in the app's own SQLite on your machine.
@@ -532,9 +532,9 @@ Title (Year)/Season NN/Title SNNENN.ext
 
 例：`Spy x Family (2022)/Season 01/Spy x Family S01E01.mkv`。剧名+年份的目录一层，季目录 `Season NN` 一层，文件名带 `SxxEyy` 编号——三者任一缺失都会增加识别失败的概率，但不是"必须一字不差"：
 
-- **发布组标记**（如 `[SubsPlease] Show - 01 [1080p].mkv`）不影响识别，识别层认得这类命名；救援官战役（见下）还会用这个标记辅助判断"硬字幕假定"。
+- **发布组标记**（如 `[SubsPlease] Show - 01 [1080p].mkv`）不影响识别，识别层认得这类命名；这个标记也是硬字幕判断的辅助线索之一（见下方「硬字幕」）。
 - **裸番号/绝对集号**（平铺目录、无季文件夹、文件名只有一个数字）能识别，但多季剧下存在歧义——系统会诚实停车而不是瞎猜，人工在监控页「甄别」tab 认领一次即可（认领会同时告诉系统这是第几季，救活整个目录）。
-- **完全认不出的命名**（无年份、无集号、纯代号文件名）进入停车场，救援官会先尝试用目录名+文件结构+TMDB 反查自动确认；确认不了的会留下人话理由，供你在「甄别」tab 手动认领。
+- **完全认不出的命名**（无年份、无集号、纯代号文件名）进入停车场，系统会先尝试用目录名+文件结构+TMDB 反查自动确认；确认不了的会留下人话理由，供你在「甄别」tab 手动认领。
 
 ### 识别失败时
 
